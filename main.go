@@ -1,99 +1,66 @@
-// main.go
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-redis/redis/v8"
-	"golang.org/x/net/context"
+	"gopkg.in/yaml.v2"
 )
 
 type Config struct {
-	VIN           string
-	MQTTBrokerURL string
-	MQTTToken     string
-	RedisAddr     string
-	RedisPassword string
+	VIN       string          `yaml:"vin"`
+	MQTT      MQTTConfig      `yaml:"mqtt"`
+	Redis     RedisConfig     `yaml:"redis"`
+	Telemetry TelemetryConfig `yaml:"telemetry"`
+}
+
+type MQTTConfig struct {
+	BrokerURL string `yaml:"broker_url"`
+	Token     string `yaml:"token"`
+}
+
+type RedisConfig struct {
+	Addr     string   `yaml:"addr"`
+	Password string   `yaml:"password"`
+	Channels []string `yaml:"channels"`
+}
+
+type TelemetryConfig struct {
+	MinInterval string `yaml:"min_interval"`
+	MaxInterval string `yaml:"max_interval"`
 }
 
 type TelemetryData struct {
 	// Vehicle state
-	State       string `json:"state"`     // from vehicle hash - state
-	Kickstand   string `json:"kickstand"` // from vehicle hash - kickstand
-	SeatboxLock string `json:"seatbox"`   // from vehicle hash - seatbox:lock
-	Blinkers    string `json:"blinkers"`  // from vehicle hash - blinker:switch
+	State       string `json:"state"`
+	Kickstand   string `json:"kickstand"`
+	SeatboxLock string `json:"seatbox"`
+	Blinkers    string `json:"blinkers"`
 
 	// Engine ECU data
-	Speed        int `json:"speed"`         // from engine-ecu hash - speed
-	Odometer     int `json:"odometer"`      // from engine-ecu hash - odometer
-	MotorVoltage int `json:"motor_voltage"` // from engine-ecu hash - motor:voltage
-	MotorCurrent int `json:"motor_current"` // from engine-ecu hash - motor:current
-	Temperature  int `json:"temperature"`   // from engine-ecu hash - temperature
+	Speed        int `json:"speed"`
+	Odometer     int `json:"odometer"`
+	MotorVoltage int `json:"motor_voltage"`
+	MotorCurrent int `json:"motor_current"`
+	Temperature  int `json:"temperature"`
 
 	// Battery data
-	Battery0Level   int  `json:"battery0_level"`   // from battery:0 hash - charge
-	Battery1Level   int  `json:"battery1_level"`   // from battery:1 hash - charge
-	Battery0Present bool `json:"battery0_present"` // from battery:0 hash - present
-	Battery1Present bool `json:"battery1_present"` // from battery:1 hash - present
-
-	// Auxiliary batteries
-	AuxBatteryLevel   int `json:"aux_battery_level"`   // from aux-battery hash - charge
-	AuxBatteryVoltage int `json:"aux_battery_voltage"` // from aux-battery hash - voltage
-	CbbBatteryLevel   int `json:"cbb_battery_level"`   // from cb-battery hash - charge
-	CbbBatteryCurrent int `json:"cbb_battery_current"` // from cb-battery hash - current
-
-	// GPS data
-	Lat float64 `json:"lat"` // from gps hash - latitude
-	Lng float64 `json:"lng"` // from gps hash - longitude
+	Battery0Level   int  `json:"battery0_level"`
+	Battery1Level   int  `json:"battery1_level"`
+	Battery0Present bool `json:"battery0_present"`
+	Battery1Present bool `json:"battery1_present"`
 
 	LastSeenAt string `json:"last_seen_at"`
-}
-
-type CommandMessage struct {
-	Command   string                 `json:"command"`
-	Params    map[string]interface{} `json:"params"`
-	Timestamp int64                  `json:"timestamp"`
-	RequestID string                 `json:"request_id"`
-}
-
-type CommandResponse struct {
-	Status    string `json:"status"`
-	Error     string `json:"error,omitempty"`
-	RequestID string `json:"request_id"`
-}
-
-func loadConfig() (*Config, error) {
-	vin := os.Getenv("SCOOTER_VIN")
-	if vin == "" {
-		return nil, fmt.Errorf("SCOOTER_VIN environment variable not set")
-	}
-
-	tokenBytes, err := os.ReadFile("/etc/scooter/mqtt-token")
-	if err != nil {
-		tokenBytes := os.Getenv("MQTT_PASSWORD")
-		if tokenBytes == "" {
-			return nil, fmt.Errorf("failed to read MQTT token: %v", err)
-		}
-	}
-	token := strings.TrimSpace(string(tokenBytes))
-	token = os.Getenv("MQTT_PASSWORD")
-
-	return &Config{
-		VIN:           vin,
-		MQTTBrokerURL: os.Getenv("MQTT_BROKER_URL"),
-		MQTTToken:     token,
-		RedisAddr:     os.Getenv("REDIS_ADDR"),
-		RedisPassword: "",
-	}, nil
 }
 
 type ScooterMQTTClient struct {
@@ -104,28 +71,73 @@ type ScooterMQTTClient struct {
 	cancel      context.CancelFunc
 }
 
+func loadConfig(configPath string) (*Config, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %v", err)
+	}
+
+	config := &Config{}
+	if err := yaml.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %v", err)
+	}
+
+	if err := validateConfig(config); err != nil {
+		return nil, fmt.Errorf("invalid config: %v", err)
+	}
+
+	return config, nil
+}
+
+func validateConfig(config *Config) error {
+	if config.VIN == "" {
+		return fmt.Errorf("vehicle ID (VIN) is required")
+	}
+	if config.MQTT.BrokerURL == "" {
+		return fmt.Errorf("mqtt broker URL is required")
+	}
+	if config.MQTT.Token == "" {
+		return fmt.Errorf("mqtt token is required")
+	}
+	if config.Redis.Addr == "" {
+		return fmt.Errorf("redis address is required")
+	}
+	if len(config.Redis.Channels) == 0 {
+		return fmt.Errorf("at least one redis channel must be specified")
+	}
+	if _, err := time.ParseDuration(config.Telemetry.MinInterval); err != nil {
+		return fmt.Errorf("invalid min_interval: %v", err)
+	}
+	if _, err := time.ParseDuration(config.Telemetry.MaxInterval); err != nil {
+		return fmt.Errorf("invalid max_interval: %v", err)
+	}
+	return nil
+}
+
 func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Setup Redis client
 	redisClient := redis.NewClient(&redis.Options{
-		Addr:     config.RedisAddr,
-		Password: config.RedisPassword,
+		Addr:     config.Redis.Addr,
+		Password: config.Redis.Password,
 		DB:       0,
 	})
 
 	// Test Redis connection
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	_, err := redisClient.Ping(ctx).Result()
+	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("redis connection failed: %v", err)
 	}
 
-	// Setup MQTT options
+	// Use VIN as client ID and username
+	clientID := fmt.Sprintf("radio-gaga-%s", config.VIN)
+
 	opts := mqtt.NewClientOptions().
-		AddBroker(config.MQTTBrokerURL).
-		SetClientID(fmt.Sprintf("scooter-%s", config.VIN)).
+		AddBroker(config.MQTT.BrokerURL).
+		SetClientID(clientID).
 		SetUsername(config.VIN).
-		SetPassword(config.MQTTToken).
+		SetPassword(config.MQTT.Token).
 		SetAutoReconnect(true).
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
 			log.Printf("Connection lost: %v", err)
@@ -150,10 +162,10 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 }
 
 func (s *ScooterMQTTClient) Start() error {
-	// Subscribe to command topic
-	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.VIN)
-	if token := s.mqttClient.Subscribe(commandTopic, 1, s.handleCommand); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to subscribe to commands: %v", token.Error())
+	// Subscribe to all configured Redis channels
+	for _, channel := range s.config.Redis.Channels {
+		pubsub := s.redisClient.Subscribe(s.ctx, channel)
+		go s.handleRedisMessages(pubsub)
 	}
 
 	// Start telemetry publishing
@@ -168,8 +180,66 @@ func (s *ScooterMQTTClient) Stop() {
 	s.redisClient.Close()
 }
 
+func (s *ScooterMQTTClient) handleRedisMessages(pubsub *redis.PubSub) {
+	channel := pubsub.Channel()
+	for {
+		select {
+		case <-s.ctx.Done():
+			pubsub.Close()
+			return
+		case msg := <-channel:
+			log.Printf("Received Redis message on %s: %s", msg.Channel, msg.Payload)
+		}
+	}
+}
+
+func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
+	telemetry := &TelemetryData{}
+
+	// Get vehicle state
+	vehicle, err := s.redisClient.HGetAll(s.ctx, "state:vehicle").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get vehicle state: %v", err)
+	}
+	telemetry.State = vehicle["state"]
+	telemetry.Kickstand = vehicle["kickstand"]
+	telemetry.SeatboxLock = vehicle["seatbox:lock"]
+	telemetry.Blinkers = vehicle["blinker:switch"]
+
+	// Get engine ECU data
+	engineEcu, err := s.redisClient.HGetAll(s.ctx, "state:engine").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get engine ECU data: %v", err)
+	}
+	telemetry.Speed, _ = strconv.Atoi(engineEcu["speed"])
+	telemetry.Odometer, _ = strconv.Atoi(engineEcu["odometer"])
+	telemetry.MotorVoltage, _ = strconv.Atoi(engineEcu["motor:voltage"])
+	telemetry.MotorCurrent, _ = strconv.Atoi(engineEcu["motor:current"])
+	telemetry.Temperature, _ = strconv.Atoi(engineEcu["temperature"])
+
+	// Get battery data
+	battery0, err := s.redisClient.HGetAll(s.ctx, "state:battery:0").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get battery 0 data: %v", err)
+	}
+	telemetry.Battery0Level, _ = strconv.Atoi(battery0["charge"])
+	telemetry.Battery0Present = battery0["present"] == "true"
+
+	battery1, err := s.redisClient.HGetAll(s.ctx, "state:battery:1").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get battery 1 data: %v", err)
+	}
+	telemetry.Battery1Level, _ = strconv.Atoi(battery1["charge"])
+	telemetry.Battery1Present = battery1["present"] == "true"
+
+	telemetry.LastSeenAt = time.Now().UTC().Format(time.RFC3339)
+
+	return telemetry, nil
+}
+
 func (s *ScooterMQTTClient) publishTelemetry() {
-	ticker := time.NewTicker(5 * time.Second)
+	minInterval, _ := time.ParseDuration(s.config.Telemetry.MinInterval)
+	ticker := time.NewTicker(minInterval)
 	defer ticker.Stop()
 
 	for {
@@ -193,190 +263,16 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 			if token := s.mqttClient.Publish(topic, 1, false, telemetryJSON); token.Wait() && token.Error() != nil {
 				log.Printf("Failed to publish telemetry: %v", token.Error())
 			}
-
-			log.Printf("Sent telemetry update")
+			log.Printf("Sent telemetry to %s", topic)
 		}
 	}
 }
 
-func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
-	telemetry := &TelemetryData{}
-
-	// Get vehicle state
-	vehicle, err := s.redisClient.HGetAll(s.ctx, "vehicle").Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get vehicle state: %v", err)
-	}
-	telemetry.State = vehicle["state"]
-	telemetry.Kickstand = vehicle["kickstand"]
-	telemetry.SeatboxLock = vehicle["seatbox:lock"]
-	telemetry.Blinkers = vehicle["blinker:switch"]
-
-	// Get engine ECU data
-	engineEcu, err := s.redisClient.HGetAll(s.ctx, "engine-ecu").Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get engine ECU data: %v", err)
-	}
-	telemetry.Speed, _ = strconv.Atoi(engineEcu["speed"])
-	telemetry.Odometer, _ = strconv.Atoi(engineEcu["odometer"])
-	telemetry.MotorVoltage, _ = strconv.Atoi(engineEcu["motor:voltage"])
-	telemetry.MotorCurrent, _ = strconv.Atoi(engineEcu["motor:current"])
-	telemetry.Temperature, _ = strconv.Atoi(engineEcu["temperature"])
-
-	// Get battery data
-	battery0, err := s.redisClient.HGetAll(s.ctx, "battery:0").Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get battery 0 data: %v", err)
-	}
-	telemetry.Battery0Level, _ = strconv.Atoi(battery0["charge"])
-	telemetry.Battery0Present = battery0["present"] == "true"
-
-	battery1, err := s.redisClient.HGetAll(s.ctx, "battery:1").Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get battery 1 data: %v", err)
-	}
-	telemetry.Battery1Level, _ = strconv.Atoi(battery1["charge"])
-	telemetry.Battery1Present = battery1["present"] == "true"
-
-	// Get auxiliary battery data
-	auxBattery, err := s.redisClient.HGetAll(s.ctx, "aux-battery").Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get aux battery data: %v", err)
-	}
-	telemetry.AuxBatteryLevel, _ = strconv.Atoi(auxBattery["charge"])
-	telemetry.AuxBatteryVoltage, _ = strconv.Atoi(auxBattery["voltage"])
-
-	// Get CBB data
-	cbbBattery, err := s.redisClient.HGetAll(s.ctx, "cb-battery").Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get CBB data: %v", err)
-	}
-	telemetry.CbbBatteryLevel, _ = strconv.Atoi(cbbBattery["charge"])
-	telemetry.CbbBatteryCurrent, _ = strconv.Atoi(cbbBattery["current"])
-
-	// Get GPS data
-	gps, err := s.redisClient.HGetAll(s.ctx, "gps").Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get GPS data: %v", err)
-	}
-	telemetry.Lat, _ = strconv.ParseFloat(gps["latitude"], 64)
-	telemetry.Lng, _ = strconv.ParseFloat(gps["longitude"], 64)
-
-	// Set current timestamp
-	telemetry.LastSeenAt = time.Now().UTC().Format(time.RFC3339)
-
-	return telemetry, nil
-}
-
-func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) {
-	var command CommandMessage
-	if err := json.Unmarshal(msg.Payload(), &command); err != nil {
-		log.Printf("Failed to parse command: %v", err)
-		s.sendCommandResponse(command.RequestID, "error", "Invalid command format")
-		return
-	}
-
-	log.Printf("Received command: %s", command.Command)
-
-	var err error
-	switch command.Command {
-	case "lock":
-		err = s.handleLockCommand()
-	case "unlock":
-		err = s.handleUnlockCommand()
-	case "blinkers":
-		err = s.handleBlinkersCommand(command.Params)
-	case "honk":
-		err = s.handleHonkCommand()
-	case "open_seatbox":
-		err = s.handleSeatboxCommand()
-	case "play_sound":
-		err = s.handleHonkCommand()
-		// err = s.handlePlaySoundCommand(command.Params)
-	default:
-		err = fmt.Errorf("unknown command: %s", command.Command)
-	}
-
-	if err != nil {
-		log.Printf("Command failed: %v", err)
-		s.sendCommandResponse(command.RequestID, "error", err.Error())
-		return
-	}
-
-	s.sendCommandResponse(command.RequestID, "success", "")
-}
-
-func (s *ScooterMQTTClient) handleLockCommand() error {
-	// Update Redis vehicle state
-	err := s.redisClient.HSet(s.ctx, "vehicle", "state", "locked").Err()
-	if err != nil {
-		return fmt.Errorf("failed to update state: %v", err)
-	}
-
-	// Signal to hardware control - "scooter:state lock" as per BLE control interface
-	return s.redisClient.LPush(s.ctx, "scooter:commands", "scooter:state lock").Err()
-}
-
-func (s *ScooterMQTTClient) handleUnlockCommand() error {
-	err := s.redisClient.HSet(s.ctx, "vehicle", "state", "unlocked").Err()
-	if err != nil {
-		return fmt.Errorf("failed to update state: %v", err)
-	}
-
-	return s.redisClient.LPush(s.ctx, "scooter:commands", "scooter:state unlock").Err()
-}
-
-func (s *ScooterMQTTClient) handleBlinkersCommand(params map[string]interface{}) error {
-	state, ok := params["state"].(string)
-	if !ok {
-		return fmt.Errorf("invalid blinker state")
-	}
-
-	// Validate blinker state
-	validStates := map[string]bool{"left": true, "right": true, "both": true, "off": true}
-	if !validStates[state] {
-		return fmt.Errorf("invalid blinker state: %s", state)
-	}
-
-	// Update Redis vehicle state
-	err := s.redisClient.HSet(s.ctx, "vehicle", "blinker:switch", state).Err()
-	if err != nil {
-		return fmt.Errorf("failed to update blinkers: %v", err)
-	}
-
-	// Push command as per BLE control interface format
-	return s.redisClient.LPush(s.ctx, "scooter:blinker", state).Err()
-}
-
-func (s *ScooterMQTTClient) handleSeatboxCommand() error {
-	return s.redisClient.LPush(s.ctx, "scooter:seatbox", "open").Err()
-}
-
-func (s *ScooterMQTTClient) handleHonkCommand() error {
-	return s.redisClient.HSet(s.ctx, "vehicle", "horn:button", "on").Err()
-}
-
-func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg string) {
-	response := CommandResponse{
-		Status:    status,
-		Error:     errorMsg,
-		RequestID: requestID,
-	}
-
-	responseJSON, err := json.Marshal(response)
-	if err != nil {
-		log.Printf("Failed to marshal response: %v", err)
-		return
-	}
-
-	topic := fmt.Sprintf("scooters/%s/acks", s.config.VIN)
-	if token := s.mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
-		log.Printf("Failed to publish response: %v", token.Error())
-	}
-}
-
 func main() {
-	config, err := loadConfig()
+	configPath := flag.String("config", "radio-gaga.yml", "path to config file")
+	flag.Parse()
+
+	config, err := loadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -390,7 +286,6 @@ func main() {
 		log.Fatalf("Failed to start client: %v", err)
 	}
 
-	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan

@@ -1,0 +1,21 @@
+vin: "vehicle id"
+
+telemetry:
+  min_interval: "1s"
+  max_interval: "10s"
+
+mqtt:
+  broker_url: "tcp://localhost:1883"
+  token: "mqtt password here"
+
+redis:
+  addr: "localhost:64389"
+  password: ""
+  channels:
+    - "state:vehicle"
+    - "state:engine"
+    - "state:battery:0"
+    - "state:battery:1"
+    - "state:aux-battery"
+    - "state:cb-battery" 
+    - "state:gps"
