@@ -31,9 +31,8 @@ type MQTTConfig struct {
 }
 
 type RedisConfig struct {
-	Addr     string   `yaml:"addr"`
-	Password string   `yaml:"password"`
-	Channels []string `yaml:"channels"`
+	Addr     string `yaml:"addr"`
+	Password string `yaml:"password"`
 }
 
 type TelemetryConfig struct {
@@ -114,9 +113,6 @@ func validateConfig(config *Config) error {
 	if config.Redis.Addr == "" {
 		return fmt.Errorf("redis address is required")
 	}
-	if len(config.Redis.Channels) == 0 {
-		return fmt.Errorf("at least one redis channel must be specified")
-	}
 	if config.Telemetry.CheckInterval == "" {
 		config.Telemetry.CheckInterval = "1s"
 	}
@@ -180,13 +176,6 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 }
 
 func (s *ScooterMQTTClient) Start() error {
-	// Subscribe to all configured Redis channels
-	for _, channel := range s.config.Redis.Channels {
-		pubsub := s.redisClient.Subscribe(s.ctx, channel)
-		go s.handleRedisMessages(pubsub)
-	}
-
-	// Start telemetry publishing
 	go s.publishTelemetry()
 
 	return nil
@@ -198,24 +187,11 @@ func (s *ScooterMQTTClient) Stop() {
 	s.redisClient.Close()
 }
 
-func (s *ScooterMQTTClient) handleRedisMessages(pubsub *redis.PubSub) {
-	channel := pubsub.Channel()
-	for {
-		select {
-		case <-s.ctx.Done():
-			pubsub.Close()
-			return
-		case msg := <-channel:
-			log.Printf("Received Redis message on %s: %s", msg.Channel, msg.Payload)
-		}
-	}
-}
-
 func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 	telemetry := &TelemetryData{}
 
 	// Get vehicle state
-	vehicle, err := s.redisClient.HGetAll(s.ctx, "state:vehicle").Result()
+	vehicle, err := s.redisClient.HGetAll(s.ctx, "vehicle").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get vehicle state: %v", err)
 	}
@@ -225,7 +201,7 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 	telemetry.Blinkers = vehicle["blinker:switch"]
 
 	// Get engine ECU data
-	engineEcu, err := s.redisClient.HGetAll(s.ctx, "state:engine").Result()
+	engineEcu, err := s.redisClient.HGetAll(s.ctx, "engine-ecu").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get engine ECU data: %v", err)
 	}
@@ -236,14 +212,14 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 	telemetry.Temperature, _ = strconv.Atoi(engineEcu["temperature"])
 
 	// Get battery data
-	battery0, err := s.redisClient.HGetAll(s.ctx, "state:battery:0").Result()
+	battery0, err := s.redisClient.HGetAll(s.ctx, "battery:0").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get battery 0 data: %v", err)
 	}
 	telemetry.Battery0Level, _ = strconv.Atoi(battery0["charge"])
 	telemetry.Battery0Present = battery0["present"] == "true"
 
-	battery1, err := s.redisClient.HGetAll(s.ctx, "state:battery:1").Result()
+	battery1, err := s.redisClient.HGetAll(s.ctx, "battery:1").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get battery 1 data: %v", err)
 	}
@@ -251,7 +227,7 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 	telemetry.Battery1Present = battery1["present"] == "true"
 
 	// Get auxiliary battery data
-	auxBattery, err := s.redisClient.HGetAll(s.ctx, "state:aux-battery").Result()
+	auxBattery, err := s.redisClient.HGetAll(s.ctx, "aux-battery").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get aux battery data: %v", err)
 	}
@@ -259,7 +235,7 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 	telemetry.AuxBatteryVoltage, _ = strconv.Atoi(auxBattery["voltage"])
 
 	// Get CBB data
-	cbbBattery, err := s.redisClient.HGetAll(s.ctx, "state:cb-battery").Result()
+	cbbBattery, err := s.redisClient.HGetAll(s.ctx, "cb-battery").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get CBB data: %v", err)
 	}
@@ -267,7 +243,7 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 	telemetry.CbbBatteryCurrent, _ = strconv.Atoi(cbbBattery["current"])
 
 	// Get GPS data
-	gps, err := s.redisClient.HGetAll(s.ctx, "state:gps").Result()
+	gps, err := s.redisClient.HGetAll(s.ctx, "gps").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GPS data: %v", err)
 	}
@@ -320,9 +296,13 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 			} else if time.Since(lastPublishTime) >= (maxInterval - checkInterval) {
 				shouldPublish = true
 				reason = fmt.Sprintf("max interval (%s) elapsed", s.config.Telemetry.MaxInterval)
-			} else if !telemetryEqual(lastPublished, current) && time.Since(lastPublishTime) >= minInterval {
-				shouldPublish = true
-				reason = "data changed"
+			} else if !telemetryEqual(lastPublished, current) {
+				if time.Since(lastPublishTime) >= (minInterval - checkInterval) {
+					shouldPublish = true
+					reason = "data changed"
+				} else {
+					log.Printf("data changed, but min_interval (%s) not reached yet", s.config.Telemetry.MinInterval)
+				}
 			}
 
 			if !shouldPublish {
