@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"reflect"
 	"strconv"
 	"syscall"
 	"time"
@@ -36,8 +37,9 @@ type RedisConfig struct {
 }
 
 type TelemetryConfig struct {
-	MinInterval string `yaml:"min_interval"`
-	MaxInterval string `yaml:"max_interval"`
+	CheckInterval string `yaml:"check_interval"`
+	MinInterval   string `yaml:"min_interval"`
+	MaxInterval   string `yaml:"max_interval"`
 }
 
 type TelemetryData struct {
@@ -60,7 +62,17 @@ type TelemetryData struct {
 	Battery0Present bool `json:"battery0_present"`
 	Battery1Present bool `json:"battery1_present"`
 
-	LastSeenAt string `json:"last_seen_at"`
+	// Auxiliary batteries
+	AuxBatteryLevel   int `json:"aux_battery_level"`
+	AuxBatteryVoltage int `json:"aux_battery_voltage"`
+	CbbBatteryLevel   int `json:"cbb_battery_level"`
+	CbbBatteryCurrent int `json:"cbb_battery_current"`
+
+	// GPS data
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
+
+	Timestamp string `json:"timestamp"`
 }
 
 type ScooterMQTTClient struct {
@@ -105,6 +117,12 @@ func validateConfig(config *Config) error {
 	if len(config.Redis.Channels) == 0 {
 		return fmt.Errorf("at least one redis channel must be specified")
 	}
+	if config.Telemetry.CheckInterval == "" {
+		config.Telemetry.CheckInterval = "1s"
+	}
+	if _, err := time.ParseDuration(config.Telemetry.CheckInterval); err != nil {
+		return fmt.Errorf("invalid check_interval: %v", err)
+	}
 	if _, err := time.ParseDuration(config.Telemetry.MinInterval); err != nil {
 		return fmt.Errorf("invalid min_interval: %v", err)
 	}
@@ -136,7 +154,7 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 	opts := mqtt.NewClientOptions().
 		AddBroker(config.MQTT.BrokerURL).
 		SetClientID(clientID).
-		SetUsername(config.VIN).
+		SetUsername(config.VIN). // Use VIN as username
 		SetPassword(config.MQTT.Token).
 		SetAutoReconnect(true).
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
@@ -232,28 +250,86 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 	telemetry.Battery1Level, _ = strconv.Atoi(battery1["charge"])
 	telemetry.Battery1Present = battery1["present"] == "true"
 
-	telemetry.LastSeenAt = time.Now().UTC().Format(time.RFC3339)
+	// Get auxiliary battery data
+	auxBattery, err := s.redisClient.HGetAll(s.ctx, "state:aux-battery").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get aux battery data: %v", err)
+	}
+	telemetry.AuxBatteryLevel, _ = strconv.Atoi(auxBattery["charge"])
+	telemetry.AuxBatteryVoltage, _ = strconv.Atoi(auxBattery["voltage"])
+
+	// Get CBB data
+	cbbBattery, err := s.redisClient.HGetAll(s.ctx, "state:cb-battery").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get CBB data: %v", err)
+	}
+	telemetry.CbbBatteryLevel, _ = strconv.Atoi(cbbBattery["charge"])
+	telemetry.CbbBatteryCurrent, _ = strconv.Atoi(cbbBattery["current"])
+
+	// Get GPS data
+	gps, err := s.redisClient.HGetAll(s.ctx, "state:gps").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GPS data: %v", err)
+	}
+	telemetry.Lat, _ = strconv.ParseFloat(gps["latitude"], 64)
+	telemetry.Lng, _ = strconv.ParseFloat(gps["longitude"], 64)
+
+	telemetry.Timestamp = time.Now().UTC().Format(time.RFC3339)
 
 	return telemetry, nil
 }
 
+func telemetryEqual(a, b *TelemetryData) bool {
+	// Make copies to avoid modifying original data
+	aCopy := *a
+	bCopy := *b
+	// Zero out timestamps before comparison
+	aCopy.Timestamp = ""
+	bCopy.Timestamp = ""
+	return reflect.DeepEqual(&aCopy, &bCopy)
+}
+
 func (s *ScooterMQTTClient) publishTelemetry() {
+	checkInterval, _ := time.ParseDuration(s.config.Telemetry.CheckInterval)
 	minInterval, _ := time.ParseDuration(s.config.Telemetry.MinInterval)
-	ticker := time.NewTicker(minInterval)
+	maxInterval, _ := time.ParseDuration(s.config.Telemetry.MaxInterval)
+
+	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
+
+	var lastPublished *TelemetryData
+	var lastPublishTime time.Time
 
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			telemetry, err := s.getTelemetryFromRedis()
+			current, err := s.getTelemetryFromRedis()
 			if err != nil {
 				log.Printf("Failed to get telemetry: %v", err)
 				continue
 			}
 
-			telemetryJSON, err := json.Marshal(telemetry)
+			shouldPublish := false
+			reason := ""
+
+			if lastPublished == nil {
+				shouldPublish = true
+				reason = "initial telemetry"
+			} else if time.Since(lastPublishTime) >= (maxInterval - checkInterval) {
+				shouldPublish = true
+				reason = fmt.Sprintf("max interval (%s) elapsed", s.config.Telemetry.MaxInterval)
+			} else if !telemetryEqual(lastPublished, current) && time.Since(lastPublishTime) >= minInterval {
+				shouldPublish = true
+				reason = "data changed"
+			}
+
+			if !shouldPublish {
+				continue
+			}
+
+			telemetryJSON, err := json.Marshal(current)
 			if err != nil {
 				log.Printf("Failed to marshal telemetry: %v", err)
 				continue
@@ -262,8 +338,12 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 			topic := fmt.Sprintf("scooters/%s/telemetry", s.config.VIN)
 			if token := s.mqttClient.Publish(topic, 1, false, telemetryJSON); token.Wait() && token.Error() != nil {
 				log.Printf("Failed to publish telemetry: %v", token.Error())
+				continue
 			}
-			log.Printf("Sent telemetry to %s", topic)
+
+			log.Printf("Published telemetry to %s (%s)", topic, reason)
+			lastPublished = current
+			lastPublishTime = time.Now()
 		}
 	}
 }
