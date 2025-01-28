@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"reflect"
 	"strconv"
@@ -364,6 +365,13 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 
 	var err error
 	switch command.Command {
+	case "ping":
+		s.sendCommandResponse(command.RequestID, "success", "")
+		return // Skip error handling
+	case "update":
+		err = s.handleUpdateCommand()
+	case "get_state":
+		err = s.handleGetStateCommand()
 	case "lock":
 		err = s.handleLockCommand()
 	case "unlock":
@@ -385,6 +393,31 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 	}
 
 	s.sendCommandResponse(command.RequestID, "success", "")
+}
+
+func (s *ScooterMQTTClient) handleUpdateCommand() error {
+	cmd := exec.Command("./radio-whats-new.sh")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true, // Run in new process group
+	}
+	return cmd.Start()
+}
+
+func (s *ScooterMQTTClient) handleGetStateCommand() error {
+	telemetry, err := s.getTelemetryFromRedis()
+	if err != nil {
+		return err
+	}
+
+	telemetryJSON, err := json.Marshal(telemetry)
+	if err != nil {
+		return err
+	}
+
+	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.VIN)
+	token := s.mqttClient.Publish(topic, 1, false, telemetryJSON)
+	token.Wait()
+	return token.Error()
 }
 
 func (s *ScooterMQTTClient) handleLockCommand() error {
@@ -414,7 +447,13 @@ func (s *ScooterMQTTClient) handleSeatboxCommand() error {
 }
 
 func (s *ScooterMQTTClient) handleHonkCommand() error {
-	return s.redisClient.HSet(s.ctx, "vehicle", "horn:button", "on").Err()
+	err := s.redisClient.LPush(s.ctx, "scooter:horn", "on").Err()
+	if err != nil {
+		return err
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	return s.redisClient.LPush(s.ctx, "scooter:horn", "off").Err()
 }
 
 func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg string) {
