@@ -1,0 +1,13 @@
+[Unit]
+Description=Rescoot Radio Gaga Telemetry Client Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/rootdirs/home/root/radio-gaga
+ExecStart=/var/rootdirs/home/root/radio-gaga/radio-gaga
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target
