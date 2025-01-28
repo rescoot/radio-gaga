@@ -8,7 +8,7 @@ BINARY_NEW="${BINARY_PATH}.new"
 SERVICE_NAME="rescoot-radio-gaga"
 
 # Get remote last-modified time using just headers
-REMOTE_MODIFIED=$(curl -sI "$BINARY_URL" | grep -i "last-modified" | cut -d' ' -f2-)
+REMOTE_MODIFIED=$(curl -sI "$BINARY_URL" | grep -i "last-modified" | cut -d' ' -f2- | sed 's/GMT/+0000/' | tr -d '\r\n')
 
 if [ -f "$BINARY_PATH" ]; then
     # Store current local file's modification time in same format as HTTP header
