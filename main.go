@@ -28,6 +28,7 @@ type Config struct {
 
 type MQTTConfig struct {
 	BrokerURL string `yaml:"broker_url"`
+	KeepAlive string `yaml:"keepalive"`
 	Token     string `yaml:"token"`
 }
 
@@ -124,6 +125,12 @@ func validateConfig(config *Config) error {
 	if config.MQTT.Token == "" {
 		return fmt.Errorf("mqtt token is required")
 	}
+	if config.MQTT.KeepAlive == "" {
+		config.MQTT.KeepAlive = "300s"
+	}
+	if _, err := time.ParseDuration(config.MQTT.KeepAlive); err != nil {
+		return fmt.Errorf("invalid keepalive: %v", err)
+	}
 	if config.Redis.Addr == "" {
 		return fmt.Errorf("redis address is required")
 	}
@@ -161,11 +168,18 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 	// Use VIN as client ID and username
 	clientID := fmt.Sprintf("radio-gaga-%s", config.VIN)
 
+	keepAlive, err := time.ParseDuration(config.MQTT.KeepAlive)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("could not parse keepalive interval: %v", err)
+	}
+
 	opts := mqtt.NewClientOptions().
 		AddBroker(config.MQTT.BrokerURL).
 		SetClientID(clientID).
 		SetUsername(config.VIN). // Use VIN as username
 		SetPassword(config.MQTT.Token).
+		SetKeepAlive(keepAlive).
 		SetAutoReconnect(true).
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
 			log.Printf("Connection lost: %v", err)
