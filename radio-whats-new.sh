@@ -25,7 +25,7 @@ echo "Remote file: $REMOTE_MODIFIED"
 
 # Download to new file
 echo "Downloading new binary..."
-curl -s -L -o "$BINARY_NEW" "$BINARY_URL"
+curl -fsSL -C - -o "$BINARY_NEW" "$BINARY_URL"
 
 # Set permissions on new file
 chmod 755 "$BINARY_NEW"
