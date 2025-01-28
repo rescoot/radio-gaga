@@ -4,9 +4,10 @@ mqtt:
   broker_url: tcp://mqtt.sunshine.rescoot.org:1883
   token: 64character_sha256_token
 telemetry:
-  check_interval: 100ms
-  min_interval: 1s
-  max_interval: 60s #00s
+  check_interval: 5s
+  min_interval: 600s
+  max_interval: 3600s
+  keep_alive: 180s
 redis:
   addr: "localhost:6379"
   password: ""
