@@ -94,21 +94,19 @@ echo "Downloading supplemental files..."
 curl -s -L -o radio-whats-new.sh https://raw.githubusercontent.com/teal-bauer/reunu-radio-gaga/refs/heads/main/radio-whats-new.sh
 curl -s -L -o rescoot-radio-gaga.service https://raw.githubusercontent.com/teal-bauer/reunu-radio-gaga/refs/heads/main/rescoot-radio-gaga.service
 
-SYSTEMCTL="echo systemctl"
-
 echo "Creating systemd service unit..."
-SYSTEMD_EDITOR=tee $SYSTEMCTL edit rescoot-radio-gaga.service --force --full < ./rescoot-radio-gaga.service
+SYSTEMD_EDITOR=tee systemctl edit rescoot-radio-gaga.service --force --full < ./rescoot-radio-gaga.service
 
 echo "Fetching telemetry client..."
 chmod +x radio-whats-new.sh
 bash -e radio-whats-new.sh
 
 echo "Enabling the service unit..."
-$SYSTEMCTL enable rescoot-radio-gaga
+systemctl enable rescoot-radio-gaga
 
 echo "Checking the service..."
-$SYSTEMCTL restart rescoot-radio-gaga
-if $SYSTEMCTL is-active --quiet rescoot-radio-gaga; then
+systemctl restart rescoot-radio-gaga
+if systemctl is-active --quiet rescoot-radio-gaga; then
   echo "Service 'rescoot-radio-gaga' started successfully."
 else
   error_exit "Failed to start the service 'rescoot-radio-gaga'."
