@@ -477,7 +477,11 @@ func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg stri
 	log.Printf("Published response to %s: %s", topic, string(responseJSON))
 }
 
+var version string
+
 func main() {
+	log.Printf("Starting radio-gaga version %s", version)
+
 	configPath := flag.String("config", "radio-gaga.yml", "path to config file")
 	flag.Parse()
 
