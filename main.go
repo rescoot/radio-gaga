@@ -382,6 +382,10 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		err = s.handleHonkCommand()
 	case "open_seatbox":
 		err = s.handleSeatboxCommand()
+	case "locate":
+		err = s.handleLocateCommand()
+	case "alarm":
+		err = s.handleAlarmCommand(command.Params)
 	default:
 		err = fmt.Errorf("unknown command: %s", command.Command)
 	}
@@ -453,6 +457,107 @@ func (s *ScooterMQTTClient) handleHonkCommand() error {
 	}
 
 	time.Sleep(50 * time.Millisecond)
+	return s.redisClient.LPush(s.ctx, "scooter:horn", "off").Err()
+}
+
+func (s *ScooterMQTTClient) handleLocateCommand() error {
+	// Turn on blinkers
+	err := s.redisClient.LPush(s.ctx, "scooter:blinker", "both").Err()
+	if err != nil {
+		return err
+	}
+
+	// Honk
+	err = s.honkHorn(50 * time.Millisecond)
+	if err != nil {
+		return err
+	}
+
+	// Wait 6 seconds
+	time.Sleep(6 * time.Second)
+
+	// Honk again
+	err = s.honkHorn(50 * time.Millisecond)
+	if err != nil {
+		return err
+	}
+
+	// Turn off blinkers
+	return s.redisClient.LPush(s.ctx, "scooter:blinker", "off").Err()
+}
+
+func (s *ScooterMQTTClient) handleAlarmCommand(params map[string]interface{}) error {
+	if state, ok := params["state"].(string); ok && state == "off" {
+		return s.stopAlarm()
+	}
+
+	duration, err := parseDuration(params["duration"])
+	if err != nil {
+		return fmt.Errorf("invalid alarm duration: %v", err)
+	}
+
+	return s.startAlarm(duration)
+}
+
+func parseDuration(value interface{}) (time.Duration, error) {
+	switch v := value.(type) {
+	case string:
+		return time.ParseDuration(v)
+	case float64:
+		return time.Duration(v) * time.Second, nil
+	default:
+		return 0, fmt.Errorf("invalid duration type: %T", value)
+	}
+}
+
+func (s *ScooterMQTTClient) startAlarm(duration time.Duration) error {
+	// Turn on blinkers
+	err := s.redisClient.LPush(s.ctx, "scooter:blinker", "both").Err()
+	if err != nil {
+		return err
+	}
+
+	// Honk every second
+	ticker := time.NewTicker(1 * time.Second)
+	done := make(chan bool)
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				s.honkHorn(250 * time.Millisecond)
+			}
+		}
+	}()
+
+	time.Sleep(duration)
+	ticker.Stop()
+	done <- true
+
+	return s.stopAlarm()
+}
+
+func (s *ScooterMQTTClient) stopAlarm() error {
+	// Turn off blinkers
+	err := s.redisClient.LPush(s.ctx, "scooter:blinker", "off").Err()
+	if err != nil {
+		return err
+	}
+
+	// Turn off horn
+	return s.redisClient.LPush(s.ctx, "scooter:horn", "off").Err()
+}
+
+func (s *ScooterMQTTClient) honkHorn(duration time.Duration) error {
+	err := s.redisClient.LPush(s.ctx, "scooter:horn", "on").Err()
+	if err != nil {
+		return err
+	}
+
+	time.Sleep(duration)
+
 	return s.redisClient.LPush(s.ctx, "scooter:horn", "off").Err()
 }
 
