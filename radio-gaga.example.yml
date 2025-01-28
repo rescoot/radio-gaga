@@ -1,21 +1,12 @@
-vin: "vehicle id"
-
-telemetry:
-  min_interval: "1s"
-  max_interval: "10s"
-
+---
+vin: VEHICLE-ID
 mqtt:
-  broker_url: "tcp://localhost:1883"
-  token: "mqtt password here"
-
+  broker_url: tcp://mqtt.sunshine.rescoot.org:1883
+  token: 64character_sha256_token
+telemetry:
+  check_interval: 100ms
+  min_interval: 1s
+  max_interval: 60s #00s
 redis:
-  addr: "localhost:64389"
+  addr: "localhost:6379"
   password: ""
-  channels:
-    - "state:vehicle"
-    - "state:engine"
-    - "state:battery:0"
-    - "state:battery:1"
-    - "state:aux-battery"
-    - "state:cb-battery" 
-    - "state:gps"
