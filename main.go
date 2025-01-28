@@ -74,6 +74,19 @@ type TelemetryData struct {
 	Timestamp string `json:"timestamp"`
 }
 
+type CommandMessage struct {
+	Command   string                 `json:"command"`
+	Params    map[string]interface{} `json:"params"`
+	Timestamp int64                  `json:"timestamp"`
+	RequestID string                 `json:"request_id"`
+}
+
+type CommandResponse struct {
+	Status    string `json:"status"`
+	Error     string `json:"error,omitempty"`
+	RequestID string `json:"request_id"`
+}
+
 type ScooterMQTTClient struct {
 	config      *Config
 	mqttClient  mqtt.Client
@@ -176,12 +189,23 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 }
 
 func (s *ScooterMQTTClient) Start() error {
+	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.VIN)
+	if token := s.mqttClient.Subscribe(commandTopic, 1, s.handleCommand); token.Wait() && token.Error() != nil {
+		return fmt.Errorf("failed to subscribe to commands: %v", token.Error())
+	}
+
+	log.Printf("Subscribed to commands on %s", commandTopic)
+
 	go s.publishTelemetry()
 
 	return nil
 }
 
 func (s *ScooterMQTTClient) Stop() {
+	// Unsubscribe from command topic
+	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.VIN)
+	s.mqttClient.Unsubscribe(commandTopic)
+
 	s.cancel()
 	s.mqttClient.Disconnect(250)
 	s.redisClient.Close()
@@ -326,6 +350,92 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 			lastPublishTime = time.Now()
 		}
 	}
+}
+
+func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) {
+	var command CommandMessage
+	if err := json.Unmarshal(msg.Payload(), &command); err != nil {
+		log.Printf("Failed to parse command: %v", err)
+		s.sendCommandResponse(command.RequestID, "error", "Invalid command format")
+		return
+	}
+
+	log.Printf("Received command: %s with requestID: %s", command.Command, command.RequestID)
+
+	var err error
+	switch command.Command {
+	case "lock":
+		err = s.handleLockCommand()
+	case "unlock":
+		err = s.handleUnlockCommand()
+	case "blinkers":
+		err = s.handleBlinkersCommand(command.Params)
+	case "honk":
+		err = s.handleHonkCommand()
+	case "open_seatbox":
+		err = s.handleSeatboxCommand()
+	default:
+		err = fmt.Errorf("unknown command: %s", command.Command)
+	}
+
+	if err != nil {
+		log.Printf("Command failed: %v", err)
+		s.sendCommandResponse(command.RequestID, "error", err.Error())
+		return
+	}
+
+	s.sendCommandResponse(command.RequestID, "success", "")
+}
+
+func (s *ScooterMQTTClient) handleLockCommand() error {
+	return s.redisClient.LPush(s.ctx, "scooter:state", "lock").Err()
+}
+
+func (s *ScooterMQTTClient) handleUnlockCommand() error {
+	return s.redisClient.LPush(s.ctx, "scooter:state", "unlock").Err()
+}
+
+func (s *ScooterMQTTClient) handleBlinkersCommand(params map[string]interface{}) error {
+	state, ok := params["state"].(string)
+	if !ok {
+		return fmt.Errorf("invalid blinker state")
+	}
+
+	validStates := map[string]bool{"left": true, "right": true, "both": true, "off": true}
+	if !validStates[state] {
+		return fmt.Errorf("invalid blinker state: %s", state)
+	}
+
+	return s.redisClient.LPush(s.ctx, "scooter:blinker", state).Err()
+}
+
+func (s *ScooterMQTTClient) handleSeatboxCommand() error {
+	return s.redisClient.LPush(s.ctx, "scooter:seatbox", "open").Err()
+}
+
+func (s *ScooterMQTTClient) handleHonkCommand() error {
+	return s.redisClient.HSet(s.ctx, "vehicle", "horn:button", "on").Err()
+}
+
+func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg string) {
+	response := CommandResponse{
+		Status:    status,
+		Error:     errorMsg,
+		RequestID: requestID,
+	}
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal response: %v", err)
+		return
+	}
+
+	topic := fmt.Sprintf("scooters/%s/acks", s.config.VIN)
+	if token := s.mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+		log.Printf("Failed to publish response: %v", token.Error())
+	}
+
+	log.Printf("Published response to %s: %s", topic, string(responseJSON))
 }
 
 func main() {
