@@ -174,6 +174,9 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 		return nil, fmt.Errorf("could not parse keepalive interval: %v", err)
 	}
 
+	willTopic := fmt.Sprintf("scooters/%s/status", config.VIN)
+	willMessage := []byte(`{"status": "disconnected"}`)
+
 	opts := mqtt.NewClientOptions().
 		AddBroker(config.MQTT.BrokerURL).
 		SetClientID(clientID).
@@ -181,11 +184,33 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 		SetPassword(config.MQTT.Token).
 		SetKeepAlive(keepAlive).
 		SetAutoReconnect(true).
+		SetCleanSession(false).                           // Maintain session for message queueing
+		SetWill(willTopic, string(willMessage), 1, true). // QoS 1 and retained
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
 			log.Printf("Connection lost: %v", err)
 		}).
 		SetOnConnectHandler(func(c mqtt.Client) {
 			log.Printf("Connected to MQTT broker")
+
+			// Hello, cloud? This is sunshine.
+			statusTopic := fmt.Sprintf("scooters/%s/status", config.VIN)
+			statusMessage := []byte(`{"status": "connected"}`)
+			if token := c.Publish(statusTopic, 1, true, statusMessage); token.Wait() && token.Error() != nil {
+				log.Printf("Failed to publish connection status: %v", token.Error())
+			}
+
+			if err := redisClient.HSet(ctx, "internet", "unu-cloud", "connected").Err(); err != nil {
+				log.Printf("Failed to set unu-cloud status: %v", err)
+			}
+			if err := redisClient.Publish(ctx, "internet", "unu-cloud").Err(); err != nil {
+				log.Printf("Failed to publish unu-cloud status: %v", err)
+			}
+			if err := redisClient.HSet(ctx, "internet", "status", "connected").Err(); err != nil {
+				log.Printf("Failed to set internet status: %v", err)
+			}
+			if err := redisClient.Publish(ctx, "internet", "status").Err(); err != nil {
+				log.Printf("Failed to publish internet status: %v", err)
+			}
 		})
 
 	mqttClient := mqtt.NewClient(opts)
