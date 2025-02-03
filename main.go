@@ -329,6 +329,21 @@ func telemetryEqual(a, b *TelemetryData) bool {
 	return reflect.DeepEqual(&aCopy, &bCopy)
 }
 
+func (s *ScooterMQTTClient) publishTelemetryData(current *TelemetryData, reason string) error {
+	telemetryJSON, err := json.Marshal(current)
+	if err != nil {
+		return fmt.Errorf("failed to marshal telemetry: %v", err)
+	}
+
+	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.VIN)
+	if token := s.mqttClient.Publish(topic, 1, false, telemetryJSON); token.Wait() && token.Error() != nil {
+		return fmt.Errorf("failed to publish telemetry: %v", token.Error())
+	}
+
+	log.Printf("Published telemetry to %s (%s)", topic, reason)
+	return nil
+}
+
 func (s *ScooterMQTTClient) publishTelemetry() {
 	checkInterval, _ := time.ParseDuration(s.config.Telemetry.CheckInterval)
 	minInterval, _ := time.ParseDuration(s.config.Telemetry.MinInterval)
@@ -339,6 +354,18 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 	var lastPublished *TelemetryData
 	var lastPublishTime time.Time
+
+	// Publish initial telemetry immediately
+	if current, err := s.getTelemetryFromRedis(); err == nil {
+		if err := s.publishTelemetryData(current, "initial telemetry"); err == nil {
+			lastPublished = current
+			lastPublishTime = time.Now()
+		} else {
+			log.Printf("Failed to publish initial telemetry: %v", err)
+		}
+	} else {
+		log.Printf("Failed to get initial telemetry: %v", err)
+	}
 
 	for {
 		select {
@@ -373,19 +400,11 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				continue
 			}
 
-			telemetryJSON, err := json.Marshal(current)
-			if err != nil {
-				log.Printf("Failed to marshal telemetry: %v", err)
+			if err := s.publishTelemetryData(current, reason); err != nil {
+				log.Printf("Failed to publish telemetry: %v", err)
 				continue
 			}
 
-			topic := fmt.Sprintf("scooters/%s/telemetry", s.config.VIN)
-			if token := s.mqttClient.Publish(topic, 1, false, telemetryJSON); token.Wait() && token.Error() != nil {
-				log.Printf("Failed to publish telemetry: %v", token.Error())
-				continue
-			}
-
-			log.Printf("Published telemetry to %s (%s)", topic, reason)
 			lastPublished = current
 			lastPublishTime = time.Now()
 		}

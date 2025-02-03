@@ -2,7 +2,7 @@ VERSION := $(shell git describe --always --dirty=-$(shell hostname)-$(shell date
 LDFLAGS := -X main.version=$(VERSION)
 BUILDFLAGS := -tags netgo,osusergo
 
-.PHONY: build amd64 arm clean
+.PHONY: build amd64 arm arm-debug dist clean
 
 dev: build
 build:
