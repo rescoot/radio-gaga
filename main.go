@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -33,6 +35,7 @@ type MQTTConfig struct {
 	BrokerURL string `yaml:"broker_url"`
 	KeepAlive string `yaml:"keepalive"`
 	Token     string `yaml:"token"`
+	CACert    string `yaml:"ca_cert"`
 }
 
 type RedisConfig struct {
@@ -153,6 +156,10 @@ func validateConfig(config *Config) error {
 	return nil
 }
 
+func isTLSURL(url string) bool {
+	return strings.HasPrefix(url, "ssl://") || strings.HasPrefix(url, "tls://")
+}
+
 func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -216,6 +223,27 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 				log.Printf("Failed to publish internet status: %v", err)
 			}
 		})
+
+	if isTLSURL(config.MQTT.BrokerURL) {
+		tlsConfig := new(tls.Config)
+
+		// Load CA cert if specified
+		if config.MQTT.CACert != "" {
+			caCert, err := os.ReadFile(config.MQTT.CACert)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read CA certificate: %v", err)
+			}
+
+			caCertPool := x509.NewCertPool()
+			if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+				return nil, fmt.Errorf("failed to parse CA certificate")
+			}
+
+			tlsConfig.RootCAs = caCertPool
+		}
+
+		opts.SetTLSConfig(tlsConfig)
+	}
 
 	mqttClient := mqtt.NewClient(opts)
 	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
@@ -415,6 +443,13 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 	}
 }
 
+func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
+	if token := s.mqttClient.Publish(topic, 1, true, ""); token.Wait() && token.Error() != nil {
+		return fmt.Errorf("failed to clean retained message: %v", token.Error())
+	}
+	return nil
+}
+
 func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) {
 	var command CommandMessage
 	if err := json.Unmarshal(msg.Payload(), &command); err != nil {
@@ -429,6 +464,11 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 	switch command.Command {
 	case "ping":
 		s.sendCommandResponse(command.RequestID, "success", "")
+		if msg.Retained() {
+			if err := s.cleanRetainedMessage(msg.Topic()); err != nil {
+				log.Printf("Failed to clean retained message: %v", err)
+			}
+		}
 		return // Skip error handling
 	case "update":
 		err = s.handleUpdateCommand()
@@ -460,6 +500,12 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		log.Printf("Command failed: %v", err)
 		s.sendCommandResponse(command.RequestID, "error", err.Error())
 		return
+	}
+
+	if msg.Retained() {
+		if err := s.cleanRetainedMessage(msg.Topic()); err != nil {
+			log.Printf("Failed to clean retained message: %v", err)
+		}
 	}
 
 	s.sendCommandResponse(command.RequestID, "success", "")
