@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -11,6 +13,7 @@ import (
 	"os/signal"
 	"reflect"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -81,6 +84,7 @@ type CommandMessage struct {
 	Params    map[string]interface{} `json:"params"`
 	Timestamp int64                  `json:"timestamp"`
 	RequestID string                 `json:"request_id"`
+	Stream    bool                   `json:"stream,omitempty"` // For shell commands, stream output
 }
 
 type CommandResponse struct {
@@ -444,6 +448,10 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		err = s.handleLocateCommand()
 	case "alarm":
 		err = s.handleAlarmCommand(command.Params)
+	case "redis":
+		err = s.handleRedisCommand(command.Params, command.RequestID)
+	case "shell":
+		err = s.handleShellCommand(command.Params, command.RequestID, command.Stream)
 	default:
 		err = fmt.Errorf("unknown command: %s", command.Command)
 	}
@@ -514,7 +522,7 @@ func (s *ScooterMQTTClient) handleHonkCommand() error {
 		return err
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(75 * time.Millisecond)
 	return s.redisClient.LPush(s.ctx, "scooter:horn", "off").Err()
 }
 
@@ -526,16 +534,26 @@ func (s *ScooterMQTTClient) handleLocateCommand() error {
 	}
 
 	// Honk
-	err = s.honkHorn(50 * time.Millisecond)
+	err = s.honkHorn(20 * time.Millisecond)
+	if err != nil {
+		return err
+	}
+	time.Sleep(60 * time.Millisecond)
+	err = s.honkHorn(20 * time.Millisecond)
 	if err != nil {
 		return err
 	}
 
 	// Wait 6 seconds
-	time.Sleep(6 * time.Second)
+	time.Sleep(4 * time.Second)
 
 	// Honk again
-	err = s.honkHorn(50 * time.Millisecond)
+	err = s.honkHorn(20 * time.Millisecond)
+	if err != nil {
+		return err
+	}
+	time.Sleep(60 * time.Millisecond)
+	err = s.honkHorn(20 * time.Millisecond)
 	if err != nil {
 		return err
 	}
@@ -555,6 +573,207 @@ func (s *ScooterMQTTClient) handleAlarmCommand(params map[string]interface{}) er
 	}
 
 	return s.startAlarm(duration)
+}
+
+func (s *ScooterMQTTClient) handleRedisCommand(params map[string]interface{}, requestID string) error {
+	cmd, ok := params["cmd"].(string)
+	if !ok {
+		return fmt.Errorf("redis command not specified")
+	}
+
+	args, ok := params["args"].([]interface{})
+	if !ok {
+		args = []interface{}{}
+	}
+
+	var result interface{}
+	var err error
+
+	ctx := context.Background()
+
+	switch cmd {
+	case "get":
+		if len(args) != 1 {
+			return fmt.Errorf("get requires exactly 1 argument")
+		}
+		result, err = s.redisClient.Get(ctx, args[0].(string)).Result()
+
+	case "set":
+		if len(args) != 2 {
+			return fmt.Errorf("set requires exactly 2 arguments")
+		}
+		result, err = s.redisClient.Set(ctx, args[0].(string), args[1], 0).Result()
+
+	case "hget":
+		if len(args) != 2 {
+			return fmt.Errorf("hget requires exactly 2 arguments")
+		}
+		result, err = s.redisClient.HGet(ctx, args[0].(string), args[1].(string)).Result()
+
+	case "hset":
+		if len(args) != 3 {
+			return fmt.Errorf("hset requires exactly 3 arguments")
+		}
+		result, err = s.redisClient.HSet(ctx, args[0].(string), args[1].(string), args[2]).Result()
+
+	case "hgetall":
+		if len(args) != 1 {
+			return fmt.Errorf("hgetall requires exactly 1 argument")
+		}
+		result, err = s.redisClient.HGetAll(ctx, args[0].(string)).Result()
+
+	case "lpush":
+		if len(args) < 2 {
+			return fmt.Errorf("lpush requires at least 2 arguments")
+		}
+		key := args[0].(string)
+		values := args[1:]
+		result, err = s.redisClient.LPush(ctx, key, values...).Result()
+
+	case "lpop":
+		if len(args) != 1 {
+			return fmt.Errorf("lpop requires exactly 1 argument")
+		}
+		result, err = s.redisClient.LPop(ctx, args[0].(string)).Result()
+
+	default:
+		return fmt.Errorf("unsupported redis command: %s", cmd)
+	}
+
+	if err != nil {
+		return fmt.Errorf("redis command failed: %v", err)
+	}
+
+	// Send response on the data topic
+	response := map[string]interface{}{
+		"type":       "redis",
+		"command":    cmd,
+		"result":     result,
+		"request_id": requestID,
+	}
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		return fmt.Errorf("failed to marshal response: %v", err)
+	}
+
+	topic := fmt.Sprintf("scooters/%s/data", s.config.VIN)
+	if token := s.mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+		return fmt.Errorf("failed to publish response: %v", token.Error())
+	}
+
+	return nil
+}
+
+// New function for handling shell commands
+func (s *ScooterMQTTClient) handleShellCommand(params map[string]interface{}, requestID string, stream bool) error {
+	cmdStr, ok := params["cmd"].(string)
+	if !ok {
+		return fmt.Errorf("shell command not specified")
+	}
+
+	// Split command string into command and arguments
+	cmdParts := strings.Fields(cmdStr)
+	if len(cmdParts) == 0 {
+		return fmt.Errorf("empty command")
+	}
+
+	cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
+
+	// Create pipes for stdout and stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdout pipe: %v", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stderr pipe: %v", err)
+	}
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start command: %v", err)
+	}
+
+	topic := fmt.Sprintf("scooters/%s/data", s.config.VIN)
+
+	// Function to send output
+	sendOutput := func(outputType string, data string) error {
+		response := map[string]interface{}{
+			"type":        "shell",
+			"output":      data,
+			"stream":      stream,
+			"done":        false,
+			"output_type": outputType,
+			"request_id":  requestID,
+		}
+
+		responseJSON, err := json.Marshal(response)
+		if err != nil {
+			return fmt.Errorf("failed to marshal response: %v", err)
+		}
+
+		if token := s.mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+			return fmt.Errorf("failed to publish response: %v", token.Error())
+		}
+		return nil
+	}
+
+	// Collect output
+	var stdoutBuf, stderrBuf bytes.Buffer
+
+	// Read stdout
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			text := scanner.Text()
+			if stream {
+				sendOutput("stdout", text)
+			}
+			stdoutBuf.WriteString(text + "\n")
+		}
+	}()
+
+	// Read stderr
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			text := scanner.Text()
+			if stream {
+				sendOutput("stderr", text)
+			}
+			stderrBuf.WriteString(text + "\n")
+		}
+	}()
+
+	// Wait for command to complete
+	err = cmd.Wait()
+
+	// Send final response
+	response := map[string]interface{}{
+		"type":       "shell",
+		"stdout":     strings.TrimSpace(stdoutBuf.String()),
+		"stderr":     strings.TrimSpace(stderrBuf.String()),
+		"exit_code":  cmd.ProcessState.ExitCode(),
+		"stream":     stream,
+		"done":       true,
+		"request_id": requestID,
+	}
+
+	if err != nil {
+		response["error"] = err.Error()
+	}
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		return fmt.Errorf("failed to marshal final response: %v", err)
+	}
+
+	if token := s.mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+		return fmt.Errorf("failed to publish final response: %v", token.Error())
+	}
+
+	return nil
 }
 
 func parseDuration(value interface{}) (time.Duration, error) {
