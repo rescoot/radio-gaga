@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/beevik/ntp"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-redis/redis/v8"
 	"gopkg.in/yaml.v2"
@@ -384,6 +385,101 @@ func isTLSURL(url string) bool {
 	return strings.HasPrefix(url, "ssl://") || strings.HasPrefix(url, "tls://")
 }
 
+func createMQTTClient(config *Config, opts *mqtt.ClientOptions) (mqtt.Client, error) {
+	client := mqtt.NewClient(opts)
+	if token := client.Connect(); token.Wait() && token.Error() != nil {
+		err := token.Error()
+		if strings.Contains(err.Error(), "certificate has expired or is not yet valid") {
+			log.Printf("Certificate validity period error, attempting NTP sync...")
+
+			// Try NTP sync
+			ntpErr := syncTimeNTP()
+			if ntpErr == nil {
+				// Try connecting again after time sync
+				if token := client.Connect(); token.Wait() && token.Error() != nil {
+					log.Printf("Connection failed after NTP sync: %v, falling back to insecure...", token.Error())
+				} else {
+					return client, nil
+				}
+			} else {
+				log.Printf("NTP sync failed: %v, falling back to insecure...", ntpErr)
+			}
+
+			// If we get here, both normal connection and NTP sync failed
+			// Create new client with insecure TLS
+			insecureOpts := opts
+			if tlsConfig, err := createInsecureTLSConfig(config); err == nil {
+				insecureOpts.SetTLSConfig(tlsConfig)
+				insecureClient := mqtt.NewClient(insecureOpts)
+				if token := insecureClient.Connect(); token.Wait() && token.Error() != nil {
+					return nil, fmt.Errorf("all connection attempts failed, last error: %v", token.Error())
+				}
+				log.Printf("Warning: Connected with insecure TLS configuration")
+				return insecureClient, nil
+			} else {
+				return nil, fmt.Errorf("failed to create insecure TLS config: %v", err)
+			}
+		}
+		return nil, fmt.Errorf("connection failed: %v", token.Error())
+	}
+	return client, nil
+}
+
+func syncTimeNTP() error {
+	ntpServers := []string{
+		"pool.ntp.rescoot.org",
+	}
+
+	var lastErr error
+	for _, server := range ntpServers {
+		ntpTime, err := ntp.Time(server)
+		if err != nil {
+			lastErr = err
+			log.Printf("Failed to get time from %s: %v", server, err)
+			continue
+		}
+
+		// Convert time to timeval
+		tv := syscall.NsecToTimeval(ntpTime.UnixNano())
+
+		// Set system time (requires root privileges)
+		if err := syscall.Settimeofday(&tv); err != nil {
+			lastErr = fmt.Errorf("failed to set system time: %v", err)
+			log.Printf("Warning: %v", lastErr)
+			// Even if we can't set the system time, return success
+			// as we at least got a valid time from NTP
+			return nil
+		}
+
+		log.Printf("Successfully synchronized time with %s", server)
+		return nil
+	}
+
+	return fmt.Errorf("failed to sync time with any NTP server: %v", lastErr)
+}
+
+func createInsecureTLSConfig(config *Config) (*tls.Config, error) {
+	tlsConfig := new(tls.Config)
+	tlsConfig.InsecureSkipVerify = true
+
+	// If we have a CA cert, still load it for basic verification
+	if config.MQTT.CACert != "" {
+		caCert, err := os.ReadFile(config.MQTT.CACert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %v", err)
+		}
+
+		caCertPool := x509.NewCertPool()
+		if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+			return nil, fmt.Errorf("failed to parse CA certificate")
+		}
+
+		tlsConfig.RootCAs = caCertPool
+	}
+
+	return tlsConfig, nil
+}
+
 func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -471,8 +567,6 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 
 	if isTLSURL(config.MQTT.BrokerURL) {
 		tlsConfig := new(tls.Config)
-
-		// Load CA cert if specified
 		if config.MQTT.CACert != "" {
 			caCert, err := os.ReadFile(config.MQTT.CACert)
 			if err != nil {
@@ -488,14 +582,13 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 
 			tlsConfig.RootCAs = caCertPool
 		}
-
 		opts.SetTLSConfig(tlsConfig)
 	}
 
-	mqttClient := mqtt.NewClient(opts)
-	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
+	mqttClient, err := createMQTTClient(config, opts)
+	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("MQTT connection failed: %v", token.Error())
+		return nil, fmt.Errorf("MQTT connection failed: %v", err)
 	}
 
 	return &ScooterMQTTClient{

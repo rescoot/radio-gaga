@@ -3,6 +3,7 @@ module radio-gaga
 go 1.20
 
 require (
+	github.com/beevik/ntp v1.4.3
 	github.com/eclipse/paho.mqtt.golang v1.5.0
 	github.com/go-redis/redis/v8 v8.11.5
 	gopkg.in/yaml.v2 v2.4.0
@@ -14,4 +15,5 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	golang.org/x/net v0.27.0 // indirect
 	golang.org/x/sync v0.7.0 // indirect
+	golang.org/x/sys v0.22.0 // indirect
 )
