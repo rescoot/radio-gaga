@@ -24,6 +24,21 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+type commandLineFlags struct {
+	configPath    string
+	identifier    string
+	token         string
+	mqttBrokerURL string
+	mqttCACert    string
+	mqttKeepAlive string
+	redisURL      string
+	// Telemetry intervals
+	drivingInterval          string
+	standbyInterval          string
+	standbyNoBatteryInterval string
+	hibernateInterval        string
+}
+
 type Config struct {
 	Scooter     ScooterConfig      `yaml:"scooter"`
 	Environment string             `yaml:"environment"`
@@ -115,25 +130,103 @@ type ScooterMQTTClient struct {
 	cancel      context.CancelFunc
 }
 
-func loadConfig(configPath string) (*Config, error) {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
+func parseFlags() *commandLineFlags {
+	flags := &commandLineFlags{}
+
+	// Basic configuration
+	flag.StringVar(&flags.configPath, "config", "", "path to config file (defaults to radio-gaga.yml if not specified)")
+	flag.StringVar(&flags.identifier, "identifier", "", "vehicle identifier (MQTT username)")
+	flag.StringVar(&flags.token, "token", "", "MQTT authentication token")
+	flag.StringVar(&flags.mqttBrokerURL, "mqtt-broker", "", "MQTT broker URL")
+	flag.StringVar(&flags.mqttCACert, "mqtt-cacert", "", "path to MQTT CA certificate")
+	flag.StringVar(&flags.mqttKeepAlive, "mqtt-keepalive", "30s", "MQTT keepalive duration")
+	flag.StringVar(&flags.redisURL, "redis-url", "redis://localhost:6379", "Redis URL")
+
+	// Telemetry intervals
+	flag.StringVar(&flags.drivingInterval, "driving-interval", "1s", "telemetry interval while driving")
+	flag.StringVar(&flags.standbyInterval, "standby-interval", "5m", "telemetry interval in standby")
+	flag.StringVar(&flags.standbyNoBatteryInterval, "standby-no-battery-interval", "8h", "telemetry interval in standby without battery")
+	flag.StringVar(&flags.hibernateInterval, "hibernate-interval", "24h", "telemetry interval in hibernate mode")
+
+	flag.Parse()
+	return flags
+}
+
+func loadConfig(flags *commandLineFlags) (*Config, error) {
+	var config *Config
+
+	// Try to load config file
+	configPath := flags.configPath
+	if configPath == "" {
+		configPath = "radio-gaga.yml"
+	}
+
+	// Try to read the config file
+	if data, err := os.ReadFile(configPath); err == nil {
+		config = &Config{}
+		if err := yaml.Unmarshal(data, config); err != nil {
+			return nil, fmt.Errorf("failed to parse config file: %v", err)
+		}
+		log.Printf("Loaded configuration from %s", configPath)
+	} else if flags.configPath != "" {
+		// Only return error if config file was explicitly specified
 		return nil, fmt.Errorf("failed to read config file: %v", err)
+	} else {
+		// Initialize with default values
+		config = &Config{
+			Scooter: ScooterConfig{},
+			MQTT: MQTTConfig{
+				KeepAlive: "30s",
+			},
+			Telemetry: TelemetryConfig{
+				Intervals: TelemetryIntervals{
+					Driving:          "1s",
+					Standby:          "5m",
+					StandbyNoBattery: "8h",
+					Hibernate:        "24h",
+				},
+			},
+		}
 	}
 
-	config := &Config{}
-	if err := yaml.Unmarshal(data, config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %v", err)
-	}
+	// Override with command line flags
+	flag.Visit(func(f *flag.Flag) {
+		log.Printf("flag %s", f.Name)
+		switch f.Name {
+		case "identifier":
+			config.Scooter.Identifier = flags.identifier
+		case "token":
+			config.Scooter.Token = flags.token
+		case "mqtt-broker":
+			config.MQTT.BrokerURL = flags.mqttBrokerURL
+		case "mqtt-cacert":
+			config.MQTT.CACert = flags.mqttCACert
+		case "mqtt-keepalive":
+			config.MQTT.KeepAlive = flags.mqttKeepAlive
+		case "redis-url":
+			config.RedisURL = flags.redisURL
+		case "driving-interval":
+			config.Telemetry.Intervals.Driving = flags.drivingInterval
+		case "standby-interval":
+			config.Telemetry.Intervals.Standby = flags.standbyInterval
+		case "standby-no-battery-interval":
+			config.Telemetry.Intervals.StandbyNoBattery = flags.standbyNoBatteryInterval
+		case "hibernate-interval":
+			config.Telemetry.Intervals.Hibernate = flags.hibernateInterval
+		}
+	})
 
+	// Validate the final configuration
 	if err := validateConfig(config); err != nil {
-		return nil, fmt.Errorf("invalid config: %v", err)
+		return nil, fmt.Errorf("invalid configuration: %v", err)
 	}
 
 	return config, nil
 }
 
 func validateConfig(config *Config) error {
+	var errors []string
+
 	if config.Scooter.Identifier == "" {
 		return fmt.Errorf("scooter identifier is required")
 	}
@@ -142,12 +235,6 @@ func validateConfig(config *Config) error {
 	}
 	if config.MQTT.BrokerURL == "" {
 		return fmt.Errorf("mqtt broker URL is required")
-	}
-	if config.MQTT.KeepAlive == "" {
-		config.MQTT.KeepAlive = "30s"
-	}
-	if _, err := time.ParseDuration(config.MQTT.KeepAlive); err != nil {
-		return fmt.Errorf("invalid keepalive duration: %v", err)
 	}
 	if config.RedisURL == "" {
 		return fmt.Errorf("redis URL is required")
@@ -169,6 +256,7 @@ func validateConfig(config *Config) error {
 
 	// Parse and validate durations
 	durations := map[string]string{
+		"mqtt.keep_alive":    config.MQTT.KeepAlive,
 		"driving":            config.Telemetry.Intervals.Driving,
 		"standby":            config.Telemetry.Intervals.Standby,
 		"standby_no_battery": config.Telemetry.Intervals.StandbyNoBattery,
@@ -176,8 +264,12 @@ func validateConfig(config *Config) error {
 	}
 	for name, value := range durations {
 		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid %s interval: %v", name, err)
+			errors = append(errors, fmt.Sprintf("invalid %s: %v", name, err))
 		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("configuration validation failed:\n- %s", strings.Join(errors, "\n- "))
 	}
 
 	return nil
@@ -1093,12 +1185,11 @@ var version string
 func main() {
 	log.Printf("Starting radio-gaga version %s", version)
 
-	configPath := flag.String("config", "radio-gaga.yml", "path to config file")
-	flag.Parse()
+	flags := parseFlags()
 
-	config, err := loadConfig(*configPath)
+	config, err := loadConfig(flags)
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
 	client, err := NewScooterMQTTClient(config)
