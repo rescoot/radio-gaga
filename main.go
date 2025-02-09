@@ -32,6 +32,7 @@ type commandLineFlags struct {
 	mqttCACert    string
 	mqttKeepAlive string
 	redisURL      string
+	environment   string
 	// Telemetry intervals
 	drivingInterval          string
 	standbyInterval          string
@@ -135,8 +136,9 @@ func parseFlags() *commandLineFlags {
 
 	// Basic configuration
 	flag.StringVar(&flags.configPath, "config", "", "path to config file (defaults to radio-gaga.yml if not specified)")
+	flag.StringVar(&flags.environment, "environment", "", "environment (production or development)")
 	flag.StringVar(&flags.identifier, "identifier", "", "vehicle identifier (MQTT username)")
-	flag.StringVar(&flags.token, "token", "", "MQTT authentication token")
+	flag.StringVar(&flags.token, "token", "", "authentication token (MQTT password)")
 	flag.StringVar(&flags.mqttBrokerURL, "mqtt-broker", "", "MQTT broker URL")
 	flag.StringVar(&flags.mqttCACert, "mqtt-cacert", "", "path to MQTT CA certificate")
 	flag.StringVar(&flags.mqttKeepAlive, "mqtt-keepalive", "30s", "MQTT keepalive duration")
@@ -174,13 +176,14 @@ func loadConfig(flags *commandLineFlags) (*Config, error) {
 	} else {
 		// Initialize with default values
 		config = &Config{
-			Scooter: ScooterConfig{},
+			Scooter:     ScooterConfig{},
+			Environment: "production",
 			MQTT: MQTTConfig{
-				KeepAlive: "30s",
+				KeepAlive: "180s",
 			},
 			Telemetry: TelemetryConfig{
 				Intervals: TelemetryIntervals{
-					Driving:          "1s",
+					Driving:          "1m",
 					Standby:          "5m",
 					StandbyNoBattery: "8h",
 					Hibernate:        "24h",
@@ -197,6 +200,8 @@ func loadConfig(flags *commandLineFlags) (*Config, error) {
 			config.Scooter.Identifier = flags.identifier
 		case "token":
 			config.Scooter.Token = flags.token
+		case "environment":
+			config.Environment = flags.environment
 		case "mqtt-broker":
 			config.MQTT.BrokerURL = flags.mqttBrokerURL
 		case "mqtt-cacert":
@@ -228,16 +233,19 @@ func validateConfig(config *Config) error {
 	var errors []string
 
 	if config.Scooter.Identifier == "" {
-		return fmt.Errorf("scooter identifier is required")
+		errors = append(errors, "scooter identifier is required")
 	}
 	if config.Scooter.Token == "" {
-		return fmt.Errorf("scooter token is required")
+		errors = append(errors, "scooter token is required")
+	}
+	if config.Environment != "" && config.Environment != "production" && config.Environment != "development" {
+		errors = append(errors, fmt.Sprintf("invalid environment: %s (must be 'production' or 'development')", config.Environment))
 	}
 	if config.MQTT.BrokerURL == "" {
-		return fmt.Errorf("mqtt broker URL is required")
+		errors = append(errors, "MQTT broker URL is required")
 	}
 	if config.RedisURL == "" {
-		return fmt.Errorf("redis URL is required")
+		errors = append(errors, "redis URL is required")
 	}
 
 	// Validate telemetry intervals
@@ -717,6 +725,13 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 			s.sendCommandResponse(command.RequestID, "error", "Command disabled in config")
 			return
 		}
+	}
+
+	// Restrict redis and shell commands to development environment
+	if (command.Command == "redis" || command.Command == "shell") && s.config.Environment != "development" {
+		log.Printf("Command %s is not allowed in %s environment", command.Command, s.config.Environment)
+		s.sendCommandResponse(command.RequestID, "error", "Command not allowed in this environment")
+		return
 	}
 
 	var err error
