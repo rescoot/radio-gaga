@@ -1,13 +1,34 @@
 ---
-vin: VEHICLE-ID
-mqtt:
-  broker_url: tcp://mqtt.sunshine.rescoot.org:1883
+scooter:
+  identifier: VEHICLE-ID
   token: 64character_sha256_token
+environment: development  # or production
+mqtt:
+  broker_url: ssl://mqtt.sunshine.rescoot.org:8883
+  ca_cert: ../sunshine/config/mqtt_certs/ca.crt
+redis_url: redis://localhost:6379
 telemetry:
-  check_interval: 5s
-  min_interval: 600s
-  max_interval: 3600s
-  keep_alive: 180s
-redis:
-  addr: "localhost:6379"
-  password: ""
+  intervals:
+    driving: 1s
+    standby: 5m
+    standby_no_battery: 8h
+    hibernate: 24h
+commands:
+  lock:
+  unlock:
+  blinkers:
+  honk:
+    disabled: true
+    on_time: 50ms
+  alarm:
+    disabled: false
+    hazards:
+      flash: true
+    horn:
+      honk: true
+      on_time: 400ms
+      off_time: 400ms
+  locate:
+    disabled: false
+  open_seatbox:
+    disabled: false

@@ -25,28 +25,39 @@ import (
 )
 
 type Config struct {
-	VIN       string          `yaml:"vin"`
-	MQTT      MQTTConfig      `yaml:"mqtt"`
-	Redis     RedisConfig     `yaml:"redis"`
-	Telemetry TelemetryConfig `yaml:"telemetry"`
+	Scooter     ScooterConfig      `yaml:"scooter"`
+	Environment string             `yaml:"environment"`
+	MQTT        MQTTConfig         `yaml:"mqtt"`
+	RedisURL    string             `yaml:"redis_url"`
+	Telemetry   TelemetryConfig    `yaml:"telemetry"`
+	Commands    map[string]Command `yaml:"commands"`
+}
+
+type ScooterConfig struct {
+	Identifier string `yaml:"identifier"`
+	Token      string `yaml:"token"`
 }
 
 type MQTTConfig struct {
 	BrokerURL string `yaml:"broker_url"`
-	KeepAlive string `yaml:"keepalive"`
-	Token     string `yaml:"token"`
 	CACert    string `yaml:"ca_cert"`
-}
-
-type RedisConfig struct {
-	Addr     string `yaml:"addr"`
-	Password string `yaml:"password"`
+	KeepAlive string `yaml:"keepalive"`
 }
 
 type TelemetryConfig struct {
-	CheckInterval string `yaml:"check_interval"`
-	MinInterval   string `yaml:"min_interval"`
-	MaxInterval   string `yaml:"max_interval"`
+	Intervals TelemetryIntervals `yaml:"intervals"`
+}
+
+type TelemetryIntervals struct {
+	Driving          string `yaml:"driving"`
+	Standby          string `yaml:"standby"`
+	StandbyNoBattery string `yaml:"standby_no_battery"`
+	Hibernate        string `yaml:"hibernate"`
+}
+
+type Command struct {
+	Disabled bool                   `yaml:"disabled"`
+	Params   map[string]interface{} `yaml:"params,omitempty"`
 }
 
 type TelemetryData struct {
@@ -123,36 +134,52 @@ func loadConfig(configPath string) (*Config, error) {
 }
 
 func validateConfig(config *Config) error {
-	if config.VIN == "" {
-		return fmt.Errorf("vehicle ID (VIN) is required")
+	if config.Scooter.Identifier == "" {
+		return fmt.Errorf("scooter identifier is required")
+	}
+	if config.Scooter.Token == "" {
+		return fmt.Errorf("scooter token is required")
 	}
 	if config.MQTT.BrokerURL == "" {
 		return fmt.Errorf("mqtt broker URL is required")
 	}
-	if config.MQTT.Token == "" {
-		return fmt.Errorf("mqtt token is required")
-	}
 	if config.MQTT.KeepAlive == "" {
-		config.MQTT.KeepAlive = "300s"
+		config.MQTT.KeepAlive = "30s"
 	}
 	if _, err := time.ParseDuration(config.MQTT.KeepAlive); err != nil {
-		return fmt.Errorf("invalid keepalive: %v", err)
+		return fmt.Errorf("invalid keepalive duration: %v", err)
 	}
-	if config.Redis.Addr == "" {
-		return fmt.Errorf("redis address is required")
+	if config.RedisURL == "" {
+		return fmt.Errorf("redis URL is required")
 	}
-	if config.Telemetry.CheckInterval == "" {
-		config.Telemetry.CheckInterval = "1s"
+
+	// Validate telemetry intervals
+	if config.Telemetry.Intervals.Driving == "" {
+		config.Telemetry.Intervals.Driving = "1s"
 	}
-	if _, err := time.ParseDuration(config.Telemetry.CheckInterval); err != nil {
-		return fmt.Errorf("invalid check_interval: %v", err)
+	if config.Telemetry.Intervals.Standby == "" {
+		config.Telemetry.Intervals.Standby = "5m"
 	}
-	if _, err := time.ParseDuration(config.Telemetry.MinInterval); err != nil {
-		return fmt.Errorf("invalid min_interval: %v", err)
+	if config.Telemetry.Intervals.StandbyNoBattery == "" {
+		config.Telemetry.Intervals.StandbyNoBattery = "8h"
 	}
-	if _, err := time.ParseDuration(config.Telemetry.MaxInterval); err != nil {
-		return fmt.Errorf("invalid max_interval: %v", err)
+	if config.Telemetry.Intervals.Hibernate == "" {
+		config.Telemetry.Intervals.Hibernate = "24h"
 	}
+
+	// Parse and validate durations
+	durations := map[string]string{
+		"driving":            config.Telemetry.Intervals.Driving,
+		"standby":            config.Telemetry.Intervals.Standby,
+		"standby_no_battery": config.Telemetry.Intervals.StandbyNoBattery,
+		"hibernate":          config.Telemetry.Intervals.Hibernate,
+	}
+	for name, value := range durations {
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("invalid %s interval: %v", name, err)
+		}
+	}
+
 	return nil
 }
 
@@ -163,21 +190,20 @@ func isTLSURL(url string) bool {
 func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     config.Redis.Addr,
-		Password: config.Redis.Password,
-		DB:       0,
-	})
+	redisOptions, err := redis.ParseURL(config.RedisURL)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("invalid redis URL: %v", err)
+	}
+
+	redisClient := redis.NewClient(redisOptions)
 
 	// Test Redis connection
-	_, err := redisClient.Ping(ctx).Result()
+	_, err = redisClient.Ping(ctx).Result()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("redis connection failed: %v", err)
 	}
-
-	// Use VIN as client ID and username
-	clientID := fmt.Sprintf("radio-gaga-%s", config.VIN)
 
 	keepAlive, err := time.ParseDuration(config.MQTT.KeepAlive)
 	if err != nil {
@@ -185,14 +211,17 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 		return nil, fmt.Errorf("could not parse keepalive interval: %v", err)
 	}
 
-	willTopic := fmt.Sprintf("scooters/%s/status", config.VIN)
+	// Use VIN as client ID and username
+	clientID := fmt.Sprintf("radio-gaga-%s", config.Scooter.Identifier)
+
+	willTopic := fmt.Sprintf("scooters/%s/status", config.Scooter.Identifier)
 	willMessage := []byte(`{"status": "disconnected"}`)
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(config.MQTT.BrokerURL).
 		SetClientID(clientID).
-		SetUsername(config.VIN). // Use VIN as username
-		SetPassword(config.MQTT.Token).
+		SetUsername(config.Scooter.Identifier).
+		SetPassword(config.Scooter.Token).
 		SetKeepAlive(keepAlive).
 		SetAutoReconnect(true).
 		SetCleanSession(false).                           // Maintain session for message queueing
@@ -204,7 +233,7 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 			log.Printf("Connected to MQTT broker")
 
 			// Hello, cloud? This is sunshine.
-			statusTopic := fmt.Sprintf("scooters/%s/status", config.VIN)
+			statusTopic := fmt.Sprintf("scooters/%s/status", config.Scooter.Identifier)
 			statusMessage := []byte(`{"status": "connected"}`)
 			if token := c.Publish(statusTopic, 1, true, statusMessage); token.Wait() && token.Error() != nil {
 				log.Printf("Failed to publish connection status: %v", token.Error())
@@ -231,11 +260,13 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 		if config.MQTT.CACert != "" {
 			caCert, err := os.ReadFile(config.MQTT.CACert)
 			if err != nil {
+				cancel()
 				return nil, fmt.Errorf("failed to read CA certificate: %v", err)
 			}
 
 			caCertPool := x509.NewCertPool()
 			if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+				cancel()
 				return nil, fmt.Errorf("failed to parse CA certificate")
 			}
 
@@ -261,12 +292,14 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 }
 
 func (s *ScooterMQTTClient) Start() error {
-	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.VIN)
+	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
 	if token := s.mqttClient.Subscribe(commandTopic, 1, s.handleCommand); token.Wait() && token.Error() != nil {
 		return fmt.Errorf("failed to subscribe to commands: %v", token.Error())
 	}
 
 	log.Printf("Subscribed to commands on %s", commandTopic)
+
+	s.startStatusUpdates()
 
 	go s.publishTelemetry()
 
@@ -275,12 +308,100 @@ func (s *ScooterMQTTClient) Start() error {
 
 func (s *ScooterMQTTClient) Stop() {
 	// Unsubscribe from command topic
-	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.VIN)
+	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
 	s.mqttClient.Unsubscribe(commandTopic)
 
 	s.cancel()
 	s.mqttClient.Disconnect(250)
 	s.redisClient.Close()
+}
+
+func (s *ScooterMQTTClient) publishStatus() error {
+	if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "connected").Err(); err != nil {
+		return fmt.Errorf("failed to set unu-cloud status: %v", err)
+	}
+	if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
+		return fmt.Errorf("failed to publish unu-cloud status: %v", err)
+	}
+	if err := s.redisClient.HSet(s.ctx, "internet", "status", "connected").Err(); err != nil {
+		return fmt.Errorf("failed to set internet status: %v", err)
+	}
+	if err := s.redisClient.Publish(s.ctx, "internet", "status").Err(); err != nil {
+		return fmt.Errorf("failed to publish internet status: %v", err)
+	}
+
+	return nil
+}
+
+func (s *ScooterMQTTClient) startStatusUpdates() {
+	ticker := time.NewTicker(30 * time.Second) // Adjust interval as needed
+	go func() {
+		for {
+			select {
+			case <-s.ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				if err := s.publishStatus(); err != nil {
+					log.Printf("Failed to publish status: %v", err)
+				}
+			}
+		}
+	}()
+}
+
+func (s *ScooterMQTTClient) getTelemetryInterval() (time.Duration, string) {
+	// Get current vehicle state from Redis
+	vehicle, err := s.redisClient.HGet(s.ctx, "vehicle", "state").Result()
+	if err != nil {
+		log.Printf("Failed to get vehicle state: %v", err)
+		return time.Minute, "fallback" // Default fallback
+	}
+
+	// Check battery state
+	battery0Charge := 0
+	battery0Present := false
+
+	battery0, err := s.redisClient.HGetAll(s.ctx, "battery:0").Result()
+	if err == nil {
+		battery0Present = battery0["present"] == "true"
+		if charge, err := strconv.Atoi(battery0["charge"]); err == nil {
+			battery0Charge = charge
+		}
+	}
+
+	// Determine interval based on state
+	var intervalStr string
+	var reason string
+
+	switch vehicle {
+	case "ready-to-drive":
+		intervalStr = s.config.Telemetry.Intervals.Driving
+		reason = "driving mode"
+	case "hibernating":
+		// should set a wakeup trigger, is this possible outside librescoot?
+		intervalStr = s.config.Telemetry.Intervals.Hibernate
+		reason = "hibernate mode"
+	case "parked", "locked", "stand-by":
+		if battery0Present && battery0Charge > 0 {
+			intervalStr = s.config.Telemetry.Intervals.Standby
+			reason = "standby mode with charged main battery"
+		} else {
+			intervalStr = s.config.Telemetry.Intervals.StandbyNoBattery
+			reason = "standby mode without battery or with empty battery"
+		}
+	default:
+		intervalStr = s.config.Telemetry.Intervals.Standby
+		reason = "default standby mode"
+	}
+
+	interval, err := time.ParseDuration(intervalStr)
+	if err != nil {
+		log.Printf("Failed to parse interval %s: %v", intervalStr, err)
+		return time.Minute, "fallback" // Default fallback
+	}
+
+	return interval, reason
 }
 
 func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
@@ -367,7 +488,7 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *TelemetryData, reason 
 		return fmt.Errorf("failed to marshal telemetry: %v", err)
 	}
 
-	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.VIN)
+	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.Scooter.Identifier)
 	if token := s.mqttClient.Publish(topic, 1, false, telemetryJSON); token.Wait() && token.Error() != nil {
 		return fmt.Errorf("failed to publish telemetry: %v", token.Error())
 	}
@@ -377,21 +498,45 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *TelemetryData, reason 
 }
 
 func (s *ScooterMQTTClient) publishTelemetry() {
-	checkInterval, _ := time.ParseDuration(s.config.Telemetry.CheckInterval)
-	minInterval, _ := time.ParseDuration(s.config.Telemetry.MinInterval)
-	maxInterval, _ := time.ParseDuration(s.config.Telemetry.MaxInterval)
-
-	ticker := time.NewTicker(checkInterval)
+	// Get initial interval
+	interval, reason := s.getTelemetryInterval()
+	log.Printf("Initial telemetry interval: %v (%s)", interval, reason)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	var lastPublished *TelemetryData
-	var lastPublishTime time.Time
+	var lastState string
+
+	// Subscribe to state changes
+	pubsub := s.redisClient.Subscribe(s.ctx, "vehicle")
+	defer pubsub.Close()
+
+	// Start goroutine to handle state change notifications
+	go func() {
+		for {
+			_, err := pubsub.ReceiveMessage(s.ctx)
+			if err != nil {
+				if err != context.Canceled {
+					log.Printf("Error receiving message: %v", err)
+				}
+				return
+			}
+
+			// Get new interval when state changes
+			newInterval, reason := s.getTelemetryInterval()
+			if newInterval != interval {
+				log.Printf("Updating telemetry interval to %v (%s)", newInterval, reason)
+				ticker.Reset(newInterval)
+				interval = newInterval
+			}
+		}
+	}()
 
 	// Publish initial telemetry immediately
 	if current, err := s.getTelemetryFromRedis(); err == nil {
 		if err := s.publishTelemetryData(current, "initial telemetry"); err == nil {
 			lastPublished = current
-			lastPublishTime = time.Now()
+			lastState = current.State
 		} else {
 			log.Printf("Failed to publish initial telemetry: %v", err)
 		}
@@ -410,22 +555,27 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				continue
 			}
 
+			// Check if state changed
+			if current.State != lastState {
+				newInterval, reason := s.getTelemetryInterval()
+				if newInterval != interval {
+					log.Printf("State changed to %s, updating telemetry interval to %v (%s)",
+						current.State, newInterval, reason)
+					ticker.Reset(newInterval)
+					interval = newInterval
+				}
+				lastState = current.State
+			}
+
 			shouldPublish := false
 			reason := ""
 
 			if lastPublished == nil {
 				shouldPublish = true
 				reason = "initial telemetry"
-			} else if time.Since(lastPublishTime) >= (maxInterval - checkInterval) {
-				shouldPublish = true
-				reason = fmt.Sprintf("max interval (%s) elapsed", s.config.Telemetry.MaxInterval)
 			} else if !telemetryEqual(lastPublished, current) {
-				if time.Since(lastPublishTime) >= (minInterval - checkInterval) {
-					shouldPublish = true
-					reason = "data changed"
-				} else {
-					log.Printf("data changed, but min_interval (%s) not reached yet", s.config.Telemetry.MinInterval)
-				}
+				shouldPublish = true
+				reason = "data changed"
 			}
 
 			if !shouldPublish {
@@ -438,7 +588,6 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 			}
 
 			lastPublished = current
-			lastPublishTime = time.Now()
 		}
 	}
 }
@@ -448,6 +597,15 @@ func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
 		return fmt.Errorf("failed to clean retained message: %v", token.Error())
 	}
 	return nil
+}
+
+func (s *ScooterMQTTClient) getCommandParam(cmd, param string, defaultValue interface{}) interface{} {
+	if cmdConfig, ok := s.config.Commands[cmd]; ok {
+		if params, ok := cmdConfig.Params[param]; ok {
+			return params
+		}
+	}
+	return defaultValue
 }
 
 func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) {
@@ -460,6 +618,15 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 
 	log.Printf("Received command: %s with requestID: %s", command.Command, command.RequestID)
 
+	// Check if command is disabled (except for ping and get_state)
+	if command.Command != "ping" && command.Command != "get_state" {
+		if cmdConfig, ok := s.config.Commands[command.Command]; ok && cmdConfig.Disabled {
+			log.Printf("Command %s is disabled in config", command.Command)
+			s.sendCommandResponse(command.RequestID, "error", "Command disabled in config")
+			return
+		}
+	}
+
 	var err error
 	switch command.Command {
 	case "ping":
@@ -470,10 +637,10 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 			}
 		}
 		return // Skip error handling
-	case "update":
-		err = s.handleUpdateCommand()
 	case "get_state":
 		err = s.handleGetStateCommand()
+	case "update":
+		err = s.handleUpdateCommand()
 	case "lock":
 		err = s.handleLockCommand()
 	case "unlock":
@@ -530,7 +697,7 @@ func (s *ScooterMQTTClient) handleGetStateCommand() error {
 		return err
 	}
 
-	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.VIN)
+	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.Scooter.Identifier)
 	token := s.mqttClient.Publish(topic, 1, false, telemetryJSON)
 	token.Wait()
 	return token.Error()
@@ -563,12 +730,18 @@ func (s *ScooterMQTTClient) handleSeatboxCommand() error {
 }
 
 func (s *ScooterMQTTClient) handleHonkCommand() error {
-	err := s.redisClient.LPush(s.ctx, "scooter:horn", "on").Err()
+	onTime := s.getCommandParam("honk", "on_time", "100ms")
+	duration, err := time.ParseDuration(onTime.(string))
+	if err != nil {
+		duration = 100 * time.Millisecond // Default value
+	}
+
+	err = s.redisClient.LPush(s.ctx, "scooter:horn", "on").Err()
 	if err != nil {
 		return err
 	}
 
-	time.Sleep(75 * time.Millisecond)
+	time.Sleep(duration)
 	return s.redisClient.LPush(s.ctx, "scooter:horn", "off").Err()
 }
 
@@ -579,7 +752,7 @@ func (s *ScooterMQTTClient) handleLocateCommand() error {
 		return err
 	}
 
-	// Honk
+	// Honk twice
 	err = s.honkHorn(20 * time.Millisecond)
 	if err != nil {
 		return err
@@ -590,10 +763,9 @@ func (s *ScooterMQTTClient) handleLocateCommand() error {
 		return err
 	}
 
-	// Wait 6 seconds
 	time.Sleep(4 * time.Second)
 
-	// Honk again
+	// Honk twice again
 	err = s.honkHorn(20 * time.Millisecond)
 	if err != nil {
 		return err
@@ -618,7 +790,12 @@ func (s *ScooterMQTTClient) handleAlarmCommand(params map[string]interface{}) er
 		return fmt.Errorf("invalid alarm duration: %v", err)
 	}
 
-	return s.startAlarm(duration)
+	flashHazards := s.getCommandParam("alarm", "hazards.flash", true).(bool)
+	honkHorn := s.getCommandParam("alarm", "horn.honk", true).(bool)
+	hornOnTime := s.getCommandParam("alarm", "horn.on_time", "400ms").(string)
+	hornOffTime := s.getCommandParam("alarm", "horn.off_time", "400ms").(string)
+
+	return s.startAlarmWithConfig(duration, flashHazards, honkHorn, hornOnTime, hornOffTime)
 }
 
 func (s *ScooterMQTTClient) handleRedisCommand(params map[string]interface{}, requestID string) error {
@@ -703,7 +880,7 @@ func (s *ScooterMQTTClient) handleRedisCommand(params map[string]interface{}, re
 		return fmt.Errorf("failed to marshal response: %v", err)
 	}
 
-	topic := fmt.Sprintf("scooters/%s/data", s.config.VIN)
+	topic := fmt.Sprintf("scooters/%s/data", s.config.Scooter.Identifier)
 	if token := s.mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
 		return fmt.Errorf("failed to publish response: %v", token.Error())
 	}
@@ -741,7 +918,7 @@ func (s *ScooterMQTTClient) handleShellCommand(params map[string]interface{}, re
 		return fmt.Errorf("failed to start command: %v", err)
 	}
 
-	topic := fmt.Sprintf("scooters/%s/data", s.config.VIN)
+	topic := fmt.Sprintf("scooters/%s/data", s.config.Scooter.Identifier)
 
 	// Function to send output
 	sendOutput := func(outputType string, data string) error {
@@ -833,31 +1010,37 @@ func parseDuration(value interface{}) (time.Duration, error) {
 	}
 }
 
-func (s *ScooterMQTTClient) startAlarm(duration time.Duration) error {
-	// Turn on blinkers
-	err := s.redisClient.LPush(s.ctx, "scooter:blinker", "both").Err()
-	if err != nil {
-		return err
+func (s *ScooterMQTTClient) startAlarmWithConfig(duration time.Duration, flashHazards, honkHorn bool, hornOnTime, hornOffTime string) error {
+	if flashHazards {
+		if err := s.redisClient.LPush(s.ctx, "scooter:blinker", "both").Err(); err != nil {
+			return err
+		}
 	}
 
-	// Honk every second
-	ticker := time.NewTicker(1 * time.Second)
-	done := make(chan bool)
+	if honkHorn {
+		onDuration, _ := time.ParseDuration(hornOnTime)
+		offDuration, _ := time.ParseDuration(hornOffTime)
+		ticker := time.NewTicker(onDuration + offDuration)
+		done := make(chan bool)
 
-	go func() {
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				s.honkHorn(250 * time.Millisecond)
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					s.honkHorn(onDuration)
+					time.Sleep(offDuration)
+				}
 			}
-		}
-	}()
+		}()
 
-	time.Sleep(duration)
-	ticker.Stop()
-	done <- true
+		time.Sleep(duration)
+		ticker.Stop()
+		done <- true
+	} else {
+		time.Sleep(duration)
+	}
 
 	return s.stopAlarm()
 }
@@ -897,7 +1080,7 @@ func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg stri
 		return
 	}
 
-	topic := fmt.Sprintf("scooters/%s/acks", s.config.VIN)
+	topic := fmt.Sprintf("scooters/%s/acks", s.config.Scooter.Identifier)
 	if token := s.mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
 		log.Printf("Failed to publish response: %v", token.Error())
 	}
