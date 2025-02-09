@@ -6,6 +6,7 @@ environment: development  # or production
 mqtt:
   broker_url: ssl://mqtt.sunshine.rescoot.org:8883
   ca_cert: ../sunshine/config/mqtt_certs/ca.crt
+  keepalive: 180s
 redis_url: redis://localhost:6379
 telemetry:
   intervals:
