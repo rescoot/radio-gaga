@@ -138,7 +138,7 @@ The system monitors and reports comprehensive vehicle telemetry including:
  
 ## Prerequisites
 
-- Go 1.22 or higher
+- Go 1.20 or higher
 - Redis server
 - MQTT broker
 
