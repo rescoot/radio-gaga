@@ -14,11 +14,12 @@ The application provides comprehensive remote monitoring and control capabilitie
 - Redis-based state management
 - Configurable command parameters
 - Support for development and production environments
-  - Shell command execution support (development environment only)
+- Development tools: Shell and Redis command execution support (development environment only)
 
 ## System Architecture
 
 ### Components
+
 - MQTT Client: Manages communication with the MQTT broker
 - Redis Backend: Stores and retrieves vehicle state information
 - Configuration Management: YAML-based configuration system
@@ -35,6 +36,9 @@ The application provides comprehensive remote monitoring and control capabilitie
 - `open_seatbox`: Open the seat box
 - `locate`: Help locate scooter (flashes lights and honks twice in rapid succession)
 - `alarm`: Trigger alarm system with configurable parameters
+
+In development environment:
+
 - `redis`: Execute Redis commands (development only)
 - `shell`: Execute shell commands (development only)
 
@@ -43,7 +47,7 @@ The application provides comprehensive remote monitoring and control capabilitie
 ### Configuration Methods
 1. YAML Configuration File (`radio-gaga.yml`)
 2. Command Line Flags
-3. Environment Variables
+3. Redis Settings (fallback for MQTT broker URL and CA certificate)
 
 ### Configuration Options
 ```yaml
@@ -54,8 +58,8 @@ scooter:
 environment: "production"     # production or development
 
 mqtt:
-  broker_url: "ssl://mqtt.example.com:8883"
-  ca_cert: "/path/to/ca.crt"  # Optional CA certificate for TLS
+  broker_url: "ssl://mqtt.example.com:8883"  # Fallback to Redis `HGET settings cloud:mqtt-url` if not set
+  ca_cert: "/path/to/ca.crt"  # Optional CA certificate for TLS (fallback to Redis `HGET settings cloud:mqtt-ca` if not set)
   keepalive: "180s"           # MQTT keepalive interval
 
 redis_url: "redis://localhost:6379"
