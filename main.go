@@ -181,6 +181,7 @@ func loadConfig(flags *commandLineFlags) (*Config, error) {
 			MQTT: MQTTConfig{
 				KeepAlive: "180s",
 			},
+			RedisURL: "redis://127.0.0.1:6379",
 			Telemetry: TelemetryConfig{
 				Intervals: TelemetryIntervals{
 					Driving:          "1m",
@@ -194,7 +195,6 @@ func loadConfig(flags *commandLineFlags) (*Config, error) {
 
 	// Override with command line flags
 	flag.Visit(func(f *flag.Flag) {
-		log.Printf("flag %s", f.Name)
 		switch f.Name {
 		case "identifier":
 			config.Scooter.Identifier = flags.identifier
@@ -240,9 +240,6 @@ func validateConfig(config *Config) error {
 	}
 	if config.Environment != "" && config.Environment != "production" && config.Environment != "development" {
 		errors = append(errors, fmt.Sprintf("invalid environment: %s (must be 'production' or 'development')", config.Environment))
-	}
-	if config.MQTT.BrokerURL == "" {
-		errors = append(errors, "MQTT broker URL is required")
 	}
 	if config.RedisURL == "" {
 		errors = append(errors, "redis URL is required")
@@ -310,6 +307,9 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 		if brokerURL, err := redisClient.HGet(ctx, "settings", "cloud:mqtt-url").Result(); err == nil && brokerURL != "" {
 			log.Printf("Using MQTT broker URL from Redis: %s", brokerURL)
 			config.MQTT.BrokerURL = brokerURL
+		} else {
+			cancel()
+			return nil, fmt.Errorf("MQTT broker URL not set and not found in Redis")
 		}
 	}
 
@@ -597,7 +597,7 @@ func telemetryEqual(a, b *TelemetryData) bool {
 	return reflect.DeepEqual(&aCopy, &bCopy)
 }
 
-func (s *ScooterMQTTClient) publishTelemetryData(current *TelemetryData, reason string) error {
+func (s *ScooterMQTTClient) publishTelemetryData(current *TelemetryData) error {
 	telemetryJSON, err := json.Marshal(current)
 	if err != nil {
 		return fmt.Errorf("failed to marshal telemetry: %v", err)
@@ -608,7 +608,7 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *TelemetryData, reason 
 		return fmt.Errorf("failed to publish telemetry: %v", token.Error())
 	}
 
-	log.Printf("Published telemetry to %s (%s)", topic, reason)
+	log.Printf("Published telemetry to %s", topic)
 	return nil
 }
 
@@ -619,7 +619,6 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var lastPublished *TelemetryData
 	var lastState string
 
 	// Subscribe to state changes
@@ -649,8 +648,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 	// Publish initial telemetry immediately
 	if current, err := s.getTelemetryFromRedis(); err == nil {
-		if err := s.publishTelemetryData(current, "initial telemetry"); err == nil {
-			lastPublished = current
+		if err := s.publishTelemetryData(current); err == nil {
 			lastState = current.State
 		} else {
 			log.Printf("Failed to publish initial telemetry: %v", err)
@@ -682,27 +680,10 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				lastState = current.State
 			}
 
-			shouldPublish := false
-			reason := ""
-
-			if lastPublished == nil {
-				shouldPublish = true
-				reason = "initial telemetry"
-			} else if !telemetryEqual(lastPublished, current) {
-				shouldPublish = true
-				reason = "data changed"
-			}
-
-			if !shouldPublish {
-				continue
-			}
-
-			if err := s.publishTelemetryData(current, reason); err != nil {
+			if err := s.publishTelemetryData(current); err != nil {
 				log.Printf("Failed to publish telemetry: %v", err)
 				continue
 			}
-
-			lastPublished = current
 		}
 	}
 }
@@ -727,6 +708,7 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 	var command CommandMessage
 	if err := json.Unmarshal(msg.Payload(), &command); err != nil {
 		log.Printf("Failed to parse command: %v", err)
+		log.Printf("Payload was %v", msg.Payload())
 		s.sendCommandResponse(command.RequestID, "error", "Invalid command format")
 		return
 	}
@@ -1213,7 +1195,11 @@ func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg stri
 var version string
 
 func main() {
-	log.Printf("Starting radio-gaga version %s", version)
+	if version != "" {
+		log.Printf("Starting radio-gaga version %s", version)
+	} else {
+		log.Print("Starting radio-gaga development version")
+	}
 
 	flags := parseFlags()
 
