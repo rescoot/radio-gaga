@@ -305,6 +305,21 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 		return nil, fmt.Errorf("redis connection failed: %v", err)
 	}
 
+	// Check Redis if values aren't already set in config
+	if config.MQTT.BrokerURL == "" {
+		if brokerURL, err := redisClient.HGet(ctx, "settings", "cloud:mqtt-url").Result(); err == nil && brokerURL != "" {
+			log.Printf("Using MQTT broker URL from Redis: %s", brokerURL)
+			config.MQTT.BrokerURL = brokerURL
+		}
+	}
+
+	if config.MQTT.CACert == "" {
+		if caCertPath, err := redisClient.HGet(ctx, "settings", "cloud:mqtt-ca").Result(); err == nil && caCertPath != "" {
+			log.Printf("Using CA certificate path from Redis: %s", caCertPath)
+			config.MQTT.CACert = caCertPath
+		}
+	}
+
 	keepAlive, err := time.ParseDuration(config.MQTT.KeepAlive)
 	if err != nil {
 		cancel()
