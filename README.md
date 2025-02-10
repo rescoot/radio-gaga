@@ -2,16 +2,19 @@
 
 ## Overview
 
-Radio Gaga is a MQTT-based control and telemetry system designed for managing electric scooters.
+Radio Gaga is a telemetry and remote control system designed for managing electric scooters.
 The application provides comprehensive remote monitoring and control capabilities by interfacing with Redis for state management and MQTT for communication.
 
 ## Key Features
 
-- Real-time telemetry reporting
-- Remote scooter control commands
-- Configurable telemetry publishing intervals
-- Secure MQTT authentication
-- Extensive vehicle state tracking
+- Real-time telemetry monitoring with adaptive reporting intervals
+- Comprehensive vehicle state tracking
+- Remote control capabilities via MQTT commands
+- TLS encryption support for MQTT communication
+- Redis-based state management
+- Configurable command parameters
+- Support for development and production environments
+  - Shell command execution support (development environment only)
 
 ## System Architecture
 
@@ -21,85 +24,160 @@ The application provides comprehensive remote monitoring and control capabilitie
 - Configuration Management: YAML-based configuration system
 
 ### Supported Commands
-- `ping`: Health check
-- `update`: Trigger system update
+
+- `ping`: Health check command
 - `get_state`: Retrieve current vehicle telemetry
+- `update`: Update telemetry client
 - `lock`: Lock the scooter
 - `unlock`: Unlock the scooter
-- `blinkers`: Control turn signal state
-- `honk`: Activate horn (for 50ms)
-- `open_seatbox`: Open storage compartment
-- `locate`: Help locate the scooter by flashing lights and honking twice
-- `alarm`: Trigger alarm system
+- `blinkers`: Control turn signals (left/right/both/off)
+- `honk`: Activate horn with configurable duration
+- `open_seatbox`: Open the seat box
+- `locate`: Help locate scooter (flashes lights and honks twice in rapid succession)
+- `alarm`: Trigger alarm system with configurable parameters
+- `redis`: Execute Redis commands (development only)
+- `shell`: Execute shell commands (development only)
 
 ## Configuration
 
-Configuration is managed via a YAML file (`radio-gaga.yml`) with the following key sections:
+### Configuration Methods
+1. YAML Configuration File (`radio-gaga.yml`)
+2. Command Line Flags
+3. Environment Variables
 
+### Configuration Options
 ```yaml
-vin: VEHICLE-ID               # Unique Vehicle Identification Number
+scooter:
+  identifier: "VEHICLE-ID"    # Vehicle identifier (MQTT username)
+  token: "auth_token"         # Authentication token (MQTT password)
+
+environment: "production"     # production or development
+
 mqtt:
-  broker_url: tcp://mqtt.example.com:1883
-  token: authentication_token
+  broker_url: "ssl://mqtt.example.com:8883"
+  ca_cert: "/path/to/ca.crt"  # Optional CA certificate for TLS
+  keepalive: "180s"           # MQTT keepalive interval
+
+redis_url: "redis://localhost:6379"
+
 telemetry:
-  check_interval: 100ms       # Frequency of telemetry checks
-  min_interval: 1s            # Minimum interval between telemetry publishes
-  max_interval: 60s           # Maximum interval between telemetry publishes
-redis:
-  addr: "localhost:6379"      # Redis server address
-  password: ""                # Redis authentication (optional)
+  intervals:
+    driving: "1s"            # Interval while driving
+    standby: "5m"            # Interval in standby with battery
+    standby_no_battery: "8h" # Interval in standby without battery
+    hibernate: "24h"         # Interval in hibernate mode
+
+commands:                    # Optional command configuration
+  honk:
+    disabled: false          # Commands can be disabled by setting `disabled: true`
+    on_time: "100ms"
+  alarm:
+    hazards:
+      flash: true
+    horn:
+      honk: true
+      on_time: "400ms"
+      off_time: "400ms"
+```
+
+### Command Line Flags
+```bash
+  -config string
+        Path to config file (defaults to radio-gaga.yml)
+  -environment string
+        Environment (production or development)
+  -identifier string
+        Vehicle identifier (MQTT username)
+  -token string
+        Authentication token (MQTT password)
+  -mqtt-broker string
+        MQTT broker URL
+  -mqtt-cacert string
+        Path to MQTT CA certificate
+  -mqtt-keepalive string
+        MQTT keepalive duration (default "30s")
+  -redis-url string
+        Redis URL (default "redis://localhost:6379")
+  -driving-interval string
+        Telemetry interval while driving (default "1s")
+  -standby-interval string
+        Telemetry interval in standby (default "5m")
+  -standby-no-battery-interval string
+        Telemetry interval in standby without battery (default "8h")
+  -hibernate-interval string
+        Telemetry interval in hibernate mode (default "24h")
 ```
 
 ## Telemetry Data
 
-The system captures comprehensive telemetry including:
-- Vehicle state (lock/unlock)
-- Kickstand status
-- Blinker state
-- Speed
-- Odometer
-- Motor metrics
-- Battery levels
-- GPS coordinates
+The system monitors and reports comprehensive vehicle telemetry including:
 
+### Vehicle State
+
+- Operating state
+- Kickstand position
+- Seatbox lock status
+- Blinker status
+
+### Engine Data
+
+- Current speed
+- Odometer reading
+- Motor voltage and current
+- Motor temperature
+
+### Battery Information
+
+- Main battery presence and levels (0-100%)
+- AUX battery level and voltage
+- CBB battery level and current
+
+### Location Data
+
+- GPS coordinates (latitude/longitude)
+ 
 ## Prerequisites
 
-- Go 1.16+
-- Redis
-- MQTT Broker
-- Required Go Packages:
-  - github.com/eclipse/paho.mqtt.golang
-  - github.com/go-redis/redis/v8
-  - gopkg.in/yaml.v2
+- Go 1.22 or higher
+- Redis server
+- MQTT broker
 
 ## Building
 
 ```bash
 # Standard build
-make build
+make
 
 # Cross-platform builds
 make amd64  # Linux AMD64 build
 make arm    # Linux ARM build
+
+# Distribution build for deployment
+make dist
 ```
 
 ## Running
 
 ```bash
-# Using default config
+# Using default config file (radio-gaga.yml)
 ./radio-gaga
 
-# Specify custom config
-./radio-gaga -config /path/to/custom/config.yml
+# Using custom config file
+./radio-gaga -config /path/to/config.yml
+
+# Override config with flags (run with -help to see flags)
+./radio-gaga -identifier SCOOTER1 -mqtt-broker ssl://mqtt.example.com:8883
 ```
 
-## Security Considerations
+## Security Features
 
-- Uses VIN as MQTT authentication
-- Configurable MQTT token
-- Supports encrypted Redis connections
-- Implements command validation
-- Graceful error handling
+- TLS encryption support for MQTT communication
+- Custom CA certificate support for MQTT
+- Vehicle-specific authentication using identifier/token
+- Environment-based command restrictions
+- Command validation and sanitization
+- Retained message cleanup
+- Secure defaults
 
 ## License
 
