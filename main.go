@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -343,28 +342,29 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 		SetWill(willTopic, string(willMessage), 1, true). // QoS 1 and retained
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
 			log.Printf("Connection lost: %v", err)
+			if err := redisClient.HSet(ctx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
+				log.Printf("Failed to set unu-cloud status: %v", err)
+			}
+			if err := redisClient.Publish(ctx, "internet", "unu-cloud").Err(); err != nil {
+				log.Printf("Failed to publish unu-cloud status: %v", err)
+			}
 		}).
 		SetOnConnectHandler(func(c mqtt.Client) {
-			log.Printf("Connected to MQTT broker")
+			log.Printf("Connected to MQTT broker at %s", config.MQTT.BrokerURL)
 
-			// Hello, cloud? This is sunshine.
+			// Say hello to the cloud
 			statusTopic := fmt.Sprintf("scooters/%s/status", config.Scooter.Identifier)
 			statusMessage := []byte(`{"status": "connected"}`)
 			if token := c.Publish(statusTopic, 1, true, statusMessage); token.Wait() && token.Error() != nil {
 				log.Printf("Failed to publish connection status: %v", token.Error())
 			}
 
+			// Update cloud status
 			if err := redisClient.HSet(ctx, "internet", "unu-cloud", "connected").Err(); err != nil {
 				log.Printf("Failed to set unu-cloud status: %v", err)
 			}
 			if err := redisClient.Publish(ctx, "internet", "unu-cloud").Err(); err != nil {
 				log.Printf("Failed to publish unu-cloud status: %v", err)
-			}
-			if err := redisClient.HSet(ctx, "internet", "status", "connected").Err(); err != nil {
-				log.Printf("Failed to set internet status: %v", err)
-			}
-			if err := redisClient.Publish(ctx, "internet", "status").Err(); err != nil {
-				log.Printf("Failed to publish internet status: %v", err)
 			}
 		})
 
@@ -412,9 +412,7 @@ func (s *ScooterMQTTClient) Start() error {
 		return fmt.Errorf("failed to subscribe to commands: %v", token.Error())
 	}
 
-	log.Printf("Subscribed to commands on %s", commandTopic)
-
-	s.startStatusUpdates()
+	log.Printf("Subscribed to commands channel %s", commandTopic)
 
 	go s.publishTelemetry()
 
@@ -429,40 +427,6 @@ func (s *ScooterMQTTClient) Stop() {
 	s.cancel()
 	s.mqttClient.Disconnect(250)
 	s.redisClient.Close()
-}
-
-func (s *ScooterMQTTClient) publishStatus() error {
-	if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "connected").Err(); err != nil {
-		return fmt.Errorf("failed to set unu-cloud status: %v", err)
-	}
-	if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
-		return fmt.Errorf("failed to publish unu-cloud status: %v", err)
-	}
-	if err := s.redisClient.HSet(s.ctx, "internet", "status", "connected").Err(); err != nil {
-		return fmt.Errorf("failed to set internet status: %v", err)
-	}
-	if err := s.redisClient.Publish(s.ctx, "internet", "status").Err(); err != nil {
-		return fmt.Errorf("failed to publish internet status: %v", err)
-	}
-
-	return nil
-}
-
-func (s *ScooterMQTTClient) startStatusUpdates() {
-	ticker := time.NewTicker(30 * time.Second) // Adjust interval as needed
-	go func() {
-		for {
-			select {
-			case <-s.ctx.Done():
-				ticker.Stop()
-				return
-			case <-ticker.C:
-				if err := s.publishStatus(); err != nil {
-					log.Printf("Failed to publish status: %v", err)
-				}
-			}
-		}
-	}()
 }
 
 func (s *ScooterMQTTClient) getTelemetryInterval() (time.Duration, string) {
@@ -585,16 +549,6 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 	telemetry.Timestamp = time.Now().UTC().Format(time.RFC3339)
 
 	return telemetry, nil
-}
-
-func telemetryEqual(a, b *TelemetryData) bool {
-	// Make copies to avoid modifying original data
-	aCopy := *a
-	bCopy := *b
-	// Zero out timestamps before comparison
-	aCopy.Timestamp = ""
-	bCopy.Timestamp = ""
-	return reflect.DeepEqual(&aCopy, &bCopy)
 }
 
 func (s *ScooterMQTTClient) publishTelemetryData(current *TelemetryData) error {
