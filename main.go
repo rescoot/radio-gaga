@@ -805,34 +805,38 @@ func (s *ScooterMQTTClient) handleHonkCommand() error {
 
 func (s *ScooterMQTTClient) handleLocateCommand() error {
 	// Turn on blinkers
-	err := s.redisClient.LPush(s.ctx, "scooter:blinker", "both").Err()
+	param_honk_time := s.getCommandParam("locate", "honk_time", "40ms")
+	param_honk_interval := s.getCommandParam("locate", "honk_interval", "80ms")
+	param_interval := s.getCommandParam("locate", "interval", "4s")
+
+	honk_time, err := time.ParseDuration(param_honk_time.(string))
+	if err != nil {
+		honk_time = 40 * time.Millisecond // Default value
+	}
+	honk_interval, err := time.ParseDuration(param_honk_interval.(string))
+	if err != nil {
+		honk_interval = 80 * time.Millisecond // Default value
+	}
+	interval, err := time.ParseDuration(param_interval.(string))
+	if err != nil {
+		interval = 4 * time.Second
+	}
+
+	err = s.redisClient.LPush(s.ctx, "scooter:blinker", "both").Err()
 	if err != nil {
 		return err
 	}
 
 	// Honk twice
-	err = s.honkHorn(20 * time.Millisecond)
-	if err != nil {
-		return err
-	}
-	time.Sleep(60 * time.Millisecond)
-	err = s.honkHorn(20 * time.Millisecond)
-	if err != nil {
-		return err
-	}
+	err = s.honkHorn(honk_time)
+	time.Sleep(honk_interval)
+	err = s.honkHorn(honk_time)
 
-	time.Sleep(4 * time.Second)
+	time.Sleep(interval)
 
-	// Honk twice again
-	err = s.honkHorn(20 * time.Millisecond)
-	if err != nil {
-		return err
-	}
-	time.Sleep(60 * time.Millisecond)
-	err = s.honkHorn(20 * time.Millisecond)
-	if err != nil {
-		return err
-	}
+	err = s.honkHorn(honk_time)
+	time.Sleep(honk_interval)
+	err = s.honkHorn(honk_time)
 
 	// Turn off blinkers
 	return s.redisClient.LPush(s.ctx, "scooter:blinker", "off").Err()
