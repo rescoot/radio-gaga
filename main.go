@@ -75,37 +75,138 @@ type Command struct {
 	Params   map[string]interface{} `yaml:"params,omitempty"`
 }
 
+type VehicleState struct {
+	State         string `json:"state"`
+	MainPower     string `json:"main_power"`
+	HandlebarLock string `json:"handlebar_lock"`
+	HandlebarPos  string `json:"handlebar_position"`
+	BrakeLeft     string `json:"brake_left"`
+	BrakeRight    string `json:"brake_right"`
+	SeatboxLock   string `json:"seatbox"`
+	Kickstand     string `json:"kickstand"`
+	BlinkerSwitch string `json:"blinker_switch"`
+	BlinkerState  string `json:"blinker_state"`
+	SeatboxButton string `json:"seatbox_button"`
+	HornButton    string `json:"horn_button"`
+}
+
+type EngineData struct {
+	Speed         int    `json:"speed"`
+	Odometer      int    `json:"odometer"`
+	MotorVoltage  int    `json:"motor_voltage"`
+	MotorCurrent  int    `json:"motor_current"`
+	Temperature   int    `json:"temperature"`
+	EngineState   string `json:"engine_state"`
+	KersState     string `json:"kers_state"`
+	KersReasonOff string `json:"kers_reason_off"`
+	MotorRPM      int    `json:"motor_rpm"`
+	ThrottleState string `json:"throttle_state"`
+	EngineFWVer   string `json:"engine_fw_version"`
+}
+
+type BatteryData struct {
+	Level             int    `json:"level"`
+	Present           bool   `json:"present"`
+	Voltage           int    `json:"voltage"`
+	Current           int    `json:"current"`
+	State             string `json:"state"`
+	TemperatureState  string `json:"temp_state"`
+	SOH               int    `json:"soh"`
+	Temps             []int  `json:"temps"`
+	CycleCount        int    `json:"cycle_count"`
+	FWVersion         string `json:"fw_version"`
+	ManufacturingDate string `json:"manufacturing_date"`
+	SerialNumber      string `json:"serial_number"`
+}
+
+type AuxBatteryData struct {
+	Level        int    `json:"level"`
+	Voltage      int    `json:"voltage"`
+	ChargeStatus string `json:"charge_status"`
+}
+
+type CBBatteryData struct {
+	Level             int    `json:"level"`
+	Current           int    `json:"current"`
+	Temperature       int    `json:"temp"`
+	SOH               int    `json:"soh"`
+	ChargeStatus      string `json:"charge_status"`
+	CellVoltage       int    `json:"cell_voltage"`
+	CycleCount        int    `json:"cycle_count"`
+	FullCapacity      int    `json:"full_capacity"`
+	PartNumber        string `json:"part_number"`
+	Present           bool   `json:"present"`
+	RemainingCapacity int    `json:"remaining_capacity"`
+	SerialNumber      string `json:"serial_number"`
+	TimeToEmpty       int    `json:"time_to_empty"`
+	TimeToFull        int    `json:"time_to_full"`
+	UniqueID          string `json:"unique_id"`
+}
+
+type SystemInfo struct {
+	MdbVersion   string `json:"mdb_version"`
+	Environment  string `json:"environment"`
+	NrfFWVersion string `json:"nrf_fw_version"`
+	DbcVersion   string `json:"dbc_version"`
+}
+
+type ConnectivityStatus struct {
+	ModemState     string `json:"modem_state"`
+	InternetStatus string `json:"internet_status"`
+	CloudStatus    string `json:"cloud_status"`
+	IPAddress      string `json:"ip_address"`
+	AccessTech     string `json:"access_tech"`
+	SignalQuality  int    `json:"signal_quality"`
+}
+
+type GPSData struct {
+	Lat      float64 `json:"lat"`
+	Lng      float64 `json:"lng"`
+	Altitude float64 `json:"altitude"`
+	GpsSpeed float64 `json:"gps_speed"`
+	Course   float64 `json:"course"`
+}
+
+type PowerStatus struct {
+	PowerState    string `json:"power_state"`
+	PowerMuxInput string `json:"power_mux_input"`
+	WakeupSource  string `json:"wakeup_source"`
+}
+
+type BLEStatus struct {
+	MacAddress string `json:"mac_address"`
+	Status     string `json:"status"`
+}
+
+type KeycardStatus struct {
+	Authentication string `json:"authentication"`
+	UID            string `json:"uid"`
+	Type           string `json:"type"`
+}
+
+type DashboardStatus struct {
+	Mode         string `json:"mode"`
+	Ready        bool   `json:"ready"`
+	SerialNumber string `json:"serial_number"`
+}
+
+// Main telemetry data structure
 type TelemetryData struct {
-	// Vehicle state
-	State       string `json:"state"`
-	Kickstand   string `json:"kickstand"`
-	SeatboxLock string `json:"seatbox"`
-	Blinkers    string `json:"blinkers"`
-
-	// Engine ECU data
-	Speed        int `json:"speed"`
-	Odometer     int `json:"odometer"`
-	MotorVoltage int `json:"motor_voltage"`
-	MotorCurrent int `json:"motor_current"`
-	Temperature  int `json:"temperature"`
-
-	// Battery data
-	Battery0Level   int  `json:"battery0_level"`
-	Battery1Level   int  `json:"battery1_level"`
-	Battery0Present bool `json:"battery0_present"`
-	Battery1Present bool `json:"battery1_present"`
-
-	// Auxiliary batteries
-	AuxBatteryLevel   int `json:"aux_battery_level"`
-	AuxBatteryVoltage int `json:"aux_battery_voltage"`
-	CbbBatteryLevel   int `json:"cbb_battery_level"`
-	CbbBatteryCurrent int `json:"cbb_battery_current"`
-
-	// GPS data
-	Lat float64 `json:"lat"`
-	Lng float64 `json:"lng"`
-
-	Timestamp string `json:"timestamp"`
+	Version      int                `json:"version"`
+	VehicleState VehicleState       `json:"vehicle_state"`
+	Engine       EngineData         `json:"engine"`
+	Battery0     BatteryData        `json:"battery0"`
+	Battery1     BatteryData        `json:"battery1"`
+	AuxBattery   AuxBatteryData     `json:"aux_battery"`
+	CBBattery    CBBatteryData      `json:"cbb_battery"`
+	System       SystemInfo         `json:"system"`
+	Connectivity ConnectivityStatus `json:"connectivity"`
+	GPS          GPSData            `json:"gps"`
+	Power        PowerStatus        `json:"power"`
+	BLE          BLEStatus          `json:"ble"`
+	Keycard      KeycardStatus      `json:"keycard"`
+	Dashboard    DashboardStatus    `json:"dashboard"`
+	Timestamp    string             `json:"timestamp"`
 }
 
 type CommandMessage struct {
@@ -484,71 +585,218 @@ func (s *ScooterMQTTClient) getTelemetryInterval() (time.Duration, string) {
 }
 
 func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
-	telemetry := &TelemetryData{}
+	telemetry := &TelemetryData{Version: 2}
 
 	// Get vehicle state
 	vehicle, err := s.redisClient.HGetAll(s.ctx, "vehicle").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get vehicle state: %v", err)
 	}
-	telemetry.State = vehicle["state"]
-	telemetry.Kickstand = vehicle["kickstand"]
-	telemetry.SeatboxLock = vehicle["seatbox:lock"]
-	telemetry.Blinkers = vehicle["blinker:switch"]
+	telemetry.VehicleState = VehicleState{
+		State:         vehicle["state"],
+		Kickstand:     vehicle["kickstand"],
+		SeatboxLock:   vehicle["seatbox:lock"],
+		BlinkerSwitch: vehicle["blinker:switch"],
+		HandlebarLock: vehicle["handlebar:lock-sensor"],
+		HandlebarPos:  vehicle["handlebar:position"],
+		MainPower:     vehicle["main-power"],
+		SeatboxButton: vehicle["seatbox:button"],
+		HornButton:    vehicle["horn:button"],
+		BrakeLeft:     vehicle["brake:left"],
+		BrakeRight:    vehicle["brake:right"],
+		BlinkerState:  vehicle["blinker:state"],
+	}
 
 	// Get engine ECU data
 	engineEcu, err := s.redisClient.HGetAll(s.ctx, "engine-ecu").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get engine ECU data: %v", err)
 	}
-	telemetry.Speed, _ = strconv.Atoi(engineEcu["speed"])
-	telemetry.Odometer, _ = strconv.Atoi(engineEcu["odometer"])
-	telemetry.MotorVoltage, _ = strconv.Atoi(engineEcu["motor:voltage"])
-	telemetry.MotorCurrent, _ = strconv.Atoi(engineEcu["motor:current"])
-	telemetry.Temperature, _ = strconv.Atoi(engineEcu["temperature"])
+	telemetry.Engine = EngineData{
+		Speed:         parseInt(engineEcu["speed"]),
+		Odometer:      parseInt(engineEcu["odometer"]),
+		MotorVoltage:  parseInt(engineEcu["motor:voltage"]),
+		MotorCurrent:  parseInt(engineEcu["motor:current"]),
+		Temperature:   parseInt(engineEcu["temperature"]),
+		EngineState:   engineEcu["state"],
+		KersState:     engineEcu["kers"],
+		KersReasonOff: engineEcu["kers-reason-off"],
+		MotorRPM:      parseInt(engineEcu["rpm"]),
+		ThrottleState: engineEcu["throttle"],
+		EngineFWVer:   engineEcu["fw-version"],
+	}
 
 	// Get battery data
-	battery0, err := s.redisClient.HGetAll(s.ctx, "battery:0").Result()
+	telemetry.Battery0, err = getBatteryData(s, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get battery 0 data: %v", err)
 	}
-	telemetry.Battery0Level, _ = strconv.Atoi(battery0["charge"])
-	telemetry.Battery0Present = battery0["present"] == "true"
 
-	battery1, err := s.redisClient.HGetAll(s.ctx, "battery:1").Result()
+	telemetry.Battery1, err = getBatteryData(s, 1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get battery 1 data: %v", err)
 	}
-	telemetry.Battery1Level, _ = strconv.Atoi(battery1["charge"])
-	telemetry.Battery1Present = battery1["present"] == "true"
 
 	// Get auxiliary battery data
 	auxBattery, err := s.redisClient.HGetAll(s.ctx, "aux-battery").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get aux battery data: %v", err)
 	}
-	telemetry.AuxBatteryLevel, _ = strconv.Atoi(auxBattery["charge"])
-	telemetry.AuxBatteryVoltage, _ = strconv.Atoi(auxBattery["voltage"])
+	telemetry.AuxBattery = AuxBatteryData{
+		Level:        parseInt(auxBattery["charge"]),
+		Voltage:      parseInt(auxBattery["voltage"]),
+		ChargeStatus: auxBattery["charge-status"],
+	}
 
 	// Get CBB data
 	cbbBattery, err := s.redisClient.HGetAll(s.ctx, "cb-battery").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get CBB data: %v", err)
 	}
-	telemetry.CbbBatteryLevel, _ = strconv.Atoi(cbbBattery["charge"])
-	telemetry.CbbBatteryCurrent, _ = strconv.Atoi(cbbBattery["current"])
+	telemetry.CBBattery = CBBatteryData{
+		Level:             parseInt(cbbBattery["charge"]),
+		Current:           parseInt(cbbBattery["current"]),
+		Temperature:       parseInt(cbbBattery["temperature"]),
+		SOH:               parseInt(cbbBattery["state-of-health"]),
+		ChargeStatus:      cbbBattery["charge-status"],
+		CellVoltage:       parseInt(cbbBattery["cell-voltage"]),
+		CycleCount:        parseInt(cbbBattery["cycle-count"]),
+		FullCapacity:      parseInt(cbbBattery["full-capacity"]),
+		PartNumber:        cbbBattery["part-number"],
+		Present:           cbbBattery["present"] == "true",
+		RemainingCapacity: parseInt(cbbBattery["remaining-capacity"]),
+		SerialNumber:      cbbBattery["serial-number"],
+		TimeToEmpty:       parseInt(cbbBattery["time-to-empty"]),
+		TimeToFull:        parseInt(cbbBattery["time-to-full"]),
+		UniqueID:          cbbBattery["unique-id"],
+	}
+
+	// Get system information
+	system, err := s.redisClient.HGetAll(s.ctx, "system").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get system info: %v", err)
+	}
+	telemetry.System = SystemInfo{
+		Environment:  system["environment"],
+		DbcVersion:   system["dbc-version"],
+		MdbVersion:   system["mdb-version"],
+		NrfFWVersion: system["nrf-fw-version"],
+	}
+
+	// Get internet connectivity status
+	internet, err := s.redisClient.HGetAll(s.ctx, "internet").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get internet status: %v", err)
+	}
+	telemetry.Connectivity = ConnectivityStatus{
+		ModemState:     internet["modem-state"],
+		AccessTech:     internet["access-tech"],
+		SignalQuality:  parseInt(internet["signal-quality"]),
+		InternetStatus: internet["status"],
+		IPAddress:      internet["ip-address"],
+		CloudStatus:    internet["unu-cloud"],
+	}
 
 	// Get GPS data
 	gps, err := s.redisClient.HGetAll(s.ctx, "gps").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GPS data: %v", err)
 	}
-	telemetry.Lat, _ = strconv.ParseFloat(gps["latitude"], 64)
-	telemetry.Lng, _ = strconv.ParseFloat(gps["longitude"], 64)
+	telemetry.GPS = GPSData{
+		Lat:      parseFloat(gps["latitude"]),
+		Lng:      parseFloat(gps["longitude"]),
+		Altitude: parseFloat(gps["altitude"]),
+		GpsSpeed: parseFloat(gps["speed"]),
+		Course:   parseFloat(gps["course"]),
+	}
+
+	// Get power management and mux status
+	powerManager, err := s.redisClient.HGetAll(s.ctx, "power-manager").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get power manager status: %v", err)
+	}
+	powerMux, err := s.redisClient.HGetAll(s.ctx, "power-mux").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get power mux status: %v", err)
+	}
+	telemetry.Power = PowerStatus{
+		PowerState:    powerManager["state"],
+		PowerMuxInput: powerMux["selected-input"],
+		WakeupSource:  powerManager["wakeup-source"],
+	}
+
+	// Get BLE status
+	ble, err := s.redisClient.HGetAll(s.ctx, "ble").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get BLE status: %v", err)
+	}
+	telemetry.BLE = BLEStatus{
+		MacAddress: ble["mac-address"],
+		Status:     ble["status"],
+	}
+
+	// Get keycard status (usually not populated - expires 10s after tap)
+	keycard, err := s.redisClient.HGetAll(s.ctx, "keycard").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get keycard status: %v", err)
+	}
+	telemetry.Keycard = KeycardStatus{
+		Authentication: keycard["authentication"],
+		UID:            keycard["uid"],
+		Type:           keycard["type"],
+	}
+
+	// Get dashboard status
+	dashboard, err := s.redisClient.HGetAll(s.ctx, "dashboard").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get dashboard status: %v", err)
+	}
+	telemetry.Dashboard = DashboardStatus{
+		Mode:         dashboard["mode"],
+		Ready:        dashboard["ready"] == "true",
+		SerialNumber: dashboard["serial-number"],
+	}
 
 	telemetry.Timestamp = time.Now().UTC().Format(time.RFC3339)
 
 	return telemetry, nil
+}
+
+func getBatteryData(s *ScooterMQTTClient, index int) (BatteryData, error) {
+	battery, err := s.redisClient.HGetAll(s.ctx, fmt.Sprintf("battery:%d", index)).Result()
+	if err != nil {
+		return BatteryData{}, fmt.Errorf("failed to get battery %d data: %v", index, err)
+	}
+
+	temps := make([]int, 4)
+	for i := 0; i < 4; i++ {
+		temps[i] = parseInt(battery[fmt.Sprintf("temperature:%d", i)])
+	}
+
+	return BatteryData{
+		Level:             parseInt(battery["charge"]),
+		Present:           battery["present"] == "true",
+		Voltage:           parseInt(battery["voltage"]),
+		Current:           parseInt(battery["current"]),
+		State:             battery["state"],
+		TemperatureState:  battery["temperature-state"],
+		SOH:               parseInt(battery["state-of-health"]),
+		Temps:             temps,
+		CycleCount:        parseInt(battery["cycle-count"]),
+		FWVersion:         battery["fw-version"],
+		ManufacturingDate: battery["manufacturing-date"],
+		SerialNumber:      battery["serial-number"],
+	}, nil
+}
+
+func parseInt(s string) int {
+	v, _ := strconv.Atoi(s)
+	return v
+}
+
+func parseFloat(s string) float64 {
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
 }
 
 func (s *ScooterMQTTClient) publishTelemetryData(current *TelemetryData) error {
@@ -603,7 +851,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 	// Publish initial telemetry immediately
 	if current, err := s.getTelemetryFromRedis(); err == nil {
 		if err := s.publishTelemetryData(current); err == nil {
-			lastState = current.State
+			lastState = current.VehicleState.State
 		} else {
 			log.Printf("Failed to publish initial telemetry: %v", err)
 		}
@@ -623,15 +871,15 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 			}
 
 			// Check if state changed
-			if current.State != lastState {
+			if current.VehicleState.State != lastState {
 				newInterval, reason := s.getTelemetryInterval()
 				if newInterval != interval {
 					log.Printf("State changed to %s, updating telemetry interval to %v (%s)",
-						current.State, newInterval, reason)
+						current.VehicleState.State, newInterval, reason)
 					ticker.Reset(newInterval)
 					interval = newInterval
 				}
-				lastState = current.State
+				lastState = current.VehicleState.State
 			}
 
 			if err := s.publishTelemetryData(current); err != nil {
