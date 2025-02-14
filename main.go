@@ -664,6 +664,7 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		log.Printf("Failed to parse command: %v", err)
 		log.Printf("Payload was %v", msg.Payload())
 		s.sendCommandResponse(command.RequestID, "error", "Invalid command format")
+		s.cleanRetainedMessage(msg.Topic())
 		return
 	}
 
