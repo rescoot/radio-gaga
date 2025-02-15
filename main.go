@@ -984,7 +984,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 }
 
 func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
-	if token := s.mqttClient.Publish(topic, 1, true, ""); token.Wait() && token.Error() != nil {
+	if token := s.mqttClient.Publish(topic, 1, true, nil); token.Wait() && token.Error() != nil {
 		return fmt.Errorf("failed to clean retained message: %v", token.Error())
 	}
 	return nil
@@ -1170,15 +1170,15 @@ func (s *ScooterMQTTClient) handleLocateCommand() error {
 	}
 
 	// Honk twice
-	err = s.honkHorn(honk_time)
+	s.honkHorn(honk_time)
 	time.Sleep(honk_interval)
-	err = s.honkHorn(honk_time)
+	s.honkHorn(honk_time)
 
 	time.Sleep(interval)
 
-	err = s.honkHorn(honk_time)
+	s.honkHorn(honk_time)
 	time.Sleep(honk_interval)
-	err = s.honkHorn(honk_time)
+	s.honkHorn(honk_time)
 
 	// Turn off blinkers
 	return s.redisClient.LPush(s.ctx, "scooter:blinker", "off").Err()
