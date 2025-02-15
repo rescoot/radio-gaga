@@ -1004,8 +1004,10 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 	if err := json.Unmarshal(msg.Payload(), &command); err != nil {
 		log.Printf("Failed to parse command: %v", err)
 		log.Printf("Payload was %v", msg.Payload())
-		s.sendCommandResponse(command.RequestID, "error", "Invalid command format")
-		s.cleanRetainedMessage(msg.Topic())
+		if len(msg.Payload()) != 0 {
+			s.sendCommandResponse(command.RequestID, "error", "Invalid command format")
+			s.cleanRetainedMessage(msg.Topic())
+		}
 		return
 	}
 
