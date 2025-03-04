@@ -1006,7 +1006,9 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		log.Printf("Payload was %v", msg.Payload())
 		if len(msg.Payload()) != 0 {
 			s.sendCommandResponse(command.RequestID, "error", "Invalid command format")
-			s.cleanRetainedMessage(msg.Topic())
+			if msg.Retained() {
+				s.cleanRetainedMessage(msg.Topic())
+			}
 		}
 		return
 	}
