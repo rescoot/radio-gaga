@@ -1,0 +1,92 @@
+name: Build and Release Radio Gaga
+
+on:
+  push:
+    branches:
+      - main # Or your default branch
+    tags:
+      - 'v*' # Trigger on version tags like v1.0, v2.3.4
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write # Needed for releases
+  actions: read # Needed for artifact upload/download (implied)
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetches all history for git describe
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21' # Or the version specified in go.mod if available
+
+      - name: Determine Version
+        id: get_version
+        run: |
+          # Always use git describe for a consistent version identifier
+          # Fetch tags first to ensure describe works correctly
+          git fetch --tags --force
+          VERSION=$(git describe --always --tags --dirty)
+
+          # Clean up version string (remove leading 'v' if present for artifact naming)
+          VERSION_CLEAN=${VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT # Full version (e.g., v1.0.0 or v0.9.1-2-g123abc)
+          echo "version_clean=$VERSION_CLEAN" >> $GITHUB_OUTPUT # Version without leading v
+          echo "Calculated version: $VERSION"
+          echo "Clean version for artifact: $VERSION_CLEAN"
+
+      - name: Build ARM binary
+        run: make dist # This creates radio-gaga-arm-dist
+
+      - name: Download CA Certificate
+        run: |
+          curl -L -o sunshine-mqtt-ca.pem https://github.com/rescoot/sunshine.unu.rescoot.org-files/raw/refs/heads/main/certs/sunshine-mqtt-ca.pem
+
+      - name: Create packaging directory
+        run: mkdir -p release_package/radio-gaga
+
+      - name: Assemble package contents
+        run: |
+          mv radio-gaga-arm-dist release_package/radio-gaga/radio-gaga
+          cp radio-gaga.example.yml release_package/radio-gaga/
+          cp rescoot-radio-gaga.service release_package/radio-gaga/
+          cp sunshine-mqtt-ca.pem release_package/radio-gaga/ # Include CA cert inside the package dir
+
+      - name: Create tarball archive
+        run: |
+          ARTIFACT_NAME="radio-gaga-${{ steps.get_version.outputs.version_clean }}-unu.rescoot.org-arm"
+          PACKAGE_NAME="${ARTIFACT_NAME}.tar.gz"
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_ENV
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_ENV # For artifact upload step
+          cd release_package
+          tar -czvf ../$PACKAGE_NAME .
+          cd ..
+          echo "Created archive: $PACKAGE_NAME"
+
+      - name: Upload Build Artifact (for non-tags)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.artifact_name }}
+          path: ${{ env.package_name }}
+          retention-days: 7 # Keep nightly artifacts for a week
+
+      - name: Create Release and Upload Asset (for tags)
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.get_version.outputs.version }} # Use the full version which should be the tag name
+          PACKAGE_NAME: ${{ env.package_name }}
+        run: |
+          echo "Creating release for tag: $TAG_NAME"
+          gh release create "$TAG_NAME" \
+             --generate-notes \
+             --title "Release $TAG_NAME" \
+             "$PACKAGE_NAME"
+          echo "Uploaded $PACKAGE_NAME to release $TAG_NAME"
