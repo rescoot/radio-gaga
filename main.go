@@ -135,13 +135,13 @@ type CBBatteryData struct {
 	CellVoltage       int    `json:"cell_voltage"`
 	CycleCount        int    `json:"cycle_count"`
 	FullCapacity      int    `json:"full_capacity"`
-	PartNumber        string `json:"part_number"`
+	PartNumber        string `json:"part-number"`
 	Present           bool   `json:"present"`
-	RemainingCapacity int    `json:"remaining_capacity"`
-	SerialNumber      string `json:"serial_number"`
-	TimeToEmpty       int    `json:"time_to_empty"`
-	TimeToFull        int    `json:"time_to_full"`
-	UniqueID          string `json:"unique_id"`
+	RemainingCapacity int    `json:"remaining-capacity"`
+	SerialNumber      string `json:"serial-number"`
+	TimeToEmpty       int    `json:"time-to-empty"`
+	TimeToFull        int    `json:"time-to-full"`
+	UniqueID          string `json:"unique-id"`
 }
 
 type SystemInfo struct {
@@ -1024,8 +1024,8 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		}
 	}
 
-	// Restrict redis and shell commands to development environment
-	if (command.Command == "redis" || command.Command == "shell") && s.config.Environment != "development" {
+	// Shell command is restricted to development environment
+	if command.Command == "shell" && s.config.Environment != "development" {
 		log.Printf("Command %s is not allowed in %s environment", command.Command, s.config.Environment)
 		s.sendCommandResponse(command.RequestID, "error", "Command not allowed in this environment")
 		return
@@ -1043,8 +1043,8 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		return // Skip error handling
 	case "get_state":
 		err = s.handleGetStateCommand()
-	case "update":
-		err = s.handleUpdateCommand()
+	case "self_update":
+		err = s.handleSelfUpdateCommand(command.Params, command.RequestID)
 	case "lock":
 		err = s.handleLockCommand()
 	case "unlock":
@@ -1063,6 +1063,8 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		err = s.handleRedisCommand(command.Params, command.RequestID)
 	case "shell":
 		err = s.handleShellCommand(command.Params, command.RequestID, command.Stream)
+	case "navigate":
+		err = s.handleNavigateCommand(command.Params, command.RequestID)
 	default:
 		err = fmt.Errorf("unknown command: %s", command.Command)
 	}
@@ -1082,12 +1084,34 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 	s.sendCommandResponse(command.RequestID, "success", "")
 }
 
-func (s *ScooterMQTTClient) handleUpdateCommand() error {
-	cmd := exec.Command("./radio-whats-new.sh")
+func (s *ScooterMQTTClient) handleSelfUpdateCommand(params map[string]interface{}, requestID string) error {
+	updateURL, ok := params["url"].(string)
+	if !ok || updateURL == "" {
+		return fmt.Errorf("update URL not specified or invalid")
+	}
+
+	checksum, ok := params["checksum"].(string)
+	if !ok || checksum == "" {
+		return fmt.Errorf("checksum not specified or invalid")
+	}
+
+	// Execute the update script
+	cmd := exec.Command("/usr/bin/radio-gaga-update.sh", updateURL, checksum)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true, // Run in new process group
 	}
-	return cmd.Start()
+
+	// Capture output for logging/debugging
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("Update script failed: %v\nOutput:\n%s", err, string(output))
+		// The script itself sends detailed errors to stdout/stderr, which CombinedOutput captures.
+		// We'll just return a generic error here, and the script's output can be logged on the Sunshine side if needed.
+		return fmt.Errorf("update script execution failed: %v", err)
+	}
+
+	log.Printf("Update script executed successfully.\nOutput:\n%s", string(output))
+	return nil
 }
 
 func (s *ScooterMQTTClient) handleGetStateCommand() error {
@@ -1206,6 +1230,32 @@ func (s *ScooterMQTTClient) handleAlarmCommand(params map[string]interface{}) er
 	return s.startAlarmWithConfig(duration, flashHazards, honkHorn, hornOnTime, hornOffTime)
 }
 
+func (s *ScooterMQTTClient) handleNavigateCommand(params map[string]interface{}, requestID string) error {
+	lat, latOK := params["latitude"].(float64)
+	lng, lngOK := params["longitude"].(float64)
+
+	if !latOK || !lngOK {
+		return fmt.Errorf("invalid or missing latitude/longitude parameters")
+	}
+
+	// Format coordinates as "latitude,longitude" string
+	coords := fmt.Sprintf("%f,%f", lat, lng)
+
+	// Set the destination in Redis
+	if err := s.redisClient.HSet(s.ctx, "navigation", "destination", coords).Err(); err != nil {
+		return fmt.Errorf("failed to set navigation destination in Redis: %v", err)
+	}
+
+	// Publish notification to the navigation channel
+	if err := s.redisClient.Publish(s.ctx, "navigation", "destination").Err(); err != nil {
+		// Log the error but don't fail the command, as the HSET succeeded
+		log.Printf("Warning: Failed to publish navigation destination update: %v", err)
+	}
+
+	log.Printf("Navigation target set to: %s", coords)
+	return nil
+}
+
 func (s *ScooterMQTTClient) handleRedisCommand(params map[string]interface{}, requestID string) error {
 	cmd, ok := params["cmd"].(string)
 	if !ok {
@@ -1266,6 +1316,20 @@ func (s *ScooterMQTTClient) handleRedisCommand(params map[string]interface{}, re
 			return fmt.Errorf("lpop requires exactly 1 argument")
 		}
 		result, err = s.redisClient.LPop(ctx, args[0].(string)).Result()
+
+	case "publish":
+		if len(args) != 2 {
+			return fmt.Errorf("publish requires exactly 2 arguments")
+		}
+		channel, ok := args[0].(string)
+		if !ok {
+			return fmt.Errorf("publish channel must be a string")
+		}
+		message, ok := args[1].(string)
+		if !ok {
+			return fmt.Errorf("publish message must be a string")
+		}
+		result, err = s.redisClient.Publish(ctx, channel, message).Result()
 
 	default:
 		return fmt.Errorf("unsupported redis command: %s", cmd)
