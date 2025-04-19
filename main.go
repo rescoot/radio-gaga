@@ -4,12 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -47,6 +52,33 @@ type Config struct {
 	RedisURL    string             `yaml:"redis_url"`
 	Telemetry   TelemetryConfig    `yaml:"telemetry"`
 	Commands    map[string]Command `yaml:"commands"`
+	ServiceName string             `yaml:"service_name,omitempty"`
+}
+
+// detectServiceName tries to determine the systemd service name from the current process
+func detectServiceName() string {
+	// Try to read the process's cgroup to find the service name
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, ".service") {
+				parts := strings.Split(line, ".service")
+				if len(parts) > 0 {
+					serviceParts := strings.Split(parts[0], "/")
+					if len(serviceParts) > 0 {
+						serviceName := serviceParts[len(serviceParts)-1] + ".service"
+						if serviceName != "" {
+							return serviceName
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Default to rescoot-radio-gaga.service if we can't detect it
+	return "rescoot-radio-gaga.service"
 }
 
 type ScooterConfig struct {
@@ -1095,23 +1127,137 @@ func (s *ScooterMQTTClient) handleSelfUpdateCommand(params map[string]interface{
 		return fmt.Errorf("checksum not specified or invalid")
 	}
 
-	// Execute the update script
-	cmd := exec.Command("/usr/bin/radio-gaga-update.sh", updateURL, checksum)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true, // Run in new process group
+	// Parse checksum algorithm and value
+	parts := strings.SplitN(checksum, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid checksum format. Expected format: algorithm:value")
 	}
+	algorithm, expectedChecksum := parts[0], parts[1]
 
-	// Capture output for logging/debugging
-	output, err := cmd.CombinedOutput()
+	// Download new binary to temporary location
+	tempFile, err := os.CreateTemp("", "radio-gaga-*.new")
 	if err != nil {
-		log.Printf("Update script failed: %v\nOutput:\n%s", err, string(output))
-		// The script itself sends detailed errors to stdout/stderr, which CombinedOutput captures.
-		// We'll just return a generic error here, and the script's output can be logged on the Sunshine side if needed.
-		return fmt.Errorf("update script execution failed: %v", err)
+		return fmt.Errorf("failed to create temporary file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	log.Printf("Downloading new binary from %s", updateURL)
+	resp, err := http.Get(updateURL)
+	if err != nil {
+		return fmt.Errorf("failed to download new binary: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Calculate checksum while downloading
+	var hasher hash.Hash
+	switch algorithm {
+	case "sha256":
+		hasher = sha256.New()
+	case "sha1":
+		hasher = sha1.New()
+	default:
+		return fmt.Errorf("unsupported checksum algorithm: %s (supported: sha256, sha1)", algorithm)
 	}
 
-	log.Printf("Update script executed successfully.\nOutput:\n%s", string(output))
+	writer := io.MultiWriter(tempFile, hasher)
+	if _, err := io.Copy(writer, resp.Body); err != nil {
+		return fmt.Errorf("failed to save new binary: %v", err)
+	}
+	tempFile.Close()
+
+	// Verify checksum
+	calculatedChecksum := fmt.Sprintf("%x", hasher.Sum(nil))
+	if calculatedChecksum != expectedChecksum {
+		return fmt.Errorf("checksum mismatch. Expected: %s, got: %s", expectedChecksum, calculatedChecksum)
+	}
+
+	// Make new binary executable
+	if err := os.Chmod(tempFile.Name(), 0755); err != nil {
+		return fmt.Errorf("failed to make new binary executable: %v", err)
+	}
+
+	// Get current executable path
+	currentExe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get current executable path: %v", err)
+	}
+
+	// Create backup of current binary
+	backupPath := currentExe + ".old"
+	if err := os.Rename(currentExe, backupPath); err != nil {
+		return fmt.Errorf("failed to create backup: %v", err)
+	}
+
+	// Move new binary into place
+	if err := os.Rename(tempFile.Name(), currentExe); err != nil {
+		// Try to restore backup if moving new binary fails
+		if restoreErr := os.Rename(backupPath, currentExe); restoreErr != nil {
+			return fmt.Errorf("failed to move new binary and restore backup: %v (original error: %v)", restoreErr, err)
+		}
+		return fmt.Errorf("failed to move new binary into place: %v", err)
+	}
+
+	// Get service name from config or detect it
+	serviceName := s.config.ServiceName
+	if serviceName == "" {
+		serviceName = detectServiceName()
+	}
+
+	// Start verification process in a goroutine
+	go func() {
+		// Restart the service
+		cmd := exec.Command("systemctl", "restart", serviceName)
+		if err := cmd.Run(); err != nil {
+			log.Printf("Failed to restart service: %v", err)
+			s.rollbackUpdate(currentExe, backupPath)
+			return
+		}
+
+		// Wait 10 seconds and verify the service is still running
+		time.Sleep(10 * time.Second)
+
+		cmd = exec.Command("systemctl", "is-active", serviceName)
+		output, err := cmd.Output()
+		if err != nil || strings.TrimSpace(string(output)) != "active" {
+			log.Printf("New version failed verification: %v", err)
+			s.rollbackUpdate(currentExe, backupPath)
+			return
+		}
+
+		// If we get here, update was successful - remove backup
+		os.Remove(backupPath)
+		log.Printf("Update successfully completed and verified")
+	}()
+
 	return nil
+}
+
+func (s *ScooterMQTTClient) rollbackUpdate(currentExe, backupPath string) {
+	serviceName := s.config.ServiceName
+	if serviceName == "" {
+		serviceName = detectServiceName()
+	}
+	log.Printf("Rolling back update...")
+
+	// Stop the service
+	exec.Command("systemctl", "stop", serviceName).Run()
+
+	// Remove failed binary
+	os.Remove(currentExe)
+
+	// Restore backup
+	if err := os.Rename(backupPath, currentExe); err != nil {
+		log.Printf("Failed to restore backup: %v", err)
+		return
+	}
+
+	// Restart service with old binary
+	if err := exec.Command("systemctl", "restart", serviceName).Run(); err != nil {
+		log.Printf("Failed to restart service after rollback: %v", err)
+		return
+	}
+
+	log.Printf("Rollback completed successfully")
 }
 
 func (s *ScooterMQTTClient) handleGetStateCommand() error {
