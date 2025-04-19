@@ -135,13 +135,13 @@ type CBBatteryData struct {
 	CellVoltage       int    `json:"cell_voltage"`
 	CycleCount        int    `json:"cycle_count"`
 	FullCapacity      int    `json:"full_capacity"`
-	PartNumber        string `json:"part-number"`
+	PartNumber        string `json:"part_number"`
 	Present           bool   `json:"present"`
-	RemainingCapacity int    `json:"remaining-capacity"`
-	SerialNumber      string `json:"serial-number"`
-	TimeToEmpty       int    `json:"time-to-empty"`
-	TimeToFull        int    `json:"time-to-full"`
-	UniqueID          string `json:"unique-id"`
+	RemainingCapacity int    `json:"remaining_capacity"`
+	SerialNumber      string `json:"serial_number"`
+	TimeToEmpty       int    `json:"time_to_empty"`
+	TimeToFull        int    `json:"time_to_full"`
+	UniqueID          string `json:"unique_id"`
 }
 
 type SystemInfo struct {
