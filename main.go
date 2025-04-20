@@ -949,13 +949,13 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 	var lastState string
 
 	// Subscribe to state changes
-	pubsub := s.redisClient.Subscribe(s.ctx, "vehicle")
+	pubsub := s.redisClient.Subscribe(s.ctx, "vehicle", "power-manager")
 	defer pubsub.Close()
 
 	// Start goroutine to handle state change notifications
 	go func() {
 		for {
-			_, err := pubsub.ReceiveMessage(s.ctx)
+			msg, err := pubsub.ReceiveMessage(s.ctx)
 			if err != nil {
 				if err != context.Canceled {
 					log.Printf("Error receiving message: %v", err)
@@ -963,12 +963,44 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				return
 			}
 
-			// Get new interval when state changes
-			newInterval, reason := s.getTelemetryInterval()
-			if newInterval != interval {
-				log.Printf("Updating telemetry interval to %v (%s)", newInterval, reason)
-				ticker.Reset(newInterval)
-				interval = newInterval
+			switch msg.Channel {
+			case "vehicle":
+				// Get new interval when state changes
+				newInterval, reason := s.getTelemetryInterval()
+				if newInterval != interval {
+					log.Printf("Updating telemetry interval to %v (%s)", newInterval, reason)
+					ticker.Reset(newInterval)
+					interval = newInterval
+				}
+			case "power-manager":
+				// Check if we need to handle power state change
+				powerState, err := s.redisClient.HGet(s.ctx, "power-manager", "state").Result()
+				if err != nil {
+					log.Printf("Error getting power state: %v", err)
+					continue
+				}
+
+				if powerState == "suspend" {
+					log.Printf("Power manager entering suspend state")
+					
+					// Create a brief inhibitor to give us time for final telemetry
+					if err := s.redisClient.Set(s.ctx, "power-manager:inhibit:radio-gaga", "final telemetry", time.Second*2).Err(); err != nil {
+						log.Printf("Failed to set power manager inhibit: %v", err)
+					}
+
+					// Get and publish final telemetry
+					if current, err := s.getTelemetryFromRedis(); err == nil {
+						if err := s.publishTelemetryData(current); err != nil {
+							log.Printf("Failed to publish final telemetry: %v", err)
+						} else {
+							log.Printf("Published final telemetry before suspend")
+						}
+					} else {
+						log.Printf("Failed to get final telemetry: %v", err)
+					}
+
+					// The inhibitor will automatically expire after 2 seconds
+				}
 			}
 		}
 	}()
