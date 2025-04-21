@@ -241,7 +241,13 @@ type TelemetryData struct {
 	BLE          BLEStatus          `json:"ble"`
 	Keycard      KeycardStatus      `json:"keycard"`
 	Dashboard    DashboardStatus    `json:"dashboard"`
+	Navigation   NavigationData     `json:"navigation,omitempty"` // Added for SUN-40
 	Timestamp    string             `json:"timestamp"`
+}
+
+// NavigationData holds the current navigation target (SUN-40)
+type NavigationData struct {
+	Destination string `json:"destination,omitempty"` // e.g., "lat,lng"
 }
 
 type CommandMessage struct {
@@ -989,6 +995,18 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 		Ready:        dashboard["ready"] == "true",
 		SerialNumber: dashboard["serial-number"],
 	}
+
+	// Get navigation data (SUN-40)
+	navDest, err := s.redisClient.HGet(s.ctx, "navigation", "destination").Result()
+	if err != nil && err != redis.Nil {
+		// Log error but don't fail telemetry retrieval if navigation data is missing
+		log.Printf("Warning: Failed to get navigation destination: %v", err)
+	} else if err == nil {
+		telemetry.Navigation = NavigationData{
+			Destination: navDest,
+		}
+	}
+	// If err is redis.Nil, telemetry.Navigation remains empty/zeroed, which is fine.
 
 	telemetry.Timestamp = time.Now().UTC().Format(time.RFC3339)
 
