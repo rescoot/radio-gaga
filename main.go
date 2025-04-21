@@ -181,8 +181,8 @@ type SystemInfo struct {
 	Environment  string `json:"environment"`
 	NrfFWVersion string `json:"nrf_fw_version"`
 	DbcVersion   string `json:"dbc_version"`
-	DBCFlavor    string `json:"dbc_flavor,omitempty"` // Renamed for SUN-47: "stock" or "librescoot"
-	MDBFlavor    string `json:"mdb_flavor,omitempty"` // Added for SUN-47: "stock" or "librescoot"
+	DBCFlavor    string `json:"dbc_flavor,omitempty"`
+	MDBFlavor    string `json:"mdb_flavor,omitempty"`
 }
 
 type ConnectivityStatus struct {
@@ -192,6 +192,20 @@ type ConnectivityStatus struct {
 	IPAddress      string `json:"ip_address"`
 	AccessTech     string `json:"access_tech"`
 	SignalQuality  int    `json:"signal_quality"`
+	ModemHealth    string `json:"modem_health,omitempty"`
+	SIMIMEI        string `json:"sim_imei,omitempty"`
+	SIMIMSI        string `json:"sim_imsi,omitempty"`
+	SIMICCID       string `json:"sim_iccid,omitempty"`
+}
+
+type ModemData struct {
+	PowerState       string `json:"power_state,omitempty"`
+	SIMState         string `json:"sim_state,omitempty"`
+	SIMLock          string `json:"sim_lock,omitempty"`
+	OperatorName     string `json:"operator_name,omitempty"`
+	OperatorCode     string `json:"operator_code,omitempty"`
+	IsRoaming        bool   `json:"is_roaming,omitempty"`
+	RegistrationFail string `json:"registration_fail,omitempty"`
 }
 
 type GPSData struct {
@@ -200,6 +214,8 @@ type GPSData struct {
 	Altitude float64 `json:"altitude"`
 	GpsSpeed float64 `json:"gps_speed"`
 	Course   float64 `json:"course"`
+	State    string  `json:"state,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 type PowerStatus struct {
@@ -236,18 +252,18 @@ type TelemetryData struct {
 	CBBattery    CBBatteryData      `json:"cbb_battery"`
 	System       SystemInfo         `json:"system"`
 	Connectivity ConnectivityStatus `json:"connectivity"`
+	Modem        ModemData          `json:"modem,omitempty"`
 	GPS          GPSData            `json:"gps"`
 	Power        PowerStatus        `json:"power"`
 	BLE          BLEStatus          `json:"ble"`
 	Keycard      KeycardStatus      `json:"keycard"`
 	Dashboard    DashboardStatus    `json:"dashboard"`
-	Navigation   NavigationData     `json:"navigation,omitempty"` // Added for SUN-40
+	Navigation   NavigationData     `json:"navigation,omitempty"`
 	Timestamp    string             `json:"timestamp"`
 }
 
-// NavigationData holds the current navigation target (SUN-40)
 type NavigationData struct {
-	Destination string `json:"destination,omitempty"` // e.g., "lat,lng"
+	Destination string `json:"destination,omitempty"`
 }
 
 type CommandMessage struct {
@@ -672,12 +688,11 @@ func (s *ScooterMQTTClient) Start() error {
 	log.Printf("Subscribed to commands channel %s", commandTopic)
 
 	go s.publishTelemetry()
-	go s.watchDashboardStatus() // Added for SUN-47
+	go s.watchDashboardStatus()
 
 	return nil
 }
 
-// watchDashboardStatus subscribes to the dashboard channel for readiness signals (SUN-47)
 func (s *ScooterMQTTClient) watchDashboardStatus() {
 	pubsub := s.redisClient.Subscribe(s.ctx, "dashboard")
 	defer pubsub.Close()
@@ -688,7 +703,7 @@ func (s *ScooterMQTTClient) watchDashboardStatus() {
 	ready, _ := s.redisClient.HGet(s.ctx, "dashboard", "ready").Result()
 	if ready == "true" {
 		log.Println("Dashboard already ready on startup, checking hostname...")
-		go s.checkAndStoreDBCFlavor() // Renamed function
+		go s.checkAndStoreDBCFlavor()
 	}
 
 	for {
@@ -707,13 +722,12 @@ func (s *ScooterMQTTClient) watchDashboardStatus() {
 
 		if msg.Channel == "dashboard" && msg.Payload == "ready" {
 			log.Println("Dashboard reported ready, checking hostname...")
-			go s.checkAndStoreDBCFlavor() // Renamed function, Run check in a separate goroutine to avoid blocking
+			go s.checkAndStoreDBCFlavor()
 		}
 	}
 }
 
-// checkAndStoreDBCFlavor runs SSH to get the DBC hostname and stores its flavor (SUN-47)
-func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() { // Renamed function
+func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 	// Execute ssh command
 	// Note: Ensure ssh keys are set up for passwordless login from MDB to DBC
 	// Use a timeout for the SSH command
@@ -726,18 +740,18 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() { // Renamed function
 
 	if ctx.Err() == context.DeadlineExceeded {
 		log.Printf("SSH command timed out while checking DBC hostname")
-		s.redisClient.HSet(s.ctx, "system", "dbc_flavor", "unknown_timeout").Err() // Updated key
+		s.redisClient.HSet(s.ctx, "system", "dbc_flavor", "unknown_timeout").Err()
 		return
 	}
 	if err != nil {
 		log.Printf("Failed to SSH to DBC or run hostname: %v", err)
 		// Optionally set an 'unknown' or 'error' state in Redis
-		s.redisClient.HSet(s.ctx, "system", "dbc_flavor", "unknown_ssh_error").Err() // Updated key
+		s.redisClient.HSet(s.ctx, "system", "dbc_flavor", "unknown_ssh_error").Err()
 		return
 	}
 
 	hostname := strings.TrimSpace(string(output))
-	var dbcFlavor string // Renamed variable
+	var dbcFlavor string
 
 	if strings.HasPrefix(hostname, "librescoot-") {
 		dbcFlavor = "librescoot"
@@ -749,7 +763,7 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() { // Renamed function
 	}
 
 	// Store the result in Redis
-	err = s.redisClient.HSet(s.ctx, "system", "dbc_flavor", dbcFlavor).Err() // Updated key
+	err = s.redisClient.HSet(s.ctx, "system", "dbc_flavor", dbcFlavor).Err()
 	if err != nil {
 		log.Printf("Failed to store DBC flavor '%s' in Redis: %v", dbcFlavor, err)
 	} else {
@@ -918,8 +932,8 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 		DbcVersion:   system["dbc-version"],
 		MdbVersion:   system["mdb-version"],
 		NrfFWVersion: system["nrf-fw-version"],
-		DBCFlavor:    system["dbc_flavor"], // Updated for SUN-47
-		MDBFlavor:    system["mdb_flavor"], // Added for SUN-47
+		DBCFlavor:    system["dbc_flavor"],
+		MDBFlavor:    system["mdb_flavor"],
 	}
 
 	// Get internet connectivity status
@@ -934,6 +948,25 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 		InternetStatus: internet["status"],
 		IPAddress:      internet["ip-address"],
 		CloudStatus:    internet["unu-cloud"],
+		ModemHealth:    internet["modem-health"],
+		SIMIMEI:        internet["sim-imei"],
+		SIMIMSI:        internet["sim-imsi"],
+		SIMICCID:       internet["sim-iccid"],
+	}
+
+	modem, err := s.redisClient.HGetAll(s.ctx, "modem").Result()
+	if err != nil && err != redis.Nil {
+		log.Printf("Warning: Failed to get modem data: %v", err)
+	} else if err == nil {
+		telemetry.Modem = ModemData{
+			PowerState:       modem["power-state"],
+			SIMState:         modem["sim-state"],
+			SIMLock:          modem["sim-lock"],
+			OperatorName:     modem["operator-name"],
+			OperatorCode:     modem["operator-code"],
+			IsRoaming:        modem["is-roaming"] == "true",
+			RegistrationFail: modem["registration-fail"],
+		}
 	}
 
 	// Get GPS data
@@ -947,6 +980,8 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 		Altitude: parseFloat(gps["altitude"]),
 		GpsSpeed: parseFloat(gps["speed"]),
 		Course:   parseFloat(gps["course"]),
+		State:    gps["state"],
+		Timestamp: gps["timestamp"],
 	}
 
 	// Get power management and mux status
@@ -996,17 +1031,15 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 		SerialNumber: dashboard["serial-number"],
 	}
 
-	// Get navigation data (SUN-40)
+	// Get navigation data
 	navDest, err := s.redisClient.HGet(s.ctx, "navigation", "destination").Result()
 	if err != nil && err != redis.Nil {
-		// Log error but don't fail telemetry retrieval if navigation data is missing
 		log.Printf("Warning: Failed to get navigation destination: %v", err)
 	} else if err == nil {
 		telemetry.Navigation = NavigationData{
 			Destination: navDest,
 		}
 	}
-	// If err is redis.Nil, telemetry.Navigation remains empty/zeroed, which is fine.
 
 	telemetry.Timestamp = time.Now().UTC().Format(time.RFC3339)
 
