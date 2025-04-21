@@ -181,6 +181,8 @@ type SystemInfo struct {
 	Environment  string `json:"environment"`
 	NrfFWVersion string `json:"nrf_fw_version"`
 	DbcVersion   string `json:"dbc_version"`
+	DBCFlavor    string `json:"dbc_flavor,omitempty"` // Renamed for SUN-47: "stock" or "librescoot"
+	MDBFlavor    string `json:"mdb_flavor,omitempty"` // Added for SUN-47: "stock" or "librescoot"
 }
 
 type ConnectivityStatus struct {
@@ -530,6 +532,29 @@ func NewScooterMQTTClient(config *Config) (*ScooterMQTTClient, error) {
 		return nil, fmt.Errorf("redis connection failed: %v", err)
 	}
 
+	// Determine and store MDB flavor (SUN-47)
+	mdbHostname, err := os.Hostname()
+	if err != nil {
+		log.Printf("Warning: Failed to get MDB hostname: %v", err)
+		redisClient.HSet(ctx, "system", "mdb_flavor", "unknown_error").Err()
+	} else {
+		var mdbFlavor string
+		if strings.HasPrefix(mdbHostname, "librescoot-") {
+			mdbFlavor = "librescoot"
+		} else if strings.HasPrefix(mdbHostname, "mdb-") {
+			mdbFlavor = "stock"
+		} else {
+			mdbFlavor = "unknown"
+			log.Printf("Unrecognized MDB hostname format: %s", mdbHostname)
+		}
+		err = redisClient.HSet(ctx, "system", "mdb_flavor", mdbFlavor).Err()
+		if err != nil {
+			log.Printf("Failed to store MDB flavor '%s' in Redis: %v", mdbFlavor, err)
+		} else {
+			log.Printf("Stored MDB flavor as '%s' based on hostname '%s'", mdbFlavor, mdbHostname)
+		}
+	}
+
 	// Check Redis if values aren't already set in config
 	if config.MQTT.BrokerURL == "" {
 		if brokerURL, err := redisClient.HGet(ctx, "settings", "cloud:mqtt-url").Result(); err == nil && brokerURL != "" {
@@ -641,8 +666,89 @@ func (s *ScooterMQTTClient) Start() error {
 	log.Printf("Subscribed to commands channel %s", commandTopic)
 
 	go s.publishTelemetry()
+	go s.watchDashboardStatus() // Added for SUN-47
 
 	return nil
+}
+
+// watchDashboardStatus subscribes to the dashboard channel for readiness signals (SUN-47)
+func (s *ScooterMQTTClient) watchDashboardStatus() {
+	pubsub := s.redisClient.Subscribe(s.ctx, "dashboard")
+	defer pubsub.Close()
+
+	log.Println("Subscribed to dashboard status channel")
+
+	// Check initial state on startup in case dashboard is already ready
+	ready, _ := s.redisClient.HGet(s.ctx, "dashboard", "ready").Result()
+	if ready == "true" {
+		log.Println("Dashboard already ready on startup, checking hostname...")
+		go s.checkAndStoreDBCFlavor() // Renamed function
+	}
+
+	for {
+		msg, err := pubsub.ReceiveMessage(s.ctx)
+		if err != nil {
+			// Check if the error is due to context cancellation (expected on shutdown)
+			if s.ctx.Err() != nil {
+				log.Println("Dashboard status watcher stopping due to context cancellation.")
+				return
+			}
+			log.Printf("Error receiving dashboard message: %v", err)
+			// Avoid busy-looping on persistent errors
+			time.Sleep(5 * time.Second)
+			continue // Attempt to resubscribe or handle error
+		}
+
+		if msg.Channel == "dashboard" && msg.Payload == "ready" {
+			log.Println("Dashboard reported ready, checking hostname...")
+			go s.checkAndStoreDBCFlavor() // Renamed function, Run check in a separate goroutine to avoid blocking
+		}
+	}
+}
+
+// checkAndStoreDBCFlavor runs SSH to get the DBC hostname and stores its flavor (SUN-47)
+func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() { // Renamed function
+	// Execute ssh command
+	// Note: Ensure ssh keys are set up for passwordless login from MDB to DBC
+	// Use a timeout for the SSH command
+	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second) // 10-second timeout
+	defer cancel()
+
+	// Use Dropbear-compatible options: -y -y attempts to auto-accept host key. Timeout handled by Go context.
+	cmd := exec.CommandContext(ctx, "ssh", "-y", "-y", "root@192.168.7.2", "hostname")
+	output, err := cmd.Output()
+
+	if ctx.Err() == context.DeadlineExceeded {
+		log.Printf("SSH command timed out while checking DBC hostname")
+		s.redisClient.HSet(s.ctx, "system", "dbc_flavor", "unknown_timeout").Err() // Updated key
+		return
+	}
+	if err != nil {
+		log.Printf("Failed to SSH to DBC or run hostname: %v", err)
+		// Optionally set an 'unknown' or 'error' state in Redis
+		s.redisClient.HSet(s.ctx, "system", "dbc_flavor", "unknown_ssh_error").Err() // Updated key
+		return
+	}
+
+	hostname := strings.TrimSpace(string(output))
+	var dbcFlavor string // Renamed variable
+
+	if strings.HasPrefix(hostname, "librescoot-") {
+		dbcFlavor = "librescoot"
+	} else if strings.HasPrefix(hostname, "mdb-") {
+		dbcFlavor = "stock"
+	} else {
+		dbcFlavor = "unknown"
+		log.Printf("Unrecognized DBC hostname format: %s", hostname)
+	}
+
+	// Store the result in Redis
+	err = s.redisClient.HSet(s.ctx, "system", "dbc_flavor", dbcFlavor).Err() // Updated key
+	if err != nil {
+		log.Printf("Failed to store DBC flavor '%s' in Redis: %v", dbcFlavor, err)
+	} else {
+		log.Printf("Stored DBC flavor as '%s' based on hostname '%s'", dbcFlavor, hostname)
+	}
 }
 
 func (s *ScooterMQTTClient) Stop() {
@@ -806,6 +912,8 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 		DbcVersion:   system["dbc-version"],
 		MdbVersion:   system["mdb-version"],
 		NrfFWVersion: system["nrf-fw-version"],
+		DBCFlavor:    system["dbc_flavor"], // Updated for SUN-47
+		MDBFlavor:    system["mdb_flavor"], // Added for SUN-47
 	}
 
 	// Get internet connectivity status
