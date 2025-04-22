@@ -1,0 +1,76 @@
+name: Build and Release
+
+# This workflow handles:
+# 1. Building radio-gaga for ARM on every push to main and PR
+# 2. Creating releases with ARM builds automatically when tags are pushed
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]  # Run workflow and create release on version tags
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # This fetches all history for versioning
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22.0'
+
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Build for ARM
+      run: make dist
+      # Uses the dist target which creates optimized ARM builds
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      # Save the built artifact for use in the release job
+      with:
+        name: radio-gaga-arm
+        path: radio-gaga-arm-dist
+        
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      
+    - name: Download build artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: radio-gaga-arm
+        path: ./
+
+    - name: Rename artifact to include version
+      run: |
+        # Extract tag name from ref and add to filename
+        TAG_NAME=${GITHUB_REF#refs/tags/}
+        mv radio-gaga-arm-dist radio-gaga-${TAG_NAME}-arm
+        chmod +x radio-gaga-${TAG_NAME}-arm
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: radio-gaga-${{ github.ref_name }}-arm
+        draft: false
+        prerelease: false
+        generate_release_notes: true

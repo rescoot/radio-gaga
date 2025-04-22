@@ -1,5 +1,7 @@
 # Radio Gaga
 
+[![Build and Release](https://github.com/rescoot/radio-gaga/actions/workflows/build-and-release.yml/badge.svg)](https://github.com/rescoot/radio-gaga/actions/workflows/build-and-release.yml)
+
 ## Overview
 
 Radio Gaga is a telemetry and remote control system designed for managing electric scooters.
@@ -158,6 +160,21 @@ make arm    # Linux ARM build
 
 # Distribution build for deployment
 make dist
+```
+
+### Automated Builds
+
+Radio Gaga uses GitHub Actions for continuous integration and deployment:
+
+- Every push to the `main` branch and pull requests trigger an ARM build
+- When a tag (starting with 'v', e.g., v1.0.0) is pushed, a GitHub Release is automatically created
+- Release artifacts include an optimized ARM build named `radio-gaga-[version]-arm`
+
+To create a new release, simply push a tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 ## Running
