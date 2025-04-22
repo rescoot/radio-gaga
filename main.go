@@ -209,13 +209,13 @@ type ModemData struct {
 }
 
 type GPSData struct {
-	Lat      float64 `json:"lat"`
-	Lng      float64 `json:"lng"`
-	Altitude float64 `json:"altitude"`
-	GpsSpeed float64 `json:"gps_speed"`
-	Course   float64 `json:"course"`
-	State    string  `json:"state,omitempty"`
-	Timestamp string `json:"timestamp,omitempty"`
+	Lat       float64 `json:"lat"`
+	Lng       float64 `json:"lng"`
+	Altitude  float64 `json:"altitude"`
+	GpsSpeed  float64 `json:"gps_speed"`
+	Course    float64 `json:"course"`
+	State     string  `json:"state,omitempty"`
+	Timestamp string  `json:"timestamp,omitempty"`
 }
 
 type PowerStatus struct {
@@ -243,23 +243,25 @@ type DashboardStatus struct {
 
 // Main telemetry data structure
 type TelemetryData struct {
-	Version      int                `json:"version"`
-	VehicleState VehicleState       `json:"vehicle_state"`
-	Engine       EngineData         `json:"engine"`
-	Battery0     BatteryData        `json:"battery0"`
-	Battery1     BatteryData        `json:"battery1"`
-	AuxBattery   AuxBatteryData     `json:"aux_battery"`
-	CBBattery    CBBatteryData      `json:"cbb_battery"`
-	System       SystemInfo         `json:"system"`
-	Connectivity ConnectivityStatus `json:"connectivity"`
-	Modem        ModemData          `json:"modem,omitempty"`
-	GPS          GPSData            `json:"gps"`
-	Power        PowerStatus        `json:"power"`
-	BLE          BLEStatus          `json:"ble"`
-	Keycard      KeycardStatus      `json:"keycard"`
-	Dashboard    DashboardStatus    `json:"dashboard"`
-	Navigation   NavigationData     `json:"navigation,omitempty"`
-	Timestamp    string             `json:"timestamp"`
+	Version      int                    `json:"version"`
+	BuildVersion string                 `json:"build_version,omitempty"`
+	Config       map[string]interface{} `json:"config,omitempty"`
+	VehicleState VehicleState           `json:"vehicle_state"`
+	Engine       EngineData             `json:"engine"`
+	Battery0     BatteryData            `json:"battery0"`
+	Battery1     BatteryData            `json:"battery1"`
+	AuxBattery   AuxBatteryData         `json:"aux_battery"`
+	CBBattery    CBBatteryData          `json:"cbb_battery"`
+	System       SystemInfo             `json:"system"`
+	Connectivity ConnectivityStatus     `json:"connectivity"`
+	Modem        ModemData              `json:"modem,omitempty"`
+	GPS          GPSData                `json:"gps"`
+	Power        PowerStatus            `json:"power"`
+	BLE          BLEStatus              `json:"ble"`
+	Keycard      KeycardStatus          `json:"keycard"`
+	Dashboard    DashboardStatus        `json:"dashboard"`
+	Navigation   NavigationData         `json:"navigation,omitempty"`
+	Timestamp    string                 `json:"timestamp"`
 }
 
 type NavigationData struct {
@@ -836,7 +838,24 @@ func (s *ScooterMQTTClient) getTelemetryInterval() (time.Duration, string) {
 }
 
 func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
-	telemetry := &TelemetryData{Version: 2}
+	// Create a map from the config struct, excluding the token
+	configMap := make(map[string]interface{})
+	configBytes, _ := yaml.Marshal(s.config)
+	yaml.Unmarshal(configBytes, &configMap)
+
+	// Explicitly remove the token
+	if scooterConfig, ok := configMap["scooter"].(map[interface{}]interface{}); ok {
+		delete(scooterConfig, "token")
+	} else if scooterConfig, ok := configMap["scooter"].(map[string]interface{}); ok {
+		delete(scooterConfig, "token")
+	}
+
+
+	telemetry := &TelemetryData{
+		Version:      2,
+		BuildVersion: version,
+		Config:       configMap,
+	}
 
 	// Get vehicle state
 	vehicle, err := s.redisClient.HGetAll(s.ctx, "vehicle").Result()
@@ -975,12 +994,12 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 		return nil, fmt.Errorf("failed to get GPS data: %v", err)
 	}
 	telemetry.GPS = GPSData{
-		Lat:      parseFloat(gps["latitude"]),
-		Lng:      parseFloat(gps["longitude"]),
-		Altitude: parseFloat(gps["altitude"]),
-		GpsSpeed: parseFloat(gps["speed"]),
-		Course:   parseFloat(gps["course"]),
-		State:    gps["state"],
+		Lat:       parseFloat(gps["latitude"]),
+		Lng:       parseFloat(gps["longitude"]),
+		Altitude:  parseFloat(gps["altitude"]),
+		GpsSpeed:  parseFloat(gps["speed"]),
+		Course:    parseFloat(gps["course"]),
+		State:     gps["state"],
 		Timestamp: gps["timestamp"],
 	}
 
@@ -1141,7 +1160,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 				if powerState == "suspend" {
 					log.Printf("Power manager entering suspend state")
-					
+
 					// Create a brief inhibitor to give us time for final telemetry
 					if err := s.redisClient.Set(s.ctx, "power-manager:inhibit:radio-gaga", "final telemetry", time.Second*2).Err(); err != nil {
 						log.Printf("Failed to set power manager inhibit: %v", err)
