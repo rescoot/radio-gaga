@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -332,6 +333,32 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *models.TelemetryData) 
 		return fmt.Errorf("failed to marshal telemetry: %v", err)
 	}
 
+	// Only show the detailed telemetry packet when debug is enabled
+	if s.config.Debug {
+		// Pretty print the JSON for detailed debugging
+		var prettyJSON bytes.Buffer
+		if err := json.Indent(&prettyJSON, telemetryJSON, "", "  "); err != nil {
+			log.Printf("Warning: Failed to format telemetry JSON: %v", err)
+		} else {
+			// Log complete telemetry packet
+			log.Printf("Telemetry packet to be transmitted:\n%s", prettyJSON.String())
+			
+			// Also check if Config is present
+			if current.Config != nil {
+				log.Printf("Config section is present with %d entries", len(current.Config))
+				
+				// Check if scooter config exists specifically
+				if scooter, ok := current.Config["scooter"]; ok {
+					log.Printf("Scooter config is present: %+v", scooter)
+				} else {
+					log.Printf("Scooter config is missing from Config map")
+				}
+			} else {
+				log.Printf("Config section is nil or empty")
+			}
+		}
+	}
+
 	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.Scooter.Identifier)
 	if token := s.mqttClient.Publish(topic, 1, false, telemetryJSON); token.Wait() && token.Error() != nil {
 		return fmt.Errorf("failed to publish telemetry: %v", token.Error())
@@ -452,9 +479,23 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 // cleanRetainedMessage removes a retained message by publishing an empty payload
 func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
-	if token := s.mqttClient.Publish(topic, 1, true, nil); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to clean retained message: %v", token.Error())
+	log.Printf("Attempting to clean retained message on topic: %s", topic)
+	
+	// Use an empty byte array as payload instead of nil
+	// Some MQTT libraries don't handle nil payloads correctly
+	emptyPayload := []byte{}
+	
+	token := s.mqttClient.Publish(topic, 1, true, emptyPayload)
+	token.Wait()
+	
+	if err := token.Error(); err != nil {
+		log.Printf("MQTT publish token error details: %+v", token)
+		log.Printf("MQTT client connection status: %v", s.mqttClient.IsConnectionOpen())
+		log.Printf("Error cleaning retained message. Topic: %s, Error: %v", topic, err)
+		return fmt.Errorf("failed to clean retained message: %v", err)
 	}
+	
+	log.Printf("Successfully cleaned retained message on topic: %s", topic)
 	return nil
 }
 

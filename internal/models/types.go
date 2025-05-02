@@ -10,6 +10,7 @@ type CommandLineFlags struct {
 	MqttKeepAlive string
 	RedisURL      string
 	Environment   string
+	Debug         bool
 	// Telemetry intervals
 	DrivingInterval          string
 	StandbyInterval          string
@@ -26,6 +27,7 @@ type Config struct {
 	Telemetry   TelemetryConfig    `yaml:"telemetry"`
 	Commands    map[string]Command `yaml:"commands"`
 	ServiceName string             `yaml:"service_name,omitempty"`
+	Debug       bool               `yaml:"debug,omitempty"`
 }
 
 // ScooterConfig contains scooter-specific configuration

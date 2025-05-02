@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v2"
 	"radio-gaga/internal/models"
+
+	"gopkg.in/yaml.v2"
 )
 
 // ParseFlags parses command line flags and returns them as a struct
@@ -24,6 +25,7 @@ func ParseFlags() *models.CommandLineFlags {
 	flag.StringVar(&flags.MqttCACert, "mqtt-cacert", "", "path to MQTT CA certificate")
 	flag.StringVar(&flags.MqttKeepAlive, "mqtt-keepalive", "30s", "MQTT keepalive duration")
 	flag.StringVar(&flags.RedisURL, "redis-url", "redis://localhost:6379", "Redis URL")
+	flag.BoolVar(&flags.Debug, "debug", false, "enable debug logging")
 
 	// Telemetry intervals
 	flag.StringVar(&flags.DrivingInterval, "driving-interval", "1s", "telemetry interval while driving")
@@ -100,6 +102,8 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 			config.Telemetry.Intervals.StandbyNoBattery = flags.StandbyNoBatteryInterval
 		case "hibernate-interval":
 			config.Telemetry.Intervals.Hibernate = flags.HibernateInterval
+		case "debug":
+			config.Debug = flags.Debug
 		}
 	})
 
