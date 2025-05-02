@@ -104,10 +104,11 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 	configBytes, _ := yaml.Marshal(config)
 	yaml.Unmarshal(configBytes, &configMap)
 
-	// Explicitly remove the token
-	if scooterConfig, ok := configMap["scooter"].(map[interface{}]interface{}); ok {
-		delete(scooterConfig, "token")
-	} else if scooterConfig, ok := configMap["scooter"].(map[string]interface{}); ok {
+	// Convert map with interface{} keys to string keys for JSON compatibility
+	configMap = utils.ConvertToStringKeyMap(configMap).(map[string]interface{})
+
+	// Explicitly remove the token (should now only have string keys)
+	if scooterConfig, ok := configMap["scooter"].(map[string]interface{}); ok {
 		delete(scooterConfig, "token")
 	}
 

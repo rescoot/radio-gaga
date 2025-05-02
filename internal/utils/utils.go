@@ -113,3 +113,34 @@ func ParseDuration(value interface{}) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid duration type: %T", value)
 	}
 }
+
+// ConvertToStringKeyMap recursively converts a map with interface{} keys to string keys
+// This is necessary for converting YAML-decoded maps to JSON-compatible maps
+func ConvertToStringKeyMap(m interface{}) interface{} {
+	switch x := m.(type) {
+	case map[interface{}]interface{}:
+		// Convert to map with string keys
+		stringMap := make(map[string]interface{})
+		for k, v := range x {
+			// Use reflect to safely convert any potential key type to string
+			kStr := fmt.Sprintf("%v", k)
+			stringMap[kStr] = ConvertToStringKeyMap(v)
+		}
+		return stringMap
+	case map[string]interface{}:
+		// Already has string keys, but values might need conversion
+		for k, v := range x {
+			x[k] = ConvertToStringKeyMap(v)
+		}
+		return x
+	case []interface{}:
+		// Convert slice elements
+		for i, v := range x {
+			x[i] = ConvertToStringKeyMap(v)
+		}
+		return x
+	default:
+		// Other types (string, int, etc.) can be returned as is
+		return m
+	}
+}
