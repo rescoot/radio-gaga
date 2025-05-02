@@ -481,17 +481,54 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
 	log.Printf("Attempting to clean retained message on topic: %s", topic)
 	
+	// First try to get the current message to see what's there
+	var currentMsg mqtt.Message
+	msgChan := make(chan mqtt.Message, 1)
+	
+	// Subscribe with a temporary handler to get the current retained message
+	token := s.mqttClient.Subscribe(topic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+		if msg.Retained() {
+			select {
+			case msgChan <- msg:
+			default:
+			}
+		}
+	})
+	
+	if token.Wait() && token.Error() != nil {
+		log.Printf("Warning: Failed to subscribe to check retained message on topic %s: %v", topic, token.Error())
+	} else {
+		// Wait briefly for any retained message
+		select {
+		case msg := <-msgChan:
+			currentMsg = msg
+			log.Printf("Found existing retained message on topic %s: payload length=%d, payload=%+v", 
+				topic, len(msg.Payload()), msg.Payload())
+		case <-time.After(500 * time.Millisecond):
+			log.Printf("No existing retained message found on topic %s within timeout", topic)
+		}
+		
+		// Unsubscribe from the temporary subscription
+		s.mqttClient.Unsubscribe(topic)
+	}
+	
 	// Use an empty byte array as payload instead of nil
 	// Some MQTT libraries don't handle nil payloads correctly
 	emptyPayload := []byte{}
+	log.Printf("Publishing empty payload with retain=true to topic %s", topic)
 	
-	token := s.mqttClient.Publish(topic, 1, true, emptyPayload)
+	token = s.mqttClient.Publish(topic, 1, true, emptyPayload)
 	token.Wait()
 	
 	if err := token.Error(); err != nil {
 		log.Printf("MQTT publish token error details: %+v", token)
 		log.Printf("MQTT client connection status: %v", s.mqttClient.IsConnectionOpen())
-		log.Printf("Error cleaning retained message. Topic: %s, Error: %v", topic, err)
+		if currentMsg != nil {
+			log.Printf("Failed to clean retained message. Topic: %s, Original payload type: %T, Original payload length: %d, Error: %v", 
+				topic, currentMsg.Payload(), len(currentMsg.Payload()), err)
+		} else {
+			log.Printf("Failed to clean retained message. Topic: %s, Error: %v", topic, err)
+		}
 		return fmt.Errorf("failed to clean retained message: %v", err)
 	}
 	

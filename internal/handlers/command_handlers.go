@@ -70,9 +70,60 @@ func (c *ClientImplementation) GetCommandParam(cmd, param string, defaultValue i
 
 // CleanRetainedMessage removes a retained message by publishing an empty payload
 func (c *ClientImplementation) CleanRetainedMessage(topic string) error {
-	if token := c.MQTTClient.Publish(topic, 1, true, nil); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to clean retained message: %v", token.Error())
+	log.Printf("Attempting to clean retained message on topic: %s", topic)
+	
+	// First try to get the current message to see what's there
+	var currentMsg mqtt.Message
+	msgChan := make(chan mqtt.Message, 1)
+	
+	// Subscribe with a temporary handler to get the current retained message
+	token := c.MQTTClient.Subscribe(topic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+		if msg.Retained() {
+			select {
+			case msgChan <- msg:
+			default:
+			}
+		}
+	})
+	
+	if token.Wait() && token.Error() != nil {
+		log.Printf("Warning: Failed to subscribe to check retained message on topic %s: %v", topic, token.Error())
+	} else {
+		// Wait briefly for any retained message
+		select {
+		case msg := <-msgChan:
+			currentMsg = msg
+			log.Printf("Found existing retained message on topic %s: payload length=%d, payload=%+v", 
+				topic, len(msg.Payload()), msg.Payload())
+		case <-time.After(500 * time.Millisecond):
+			log.Printf("No existing retained message found on topic %s within timeout", topic)
+		}
+		
+		// Unsubscribe from the temporary subscription
+		c.MQTTClient.Unsubscribe(topic)
 	}
+	
+	// Use an empty byte array as payload instead of nil
+	// Some MQTT libraries don't handle nil payloads correctly
+	emptyPayload := []byte{}
+	log.Printf("Publishing empty payload with retain=true to topic %s", topic)
+	
+	token = c.MQTTClient.Publish(topic, 1, true, emptyPayload)
+	token.Wait()
+	
+	if err := token.Error(); err != nil {
+		log.Printf("MQTT publish token error details: %+v", token)
+		log.Printf("MQTT client connection status: %v", c.MQTTClient.IsConnectionOpen())
+		if currentMsg != nil {
+			log.Printf("Failed to clean retained message. Topic: %s, Original payload type: %T, Original payload length: %d, Error: %v", 
+				topic, currentMsg.Payload(), len(currentMsg.Payload()), err)
+		} else {
+			log.Printf("Failed to clean retained message. Topic: %s, Error: %v", topic, err)
+		}
+		return fmt.Errorf("failed to clean retained message: %v", err)
+	}
+	
+	log.Printf("Successfully cleaned retained message on topic: %s", topic)
 	return nil
 }
 
