@@ -316,7 +316,7 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 	if len(idMatch) > 1 {
 		id := strings.Split(idMatch[1], "\n")[0]
 		id = strings.Trim(id, "\"'")
-		
+
 		if strings.Contains(id, "librescoot") {
 			dbcFlavor = "librescoot"
 		} else if strings.Contains(id, "unu") {
@@ -358,14 +358,14 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 	// Now get MDB version from local os-release
 	mdbCmd := exec.CommandContext(ctx, "sh", "-c", "cat /etc/os-release")
 	mdbOutput, err := mdbCmd.Output()
-	
+
 	if err != nil {
 		log.Printf("Failed to get MDB os-release: %v", err)
 		s.redisClient.HSet(s.ctx, "system", "mdb-version", "unknown_error").Err()
 	} else {
 		mdbOsRelease := string(mdbOutput)
 		var mdbVersion string
-		
+
 		// Extract VERSION_ID for MDB version
 		versionMatch := strings.Split(mdbOsRelease, "VERSION_ID=")
 		if len(versionMatch) > 1 {
@@ -375,7 +375,7 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 			mdbVersion = "unknown"
 			log.Printf("Could not find VERSION_ID in MDB os-release")
 		}
-		
+
 		// Store MDB version in Redis
 		err = s.redisClient.HSet(s.ctx, "system", "mdb-version", mdbVersion).Err()
 		if err != nil {
@@ -402,11 +402,11 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *models.TelemetryData) 
 		} else {
 			// Log complete telemetry packet
 			log.Printf("Telemetry packet to be transmitted:\n%s", prettyJSON.String())
-			
+
 			// Also check if Config is present
 			if current.Config != nil {
 				log.Printf("Config section is present with %d entries", len(current.Config))
-				
+
 				// Check if scooter config exists specifically
 				if scooter, ok := current.Config["scooter"]; ok {
 					log.Printf("Scooter config is present: %+v", scooter)
@@ -540,20 +540,20 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 // cleanRetainedMessage removes a retained message by publishing an empty payload
 func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
 	log.Printf("Attempting to clean retained message on topic: %s", topic)
-	
+
 	emptyPayload := []byte{}
 	log.Printf("Publishing empty payload with retain=true to topic %s", topic)
-	
+
 	token := s.mqttClient.Publish(topic, 1, true, emptyPayload)
 	token.Wait()
-	
+
 	if err := token.Error(); err != nil {
 		log.Printf("MQTT publish token error details: %+v", token)
 		log.Printf("MQTT client connection status: %v", s.mqttClient.IsConnectionOpen())
 		log.Printf("Failed to clean retained message. Topic: %s, Error: %v", topic, err)
 		return fmt.Errorf("failed to clean retained message: %v", err)
 	}
-	
+
 	log.Printf("Successfully cleaned retained message on topic: %s", topic)
 	return nil
 }

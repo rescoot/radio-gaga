@@ -70,21 +70,21 @@ func (c *ClientImplementation) GetCommandParam(cmd, param string, defaultValue i
 
 // CleanRetainedMessage removes a retained message by publishing an empty payload
 func (c *ClientImplementation) CleanRetainedMessage(topic string) error {
-		log.Printf("Attempting to clean retained message on topic: %s", topic)
-	
+	log.Printf("Attempting to clean retained message on topic: %s", topic)
+
 	emptyPayload := []byte{}
 	log.Printf("Publishing empty payload with retain=true to topic %s", topic)
-	
+
 	token := c.MQTTClient.Publish(topic, 1, true, emptyPayload)
 	token.Wait()
-	
+
 	if err := token.Error(); err != nil {
 		log.Printf("MQTT publish token error details: %+v", token)
 		log.Printf("MQTT client connection status: %v", c.MQTTClient.IsConnectionOpen())
 		log.Printf("Failed to clean retained message. Topic: %s, Error: %v", topic, err)
 		return fmt.Errorf("failed to clean retained message: %v", err)
 	}
-	
+
 	log.Printf("Successfully cleaned retained message on topic: %s", topic)
 	return nil
 }
