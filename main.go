@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"radio-gaga/internal/utils"
 	"strconv"
 	"strings"
 	"syscall"
@@ -38,6 +39,7 @@ type commandLineFlags struct {
 	mqttKeepAlive string
 	redisURL      string
 	environment   string
+	debug         bool
 	// Telemetry intervals
 	drivingInterval          string
 	standbyInterval          string
@@ -53,6 +55,7 @@ type Config struct {
 	Telemetry   TelemetryConfig    `yaml:"telemetry"`
 	Commands    map[string]Command `yaml:"commands"`
 	ServiceName string             `yaml:"service_name,omitempty"`
+	Debug       bool               `yaml:"debug,omitempty"`
 }
 
 // detectServiceName tries to determine the systemd service name from the current process
@@ -302,6 +305,7 @@ func parseFlags() *commandLineFlags {
 	flag.StringVar(&flags.mqttCACert, "mqtt-cacert", "", "path to MQTT CA certificate")
 	flag.StringVar(&flags.mqttKeepAlive, "mqtt-keepalive", "30s", "MQTT keepalive duration")
 	flag.StringVar(&flags.redisURL, "redis-url", "redis://localhost:6379", "Redis URL")
+	flag.BoolVar(&flags.debug, "debug", false, "enable debug logging")
 
 	// Telemetry intervals
 	flag.StringVar(&flags.drivingInterval, "driving-interval", "1s", "telemetry interval while driving")
@@ -377,6 +381,8 @@ func loadConfig(flags *commandLineFlags) (*Config, error) {
 			config.Telemetry.Intervals.StandbyNoBattery = flags.standbyNoBatteryInterval
 		case "hibernate-interval":
 			config.Telemetry.Intervals.Hibernate = flags.hibernateInterval
+		case "debug":
+			config.Debug = flags.debug
 		}
 	})
 
@@ -843,10 +849,11 @@ func (s *ScooterMQTTClient) getTelemetryFromRedis() (*TelemetryData, error) {
 	configBytes, _ := yaml.Marshal(s.config)
 	yaml.Unmarshal(configBytes, &configMap)
 
-	// Explicitly remove the token
-	if scooterConfig, ok := configMap["scooter"].(map[interface{}]interface{}); ok {
-		delete(scooterConfig, "token")
-	} else if scooterConfig, ok := configMap["scooter"].(map[string]interface{}); ok {
+	// Convert map with interface{} keys to string keys for JSON compatibility
+	configMap = utils.ConvertToStringKeyMap(configMap).(map[string]interface{})
+
+	// Explicitly remove the token (should now only have string keys)
+	if scooterConfig, ok := configMap["scooter"].(map[string]interface{}); ok {
 		delete(scooterConfig, "token")
 	}
 
@@ -1108,6 +1115,32 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *TelemetryData) error {
 		return fmt.Errorf("failed to marshal telemetry: %v", err)
 	}
 
+	// Only show the detailed telemetry packet when debug is enabled
+	if s.config.Debug {
+		// Pretty print the JSON for detailed debugging
+		var prettyJSON bytes.Buffer
+		if err := json.Indent(&prettyJSON, telemetryJSON, "", "  "); err != nil {
+			log.Printf("Warning: Failed to format telemetry JSON: %v", err)
+		} else {
+			// Log complete telemetry packet
+			log.Printf("Telemetry packet to be transmitted:\n%s", prettyJSON.String())
+			
+			// Also check if Config is present
+			if current.Config != nil {
+				log.Printf("Config section is present with %d entries", len(current.Config))
+				
+				// Check if scooter config exists specifically
+				if scooter, ok := current.Config["scooter"]; ok {
+					log.Printf("Scooter config is present: %+v", scooter)
+				} else {
+					log.Printf("Scooter config is missing from Config map")
+				}
+			} else {
+				log.Printf("Config section is nil or empty")
+			}
+		}
+	}
+
 	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.Scooter.Identifier)
 	if token := s.mqttClient.Publish(topic, 1, false, telemetryJSON); token.Wait() && token.Error() != nil {
 		return fmt.Errorf("failed to publish telemetry: %v", token.Error())
@@ -1226,9 +1259,23 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 }
 
 func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
-	if token := s.mqttClient.Publish(topic, 1, true, nil); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to clean retained message: %v", token.Error())
+	log.Printf("Attempting to clean retained message on topic: %s", topic)
+	
+	// Use an empty byte array as payload instead of nil
+	// Some MQTT libraries don't handle nil payloads correctly
+	emptyPayload := []byte{}
+	
+	token := s.mqttClient.Publish(topic, 1, true, emptyPayload)
+	token.Wait()
+	
+	if err := token.Error(); err != nil {
+		log.Printf("MQTT publish token error details: %+v", token)
+		log.Printf("MQTT client connection status: %v", s.mqttClient.IsConnectionOpen())
+		log.Printf("Error cleaning retained message. Topic: %s, Error: %v", topic, err)
+		return fmt.Errorf("failed to clean retained message: %v", err)
 	}
+	
+	log.Printf("Successfully cleaned retained message on topic: %s", topic)
 	return nil
 }
 
@@ -1242,15 +1289,23 @@ func (s *ScooterMQTTClient) getCommandParam(cmd, param string, defaultValue inte
 }
 
 func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) {
+	// Check for empty payload first
+	if len(msg.Payload()) == 0 {
+		log.Printf("Received empty payload on command topic: %s", msg.Topic())
+		if msg.Retained() {
+			log.Printf("Cleaning empty retained message")
+			s.cleanRetainedMessage(msg.Topic())
+		}
+		return
+	}
+	
 	var command CommandMessage
 	if err := json.Unmarshal(msg.Payload(), &command); err != nil {
 		log.Printf("Failed to parse command: %v", err)
-		log.Printf("Payload was %v", msg.Payload())
-		if len(msg.Payload()) != 0 {
-			s.sendCommandResponse(command.RequestID, "error", "Invalid command format")
-			if msg.Retained() {
-				s.cleanRetainedMessage(msg.Topic())
-			}
+		log.Printf("Payload was: %s", string(msg.Payload()))
+		s.sendCommandResponse(command.RequestID, "error", "Invalid command format")
+		if msg.Retained() {
+			s.cleanRetainedMessage(msg.Topic())
 		}
 		return
 	}
