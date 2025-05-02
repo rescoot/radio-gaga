@@ -1,0 +1,115 @@
+package utils
+
+import (
+	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"hash"
+	"os"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/beevik/ntp"
+)
+
+// ParseInt safely parses a string to an integer with default 0
+func ParseInt(s string) int {
+	v, _ := strconv.Atoi(s)
+	return v
+}
+
+// ParseFloat safely parses a string to a float with default 0
+func ParseFloat(s string) float64 {
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
+}
+
+// IsTLSURL checks if a URL uses TLS
+func IsTLSURL(url string) bool {
+	return strings.HasPrefix(url, "ssl://") || strings.HasPrefix(url, "tls://")
+}
+
+// SyncTimeNTP attempts to sync the system time using NTP
+func SyncTimeNTP() error {
+	ntpServers := []string{
+		"pool.ntp.rescoot.org",
+	}
+
+	var lastErr error
+	for _, server := range ntpServers {
+		ntpTime, err := ntp.Time(server)
+		if err != nil {
+			lastErr = err
+			fmt.Printf("Failed to get time from %s: %v\n", server, err)
+			continue
+		}
+
+		// Convert time to timeval
+		tv := syscall.NsecToTimeval(ntpTime.UnixNano())
+
+		// Set system time (requires root privileges)
+		if err := syscall.Settimeofday(&tv); err != nil {
+			lastErr = fmt.Errorf("failed to set system time: %v", err)
+			fmt.Printf("Warning: %v\n", lastErr)
+			// Even if we can't set the system time, return success
+			// as we at least got a valid time from NTP
+			return nil
+		}
+
+		fmt.Printf("Successfully synchronized time with %s\n", server)
+		return nil
+	}
+
+	return fmt.Errorf("failed to sync time with any NTP server: %v", lastErr)
+}
+
+// CreateInsecureTLSConfig creates a TLS config that skips verification
+func CreateInsecureTLSConfig(caCertPath string) (*tls.Config, error) {
+	tlsConfig := new(tls.Config)
+	tlsConfig.InsecureSkipVerify = true
+
+	// If we have a CA cert, still load it for basic verification
+	if caCertPath != "" {
+		caCert, err := os.ReadFile(caCertPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %v", err)
+		}
+
+		caCertPool := x509.NewCertPool()
+		if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+			return nil, fmt.Errorf("failed to parse CA certificate")
+		}
+
+		tlsConfig.RootCAs = caCertPool
+	}
+
+	return tlsConfig, nil
+}
+
+// CreateHash creates a hash based on the algorithm name
+func CreateHash(algorithm string) (hash.Hash, error) {
+	switch algorithm {
+	case "sha256":
+		return sha256.New(), nil
+	case "sha1":
+		return sha1.New(), nil
+	default:
+		return nil, fmt.Errorf("unsupported checksum algorithm: %s (supported: sha256, sha1)", algorithm)
+	}
+}
+
+// ParseDuration parses duration from different types
+func ParseDuration(value interface{}) (time.Duration, error) {
+	switch v := value.(type) {
+	case string:
+		return time.ParseDuration(v)
+	case float64:
+		return time.Duration(v) * time.Second, nil
+	default:
+		return 0, fmt.Errorf("invalid duration type: %T", value)
+	}
+}

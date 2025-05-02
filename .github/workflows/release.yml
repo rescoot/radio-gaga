@@ -24,7 +24,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21' # Or the version specified in go.mod if available
+          go-version: '1.20' # Or the version specified in go.mod if available
 
       - name: Determine Version
         id: get_version
