@@ -38,6 +38,14 @@ func ParseFlags() *models.CommandLineFlags {
 	flag.StringVar(&flags.StandbyNoBatteryInterval, "standby-no-battery-interval", "8h", "telemetry interval in standby without battery")
 	flag.StringVar(&flags.HibernateInterval, "hibernate-interval", "24h", "telemetry interval in hibernate mode")
 
+	// Telemetry buffer options
+	flag.BoolVar(&flags.BufferEnabled, "buffer-enabled", false, "enable telemetry buffering")
+	flag.IntVar(&flags.BufferMaxSize, "buffer-max-size", 1000, "maximum number of telemetry events to buffer")
+	flag.IntVar(&flags.BufferMaxRetries, "buffer-max-retries", 5, "maximum number of retries for sending buffered telemetry")
+	flag.StringVar(&flags.BufferRetryInterval, "buffer-retry-interval", "1m", "interval between retries for sending buffered telemetry")
+	flag.StringVar(&flags.BufferPersistPath, "buffer-persist-path", "", "path to persist telemetry buffer (empty for no persistence)")
+	flag.StringVar(&flags.TransmitPeriod, "transmit-period", "5m", "period for transmitting buffered telemetry")
+
 	flag.Parse()
 	return flags
 }
@@ -82,6 +90,13 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 					StandbyNoBattery: "8h",
 					Hibernate:        "24h",
 				},
+				Buffer: models.BufferConfig{
+					Enabled:       false,
+					MaxSize:       1000,
+					MaxRetries:    5,
+					RetryInterval: "1m",
+				},
+				TransmitPeriod: "5m",
 			},
 		}
 	}
@@ -111,6 +126,24 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 			config.Telemetry.Intervals.StandbyNoBattery = flags.StandbyNoBatteryInterval
 		case "hibernate-interval":
 			config.Telemetry.Intervals.Hibernate = flags.HibernateInterval
+		case "buffer-enabled":
+			if config.Telemetry.Buffer.Enabled != flags.BufferEnabled {
+				config.Telemetry.Buffer.Enabled = flags.BufferEnabled
+			}
+		case "buffer-max-size":
+			if config.Telemetry.Buffer.MaxSize != flags.BufferMaxSize {
+				config.Telemetry.Buffer.MaxSize = flags.BufferMaxSize
+			}
+		case "buffer-max-retries":
+			if config.Telemetry.Buffer.MaxRetries != flags.BufferMaxRetries {
+				config.Telemetry.Buffer.MaxRetries = flags.BufferMaxRetries
+			}
+		case "buffer-retry-interval":
+			config.Telemetry.Buffer.RetryInterval = flags.BufferRetryInterval
+		case "buffer-persist-path":
+			config.Telemetry.Buffer.PersistPath = flags.BufferPersistPath
+		case "transmit-period":
+			config.Telemetry.TransmitPeriod = flags.TransmitPeriod
 		case "debug":
 			config.Debug = flags.Debug
 		case "ntp-enabled":
@@ -165,13 +198,31 @@ func ValidateConfig(config *models.Config) error {
 		config.Telemetry.Intervals.Hibernate = "24h"
 	}
 
+	// Initialize buffer config if not present
+	if config.Telemetry.Buffer.RetryInterval == "" {
+		config.Telemetry.Buffer.RetryInterval = "1m"
+	}
+	if config.Telemetry.Buffer.MaxSize <= 0 {
+		config.Telemetry.Buffer.MaxSize = 1000
+	}
+	if config.Telemetry.Buffer.MaxRetries <= 0 {
+		config.Telemetry.Buffer.MaxRetries = 5
+	}
+
+	// Initialize transmit period if not present
+	if config.Telemetry.TransmitPeriod == "" {
+		config.Telemetry.TransmitPeriod = "5m"
+	}
+
 	// Parse and validate durations
 	durations := map[string]string{
-		"mqtt.keep_alive":    config.MQTT.KeepAlive,
-		"driving":            config.Telemetry.Intervals.Driving,
-		"standby":            config.Telemetry.Intervals.Standby,
-		"standby_no_battery": config.Telemetry.Intervals.StandbyNoBattery,
-		"hibernate":          config.Telemetry.Intervals.Hibernate,
+		"mqtt.keep_alive":        config.MQTT.KeepAlive,
+		"driving":                config.Telemetry.Intervals.Driving,
+		"standby":                config.Telemetry.Intervals.Standby,
+		"standby_no_battery":     config.Telemetry.Intervals.StandbyNoBattery,
+		"hibernate":              config.Telemetry.Intervals.Hibernate,
+		"buffer.retry_interval":  config.Telemetry.Buffer.RetryInterval,
+		"telemetry.transmit_period": config.Telemetry.TransmitPeriod,
 	}
 	for name, value := range durations {
 		if _, err := time.ParseDuration(value); err != nil {

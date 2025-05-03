@@ -227,6 +227,12 @@ func (s *ScooterMQTTClient) Start() error {
 
 	log.Printf("Subscribed to commands channel %s", commandTopic)
 
+	// Initialize telemetry buffer if enabled
+	if s.config.Telemetry.Buffer.Enabled {
+		log.Printf("Initializing telemetry buffer")
+		s.initTelemetryBuffer()
+	}
+
 	// Start telemetry and dashboard watcher goroutines
 	go s.publishTelemetry()
 	go s.watchDashboardStatus()
@@ -480,10 +486,24 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 					// Get and publish final telemetry
 					if current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version); err == nil {
-						if err := s.publishTelemetryData(current); err != nil {
-							log.Printf("Failed to publish final telemetry: %v", err)
+						if s.config.Telemetry.Buffer.Enabled {
+							if err := s.addTelemetryToBuffer(current); err != nil {
+								log.Printf("Failed to add final telemetry to buffer: %v", err)
+							} else {
+								log.Printf("Added final telemetry to buffer before suspend")
+								// Force transmit buffer
+								if err := s.transmitBuffer(); err != nil {
+									log.Printf("Failed to transmit buffer before suspend: %v", err)
+								} else {
+									log.Printf("Transmitted buffer before suspend")
+								}
+							}
 						} else {
-							log.Printf("Published final telemetry before suspend")
+							if err := s.publishTelemetryData(current); err != nil {
+								log.Printf("Failed to publish final telemetry: %v", err)
+							} else {
+								log.Printf("Published final telemetry before suspend")
+							}
 						}
 					} else {
 						log.Printf("Failed to get final telemetry: %v", err)
@@ -497,7 +517,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 	// Publish initial telemetry immediately
 	if current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version); err == nil {
-		if err := s.publishTelemetryData(current); err == nil {
+		if err := s.collectAndPublishTelemetry(); err == nil {
 			lastState = current.VehicleState.State
 		} else {
 			log.Printf("Failed to publish initial telemetry: %v", err)
@@ -529,8 +549,8 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				lastState = current.VehicleState.State
 			}
 
-			if err := s.publishTelemetryData(current); err != nil {
-				log.Printf("Failed to publish telemetry: %v", err)
+			if err := s.collectAndPublishTelemetry(); err != nil {
+				log.Printf("Failed to collect and publish telemetry: %v", err)
 				continue
 			}
 		}

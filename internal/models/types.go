@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 // CommandLineFlags contains all command-line options
 type CommandLineFlags struct {
 	ConfigPath    string
@@ -19,6 +21,13 @@ type CommandLineFlags struct {
 	StandbyInterval          string
 	StandbyNoBatteryInterval string
 	HibernateInterval        string
+	// Telemetry buffer options
+	BufferEnabled       bool
+	BufferMaxSize       int
+	BufferMaxRetries    int
+	BufferRetryInterval string
+	BufferPersistPath   string
+	TransmitPeriod      string
 }
 
 // Config represents the application configuration
@@ -55,7 +64,18 @@ type NTPConfig struct {
 
 // TelemetryConfig contains telemetry configuration
 type TelemetryConfig struct {
-	Intervals TelemetryIntervals `yaml:"intervals"`
+	Intervals      TelemetryIntervals `yaml:"intervals"`
+	Buffer         BufferConfig       `yaml:"buffer,omitempty"`
+	TransmitPeriod string             `yaml:"transmit_period,omitempty"`
+}
+
+// BufferConfig contains telemetry buffer configuration
+type BufferConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	MaxSize       int    `yaml:"max_size"`
+	MaxRetries    int    `yaml:"max_retries"`
+	RetryInterval string `yaml:"retry_interval"`
+	PersistPath   string `yaml:"persist_path,omitempty"`
 }
 
 // TelemetryIntervals contains telemetry interval settings
@@ -244,6 +264,28 @@ type TelemetryData struct {
 	Dashboard    DashboardStatus        `json:"dashboard"`
 	Navigation   NavigationData         `json:"navigation,omitempty"`
 	Timestamp    string                 `json:"timestamp"`
+}
+
+// BufferedTelemetryEvent represents a telemetry event in the buffer
+type BufferedTelemetryEvent struct {
+	Data      *TelemetryData `json:"data"`
+	Timestamp time.Time      `json:"timestamp"`
+	Attempts  int            `json:"attempts"`
+}
+
+// TelemetryBuffer represents a buffer of telemetry events
+type TelemetryBuffer struct {
+	Events    []BufferedTelemetryEvent `json:"events"`
+	BatchID   string                   `json:"batch_id"`
+	CreatedAt time.Time                `json:"created_at"`
+}
+
+// TelemetryBatch represents a batch of telemetry events to be sent
+type TelemetryBatch struct {
+	BatchID   string          `json:"batch_id"`
+	Count     int             `json:"count"`
+	Events    []TelemetryData `json:"events"`
+	Timestamp string          `json:"timestamp"`
 }
 
 // CommandMessage represents an incoming command
