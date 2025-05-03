@@ -91,11 +91,9 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		return fmt.Errorf("failed to move new binary into place: %v", err)
 	}
 
-	// Get service name from config or use the default
+	// Use service name from config (which should now be auto-detected if not specified)
 	serviceName := config.ServiceName
-	if serviceName == "" {
-		serviceName = "rescoot-radio-gaga.service"
-	}
+	log.Printf("Using systemd service name for restart: %s", serviceName)
 
 	// Start verification process in a goroutine
 	go func() {

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -112,6 +113,12 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 		return nil, fmt.Errorf("invalid configuration: %v", err)
 	}
 
+	// Set service name if not specified
+	if config.ServiceName == "" {
+		config.ServiceName = DetectServiceName()
+		fmt.Printf("Auto-detected systemd service name: %s\n", config.ServiceName)
+	}
+
 	return config, nil
 }
 
@@ -169,7 +176,7 @@ func ValidateConfig(config *models.Config) error {
 
 // DetectServiceName tries to determine the systemd service name from the current process
 func DetectServiceName() string {
-	// Try to read the process's cgroup to find the service name
+	// Method 1: Check through cgroups (modern systemd)
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err == nil {
 		lines := strings.Split(string(data), "\n")
@@ -180,7 +187,8 @@ func DetectServiceName() string {
 					serviceParts := strings.Split(parts[0], "/")
 					if len(serviceParts) > 0 {
 						serviceName := serviceParts[len(serviceParts)-1] + ".service"
-						if serviceName != "" {
+						if serviceName != "" && serviceName != "-.service" {
+							fmt.Printf("Detected service name from cgroup: %s\n", serviceName)
 							return serviceName
 						}
 					}
@@ -188,7 +196,31 @@ func DetectServiceName() string {
 			}
 		}
 	}
+	
+	// Method 2: Try using systemd-detect-virt command
+	cmd := exec.Command("systemctl", "status", fmt.Sprintf("%d", os.Getpid()))
+	output, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, ".service") {
+				for _, part := range strings.Fields(line) {
+					if strings.HasSuffix(part, ".service") {
+						fmt.Printf("Detected service name from systemctl status: %s\n", part)
+						return part
+					}
+				}
+			}
+		}
+	}
+
+	// Method 3: Check environment variable if set
+	if serviceName := os.Getenv("SYSTEMD_SERVICE_NAME"); serviceName != "" {
+		fmt.Printf("Using service name from environment: %s\n", serviceName)
+		return serviceName
+	}
 
 	// Default to rescoot-radio-gaga.service if we can't detect it
+	fmt.Printf("Could not detect service name, using default: rescoot-radio-gaga.service\n")
 	return "rescoot-radio-gaga.service"
 }
