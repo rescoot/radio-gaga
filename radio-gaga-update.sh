@@ -10,7 +10,6 @@ CHECKSUM="$2"
 NEW_BINARY_PATH="/tmp/radio-gaga.new"
 RUNNING_BINARY_PATH="/usr/bin/radio-gaga"
 OLD_BINARY_PATH="/usr/bin/radio-gaga.old"
-SERVICE_NAME="rescoot-radio-gaga.service"
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
@@ -20,6 +19,43 @@ error_exit() {
     log "Error: $1"
     exit 1
 }
+
+# Auto-detect systemd service name
+detect_service_name() {
+    # Method 1: Check through cgroups
+    if [ -f "/proc/self/cgroup" ]; then
+        SERVICE_NAME=$(grep -o "[^/]*\.service" "/proc/self/cgroup" | head -n 1)
+        if [ -n "$SERVICE_NAME" ] && [ "$SERVICE_NAME" != "-.service" ]; then
+            log "Detected service name from cgroup: $SERVICE_NAME"
+            return 0
+        fi
+    fi
+    
+    # Method 2: Try checking all services for our binary
+    BINARY_NAME=$(basename "$RUNNING_BINARY_PATH")
+    SERVICE_LIST=$(systemctl list-units --type=service --all | grep -o '[^ ]*\.service' | tr '\n' ' ')
+    for SVC in $SERVICE_LIST; do
+        if systemctl cat "$SVC" 2>/dev/null | grep -q "$BINARY_NAME"; then
+            SERVICE_NAME="$SVC"
+            log "Detected service name by binary reference: $SERVICE_NAME"
+            return 0
+        fi
+    done
+    
+    # Method 3: Check environment variable if set
+    if [ -n "$SYSTEMD_SERVICE_NAME" ]; then
+        SERVICE_NAME="$SYSTEMD_SERVICE_NAME"
+        log "Using service name from environment: $SERVICE_NAME"
+        return 0
+    fi
+    
+    # Default to known service name
+    SERVICE_NAME="rescoot-radio-gaga.service"
+    log "Could not detect service name, using default: $SERVICE_NAME"
+    return 0
+}
+
+detect_service_name
 
 if [ -z "$UPDATE_URL" ] || [ -z "$CHECKSUM" ]; then
     error_exit "Usage: $0 <update_url> <checksum>"
