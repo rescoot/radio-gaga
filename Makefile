@@ -1,4 +1,4 @@
-VERSION := $(shell git describe --always --dirty=-$(shell hostname)-$(shell date -u +%Y%m%d-%H%M%S))
+VERSION := $(shell git describe --always --tags --dirty=-$(shell hostname)-$(shell date -u +%Y%m%d-%H%M%S))
 LDFLAGS := -X main.version=$(VERSION)
 BUILDFLAGS := -tags netgo,osusergo
 MAIN_PATH := ./cmd/radio-gaga
