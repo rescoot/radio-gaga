@@ -54,7 +54,7 @@ func NewScooterMQTTClient(config *models.Config, version string) (*ScooterMQTTCl
 	mdbHostname, err := os.Hostname()
 	if err != nil {
 		log.Printf("Warning: Failed to get MDB hostname: %v", err)
-		redisClient.HSet(ctx, "system", "mdb_flavor", "unknown_error").Err()
+		redisClient.HSet(ctx, "system", "mdb-flavor", "unknown_error").Err()
 	} else {
 		var mdbFlavor string
 		if strings.HasPrefix(mdbHostname, "librescoot-") {
@@ -65,7 +65,7 @@ func NewScooterMQTTClient(config *models.Config, version string) (*ScooterMQTTCl
 			mdbFlavor = "unknown"
 			log.Printf("Unrecognized MDB hostname format: %s", mdbHostname)
 		}
-		err = redisClient.HSet(ctx, "system", "mdb_flavor", mdbFlavor).Err()
+		err = redisClient.HSet(ctx, "system", "mdb-flavor", mdbFlavor).Err()
 		if err != nil {
 			log.Printf("Failed to store MDB flavor '%s' in Redis: %v", mdbFlavor, err)
 		} else {
@@ -295,13 +295,13 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 
 	if ctx.Err() == context.DeadlineExceeded {
 		log.Printf("SSH command timed out while checking DBC os-release")
-		s.redisClient.HSet(s.ctx, "system", "dbc_flavor", "unknown_timeout").Err()
+		s.redisClient.HSet(s.ctx, "system", "dbc-flavor", "unknown_timeout").Err()
 		return
 	}
 	if err != nil {
 		log.Printf("Failed to SSH to DBC or get os-release: %v", err)
 		// Set unknown states in Redis
-		s.redisClient.HSet(s.ctx, "system", "dbc_flavor", "unknown_ssh_error").Err()
+		s.redisClient.HSet(s.ctx, "system", "dbc-flavor", "unknown_ssh_error").Err()
 		s.redisClient.HSet(s.ctx, "system", "dbc-version", "unknown_ssh_error").Err()
 		return
 	}
@@ -341,7 +341,7 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 	}
 
 	// Store DBC flavor and version in Redis
-	err = s.redisClient.HSet(s.ctx, "system", "dbc_flavor", dbcFlavor).Err()
+	err = s.redisClient.HSet(s.ctx, "system", "dbc-flavor", dbcFlavor).Err()
 	if err != nil {
 		log.Printf("Failed to store DBC flavor '%s' in Redis: %v", dbcFlavor, err)
 	} else {

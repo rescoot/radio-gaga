@@ -212,8 +212,8 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		DbcVersion:   system["dbc-version"],
 		MdbVersion:   system["mdb-version"],
 		NrfFWVersion: system["nrf-fw-version"],
-		DBCFlavor:    system["dbc_flavor"],
-		MDBFlavor:    system["mdb_flavor"],
+		DBCFlavor:    system["dbc-flavor"],
+		MDBFlavor:    system["mdb-flavor"],
 	}
 
 	// Get internet connectivity status
