@@ -1,13 +1,36 @@
 package client
 
 import (
+	"encoding/json"
+	"log"
+
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"radio-gaga/internal/handlers"
+	"radio-gaga/internal/models"
 )
 
 // handleCommand processes incoming MQTT commands
 func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) {
+	// First, unmarshal the command message to access parameters for logging
+	var command models.CommandMessage
+	if err := json.Unmarshal(msg.Payload(), &command); err == nil {
+		// Log command parameters if they exist
+		if len(command.Params) > 0 {
+			paramsJSON, err := json.Marshal(command.Params)
+			if err == nil {
+				log.Printf("Command %s (requestID: %s) parameters: %s", 
+					command.Command, command.RequestID, string(paramsJSON))
+			} else {
+				log.Printf("Command %s (requestID: %s) has parameters but failed to marshal: %v", 
+					command.Command, command.RequestID, err)
+			}
+		} else {
+			log.Printf("Command %s (requestID: %s) has no parameters", 
+				command.Command, command.RequestID)
+		}
+	}
+
 	// Create a client implementation that can be used by command handlers
 	clientImpl := &handlers.ClientImplementation{
 		Config:      s.config,
