@@ -116,7 +116,7 @@ type AuxBatteryData struct {
 	ChargeStatus string `json:"charge_status"`
 }
 
-// CBBatteryData represents data for the control board battery
+// CBBatteryData represents data for the Connectivity Battery Box
 type CBBatteryData struct {
 	Level             int    `json:"level"`
 	Current           int    `json:"current"`
