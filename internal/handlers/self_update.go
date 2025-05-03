@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -8,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/utils"
@@ -34,14 +34,19 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 	algorithm, expectedChecksum := parts[0], parts[1]
 
 	// Download new binary to temporary location
-	tempFile, err := os.CreateTemp("", "radio-gaga-*.new")
+	tempFile, err := os.CreateTemp("/tmp", "radio-gaga-*.new")
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %v", err)
 	}
-	defer os.Remove(tempFile.Name())
 
 	log.Printf("Downloading new binary from %s", updateURL)
-	resp, err := http.Get(updateURL)
+	// Create HTTP client with TLS verification skipping as system time might be unreliable
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	httpClient := &http.Client{Transport: transport}
+	
+	resp, err := httpClient.Get(updateURL)
 	if err != nil {
 		return fmt.Errorf("failed to download new binary: %v", err)
 	}
@@ -76,75 +81,150 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		return fmt.Errorf("failed to get current executable path: %v", err)
 	}
 
-	// Create backup of current binary
-	backupPath := currentExe + ".old"
-	if err := os.Rename(currentExe, backupPath); err != nil {
-		return fmt.Errorf("failed to create backup: %v", err)
-	}
-
-	// Move new binary into place
-	if err := os.Rename(tempFile.Name(), currentExe); err != nil {
-		// Try to restore backup if moving new binary fails
-		if restoreErr := os.Rename(backupPath, currentExe); restoreErr != nil {
-			return fmt.Errorf("failed to move new binary and restore backup: %v (original error: %v)", restoreErr, err)
-		}
-		return fmt.Errorf("failed to move new binary into place: %v", err)
-	}
-
-	// Use service name from config (which should now be auto-detected if not specified)
+	// Create the update helper script
 	serviceName := config.ServiceName
-	log.Printf("Using systemd service name for restart: %s", serviceName)
+	scriptPath, err := createUpdateHelperScript(tempFile.Name(), currentExe, serviceName)
+	if err != nil {
+		return fmt.Errorf("failed to create update helper script: %v", err)
+	}
 
-	// Start verification process in a goroutine
-	go func() {
-		// Restart the service
-		cmd := exec.Command("systemctl", "restart", serviceName)
-		if err := cmd.Run(); err != nil {
-			log.Printf("Failed to restart service: %v", err)
-			rollbackUpdate(currentExe, backupPath, serviceName)
-			return
-		}
+	// Make script executable
+	if err := os.Chmod(scriptPath, 0755); err != nil {
+		os.Remove(scriptPath)
+		return fmt.Errorf("failed to make helper script executable: %v", err)
+	}
 
-		// Wait 10 seconds and verify the service is still running
-		time.Sleep(10 * time.Second)
-
-		cmd = exec.Command("systemctl", "is-active", serviceName)
-		output, err := cmd.Output()
-		if err != nil || strings.TrimSpace(string(output)) != "active" {
-			log.Printf("New version failed verification: %v", err)
-			rollbackUpdate(currentExe, backupPath, serviceName)
-			return
-		}
-
-		// If we get here, update was successful - remove backup
-		os.Remove(backupPath)
-		log.Printf("Update successfully completed and verified")
-	}()
+	// Execute the update helper script in background
+	log.Printf("Starting update helper script to replace binary and restart service")
+	cmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("nohup %s > /tmp/radio-gaga-update.log 2>&1 &", scriptPath))
+	if err := cmd.Start(); err != nil {
+		os.Remove(scriptPath)
+		return fmt.Errorf("failed to start update helper script: %v", err)
+	}
 
 	return nil
 }
 
-// rollbackUpdate rolls back a failed update
-func rollbackUpdate(currentExe, backupPath, serviceName string) {
-	log.Printf("Rolling back update...")
+// createUpdateHelperScript creates a minimal shell script to handle binary replacement and service restart
+func createUpdateHelperScript(newBinaryPath, currentBinaryPath, serviceName string) (string, error) {
+	scriptContent := fmt.Sprintf(`#!/bin/sh
+# Radio-Gaga update helper script
+# This script handles replacing the binary and restarting the service
 
-	// Stop the service
-	exec.Command("systemctl", "stop", serviceName).Run()
+set -e
+LOG_FILE="/tmp/radio-gaga-update.log"
 
-	// Remove failed binary
-	os.Remove(currentExe)
+log() {
+    echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') - $1" >> "$LOG_FILE"
+}
 
-	// Restore backup
-	if err := os.Rename(backupPath, currentExe); err != nil {
-		log.Printf("Failed to restore backup: %v", err)
-		return
+log "Starting update helper script"
+
+NEW_BINARY="%s"
+CURRENT_PATH="%s"
+SERVICE_NAME="%s"
+BACKUP_PATH="${CURRENT_PATH}.old"
+
+log "New binary: $NEW_BINARY"
+log "Current binary: $CURRENT_PATH"
+log "Service name: $SERVICE_NAME"
+
+# Check if filesystem needs to be remounted
+NEEDS_REMOUNT=0
+CURRENT_DIR=$(dirname "$CURRENT_PATH")
+log "Checking if $CURRENT_DIR is writable"
+
+if ! touch "$CURRENT_DIR/.write_test" 2>/dev/null; then
+    log "Filesystem is not writable, need to remount"
+    NEEDS_REMOUNT=1
+fi
+
+if [ -f "$CURRENT_DIR/.write_test" ]; then
+    rm -f "$CURRENT_DIR/.write_test"
+fi
+
+# Remount filesystem if needed
+if [ $NEEDS_REMOUNT -eq 1 ]; then
+    log "Remounting root filesystem as read-write"
+    if ! mount -o remount,rw /; then
+        log "ERROR: Failed to remount filesystem as read-write"
+        exit 1
+    fi
+    log "Filesystem remounted successfully"
+fi
+
+# Create backup of current binary
+log "Creating backup of current binary"
+mv "$CURRENT_PATH" "$BACKUP_PATH"
+if [ $? -ne 0 ]; then
+    log "ERROR: Failed to create backup"
+    exit 1
+fi
+
+# Replace binary
+log "Replacing binary"
+mv "$NEW_BINARY" "$CURRENT_PATH"
+if [ $? -ne 0 ]; then
+    log "ERROR: Failed to replace binary"
+    log "Restoring from backup"
+    mv "$BACKUP_PATH" "$CURRENT_PATH" 
+    exit 1
+fi
+
+# Clean up temporary binary
+rm -f "$NEW_BINARY"
+
+# Restart service
+log "Restarting service: $SERVICE_NAME"
+systemctl restart "$SERVICE_NAME"
+if [ $? -ne 0 ]; then
+    log "ERROR: Failed to restart service"
+    log "Rolling back to previous version"
+    mv "$BACKUP_PATH" "$CURRENT_PATH"
+    systemctl restart "$SERVICE_NAME"
+    exit 1
+fi
+
+# Verify service is running
+log "Waiting to verify service is running properly"
+sleep 10
+systemctl is-active "$SERVICE_NAME" > /dev/null
+if [ $? -ne 0 ]; then
+    log "ERROR: Service failed to start after update"
+    log "Rolling back to previous version"
+    mv "$BACKUP_PATH" "$CURRENT_PATH"
+    systemctl restart "$SERVICE_NAME"
+    exit 1
+fi
+
+# Remount filesystem back to read-only if we changed it
+if [ $NEEDS_REMOUNT -eq 1 ]; then
+    log "Remounting filesystem back to read-only"
+    if ! mount -o remount,ro /; then
+        log "WARNING: Failed to remount filesystem back to read-only"
+    else
+        log "Filesystem remounted to read-only successfully"
+    fi
+fi
+
+# Update successful, clean up
+log "Update completed successfully"
+rm -f "$BACKUP_PATH"
+exit 0
+`, newBinaryPath, currentBinaryPath, serviceName)
+
+	// Write script to temporary file
+	scriptFile, err := os.CreateTemp("/tmp", "radio-gaga-updater-*.sh")
+	if err != nil {
+		return "", fmt.Errorf("failed to create update script file: %v", err)
 	}
-
-	// Restart service with old binary
-	if err := exec.Command("systemctl", "restart", serviceName).Run(); err != nil {
-		log.Printf("Failed to restart service after rollback: %v", err)
-		return
+	
+	if _, err := scriptFile.WriteString(scriptContent); err != nil {
+		scriptFile.Close()
+		os.Remove(scriptFile.Name())
+		return "", fmt.Errorf("failed to write update script content: %v", err)
 	}
-
-	log.Printf("Rollback completed successfully")
+	
+	scriptFile.Close()
+	return scriptFile.Name(), nil
 }
