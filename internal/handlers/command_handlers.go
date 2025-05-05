@@ -107,15 +107,22 @@ func (c *ClientImplementation) PublishTelemetryData(current *models.TelemetryDat
 
 // HandleCommand processes incoming MQTT commands
 func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisClient *redis.Client, ctx context.Context, config *models.Config, version string, mqttMsg mqtt.Message) {
+	// Check for empty payload early
+	if len(mqttMsg.Payload()) == 0 {
+		log.Printf("Received empty payload message on topic: %s, retained: %v",
+			mqttMsg.Topic(), mqttMsg.Retained())
+
+		return
+	}
+
 	var command models.CommandMessage
 	if err := json.Unmarshal(mqttMsg.Payload(), &command); err != nil {
 		log.Printf("Failed to parse command: %v", err)
 		log.Printf("Payload was %v", mqttMsg.Payload())
-		if len(mqttMsg.Payload()) != 0 {
-			client.SendCommandResponse(command.RequestID, "error", "Invalid command format")
-			if mqttMsg.Retained() {
-				client.CleanRetainedMessage(mqttMsg.Topic())
-			}
+
+		client.SendCommandResponse("unknown", "error", "Invalid command format")
+		if mqttMsg.Retained() {
+			client.CleanRetainedMessage(mqttMsg.Topic())
 		}
 		return
 	}
