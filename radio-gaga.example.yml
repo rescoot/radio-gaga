@@ -7,6 +7,9 @@ mqtt:
   broker_url: ssl://mqtt.sunshine.rescoot.org:8883
   ca_cert: /etc/keys/sunshine-mqtt-ca.crt
   keepalive: 180s
+ntp:
+  enabled: true
+  server: pool.ntp.rescoot.org
 redis_url: redis://localhost:6379
 telemetry:
   intervals:

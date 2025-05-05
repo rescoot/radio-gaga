@@ -11,6 +11,9 @@ type CommandLineFlags struct {
 	RedisURL      string
 	Environment   string
 	Debug         bool
+	// NTP configuration
+	NtpEnabled bool
+	NtpServer  string
 	// Telemetry intervals
 	DrivingInterval          string
 	StandbyInterval          string
@@ -23,6 +26,7 @@ type Config struct {
 	Scooter     ScooterConfig      `yaml:"scooter"`
 	Environment string             `yaml:"environment"`
 	MQTT        MQTTConfig         `yaml:"mqtt"`
+	NTP         NTPConfig          `yaml:"ntp"`
 	RedisURL    string             `yaml:"redis_url"`
 	Telemetry   TelemetryConfig    `yaml:"telemetry"`
 	Commands    map[string]Command `yaml:"commands"`
@@ -41,6 +45,12 @@ type MQTTConfig struct {
 	BrokerURL string `yaml:"broker_url"`
 	CACert    string `yaml:"ca_cert"`
 	KeepAlive string `yaml:"keepalive"`
+}
+
+// NTPConfig contains NTP time synchronization configuration
+type NTPConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Server  string `yaml:"server"`
 }
 
 // TelemetryConfig contains telemetry configuration

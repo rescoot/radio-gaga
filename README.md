@@ -64,6 +64,10 @@ mqtt:
   ca_cert: "/path/to/ca.crt"  # Optional CA certificate for TLS (fallback to Redis `HGET settings cloud:mqtt-ca` if not set)
   keepalive: "180s"           # MQTT keepalive interval
 
+ntp:
+  enabled: true               # Enable/disable NTP time synchronization
+  server: "pool.ntp.rescoot.org"  # NTP server address
+
 redis_url: "redis://localhost:6379"
 
 telemetry:
@@ -104,6 +108,10 @@ commands:                    # Optional command configuration
         MQTT keepalive duration (default "30s")
   -redis-url string
         Redis URL (default "redis://localhost:6379")
+  -ntp-enabled
+        Enable NTP time synchronization (default true)
+  -ntp-server string
+        NTP server address (default "pool.ntp.rescoot.org")
   -driving-interval string
         Telemetry interval while driving (default "1s")
   -standby-interval string

@@ -28,6 +28,10 @@ func ParseFlags() *models.CommandLineFlags {
 	flag.StringVar(&flags.RedisURL, "redis-url", "redis://localhost:6379", "Redis URL")
 	flag.BoolVar(&flags.Debug, "debug", false, "enable debug logging")
 
+	// NTP configuration
+	flag.BoolVar(&flags.NtpEnabled, "ntp-enabled", true, "enable NTP time synchronization")
+	flag.StringVar(&flags.NtpServer, "ntp-server", "pool.ntp.rescoot.org", "NTP server address")
+
 	// Telemetry intervals
 	flag.StringVar(&flags.DrivingInterval, "driving-interval", "1s", "telemetry interval while driving")
 	flag.StringVar(&flags.StandbyInterval, "standby-interval", "5m", "telemetry interval in standby")
@@ -65,6 +69,10 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 			Environment: "production",
 			MQTT: models.MQTTConfig{
 				KeepAlive: "180s",
+			},
+			NTP: models.NTPConfig{
+				Enabled: true,
+				Server:  "pool.ntp.rescoot.org",
 			},
 			RedisURL: "redis://127.0.0.1:6379",
 			Telemetry: models.TelemetryConfig{
@@ -105,6 +113,10 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 			config.Telemetry.Intervals.Hibernate = flags.HibernateInterval
 		case "debug":
 			config.Debug = flags.Debug
+		case "ntp-enabled":
+			config.NTP.Enabled = flags.NtpEnabled
+		case "ntp-server":
+			config.NTP.Server = flags.NtpServer
 		}
 	})
 
@@ -196,7 +208,7 @@ func DetectServiceName() string {
 			}
 		}
 	}
-	
+
 	// Method 2: Try using systemd-detect-virt command
 	cmd := exec.Command("systemctl", "status", fmt.Sprintf("%d", os.Getpid()))
 	output, err := cmd.Output()

@@ -185,7 +185,7 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 			log.Printf("Certificate validity period error, attempting NTP sync...")
 
 			// Try NTP sync
-			ntpErr := utils.SyncTimeNTP()
+			ntpErr := utils.SyncTimeNTP(&config.NTP)
 			if ntpErr == nil {
 				// Try connecting again after time sync
 				if token := client.Connect(); token.Wait() && token.Error() != nil {

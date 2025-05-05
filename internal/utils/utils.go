@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash"
 	"os"
+	"radio-gaga/internal/models"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,9 +35,19 @@ func IsTLSURL(url string) bool {
 }
 
 // SyncTimeNTP attempts to sync the system time using NTP
-func SyncTimeNTP() error {
-	ntpServers := []string{
-		"pool.ntp.rescoot.org",
+func SyncTimeNTP(config *models.NTPConfig) error {
+	// If NTP sync is disabled, return immediately
+	if config != nil && !config.Enabled {
+		fmt.Println("NTP time synchronization is disabled in configuration")
+		return nil
+	}
+
+	// Use configured server if available, otherwise use default
+	ntpServers := []string{}
+	if config != nil && config.Server != "" {
+		ntpServers = append(ntpServers, config.Server)
+	} else {
+		ntpServers = append(ntpServers, "pool.ntp.rescoot.org")
 	}
 
 	var lastErr error
