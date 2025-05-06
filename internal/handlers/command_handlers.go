@@ -121,9 +121,7 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		log.Printf("Payload was %v", mqttMsg.Payload())
 
 		client.SendCommandResponse("unknown", "error", "Invalid command format")
-		if mqttMsg.Retained() {
-			client.CleanRetainedMessage(mqttMsg.Topic())
-		}
+		client.CleanRetainedMessage(mqttMsg.Topic())
 		return
 	}
 
@@ -186,13 +184,14 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 	if err != nil {
 		log.Printf("Command failed: %v", err)
 		client.SendCommandResponse(command.RequestID, "error", err.Error())
+		if err := client.CleanRetainedMessage(mqttMsg.Topic()); err != nil {
+			log.Printf("Failed to clean message: %v", err)
+		}
 		return
 	}
 
-	if mqttMsg.Retained() {
-		if err := client.CleanRetainedMessage(mqttMsg.Topic()); err != nil {
-			log.Printf("Failed to clean retained message: %v", err)
-		}
+	if err := client.CleanRetainedMessage(mqttMsg.Topic()); err != nil {
+		log.Printf("Failed to clean message: %v", err)
 	}
 
 	client.SendCommandResponse(command.RequestID, "success", "")
