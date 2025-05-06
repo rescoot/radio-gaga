@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -66,7 +67,7 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 		if err := yaml.Unmarshal(data, config); err != nil {
 			return nil, fmt.Errorf("failed to parse config file: %v", err)
 		}
-		fmt.Printf("Loaded configuration from %s\n", configPath)
+		log.Printf("Loaded configuration from %s", configPath)
 	} else if flags.ConfigPath != "" {
 		// Only return error if config file was explicitly specified
 		return nil, fmt.Errorf("failed to read config file: %v", err)
@@ -161,7 +162,7 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 	// Set service name if not specified
 	if config.ServiceName == "" {
 		config.ServiceName = DetectServiceName()
-		fmt.Printf("Auto-detected systemd service name: %s\n", config.ServiceName)
+		log.Printf("Auto-detected systemd service name: %s", config.ServiceName)
 	}
 
 	return config, nil
@@ -216,12 +217,12 @@ func ValidateConfig(config *models.Config) error {
 
 	// Parse and validate durations
 	durations := map[string]string{
-		"mqtt.keep_alive":        config.MQTT.KeepAlive,
-		"driving":                config.Telemetry.Intervals.Driving,
-		"standby":                config.Telemetry.Intervals.Standby,
-		"standby_no_battery":     config.Telemetry.Intervals.StandbyNoBattery,
-		"hibernate":              config.Telemetry.Intervals.Hibernate,
-		"buffer.retry_interval":  config.Telemetry.Buffer.RetryInterval,
+		"mqtt.keep_alive":           config.MQTT.KeepAlive,
+		"driving":                   config.Telemetry.Intervals.Driving,
+		"standby":                   config.Telemetry.Intervals.Standby,
+		"standby_no_battery":        config.Telemetry.Intervals.StandbyNoBattery,
+		"hibernate":                 config.Telemetry.Intervals.Hibernate,
+		"buffer.retry_interval":     config.Telemetry.Buffer.RetryInterval,
 		"telemetry.transmit_period": config.Telemetry.TransmitPeriod,
 	}
 	for name, value := range durations {
@@ -251,7 +252,7 @@ func DetectServiceName() string {
 					if len(serviceParts) > 0 {
 						serviceName := serviceParts[len(serviceParts)-1] + ".service"
 						if serviceName != "" && serviceName != "-.service" {
-							fmt.Printf("Detected service name from cgroup: %s\n", serviceName)
+							log.Printf("Detected service name from cgroup: %s", serviceName)
 							return serviceName
 						}
 					}
@@ -269,7 +270,7 @@ func DetectServiceName() string {
 			if strings.Contains(line, ".service") {
 				for _, part := range strings.Fields(line) {
 					if strings.HasSuffix(part, ".service") {
-						fmt.Printf("Detected service name from systemctl status: %s\n", part)
+						log.Printf("Detected service name from systemctl status: %s", part)
 						return part
 					}
 				}
@@ -279,11 +280,11 @@ func DetectServiceName() string {
 
 	// Method 3: Check environment variable if set
 	if serviceName := os.Getenv("SYSTEMD_SERVICE_NAME"); serviceName != "" {
-		fmt.Printf("Using service name from environment: %s\n", serviceName)
+		log.Printf("Using service name from environment: %s", serviceName)
 		return serviceName
 	}
 
 	// Default to rescoot-radio-gaga.service if we can't detect it
-	fmt.Printf("Could not detect service name, using default: rescoot-radio-gaga.service\n")
+	log.Printf("Could not detect service name, using default: rescoot-radio-gaga.service")
 	return "rescoot-radio-gaga.service"
 }

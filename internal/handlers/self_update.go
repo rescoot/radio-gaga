@@ -45,7 +45,7 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 	httpClient := &http.Client{Transport: transport}
-	
+
 	resp, err := httpClient.Get(updateURL)
 	if err != nil {
 		return fmt.Errorf("failed to download new binary: %v", err)
@@ -218,13 +218,13 @@ exit 0
 	if err != nil {
 		return "", fmt.Errorf("failed to create update script file: %v", err)
 	}
-	
+
 	if _, err := scriptFile.WriteString(scriptContent); err != nil {
 		scriptFile.Close()
 		os.Remove(scriptFile.Name())
 		return "", fmt.Errorf("failed to write update script content: %v", err)
 	}
-	
+
 	scriptFile.Close()
 	return scriptFile.Name(), nil
 }

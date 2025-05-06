@@ -19,14 +19,14 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		if len(command.Params) > 0 {
 			paramsJSON, err := json.Marshal(command.Params)
 			if err == nil {
-				log.Printf("Command %s (requestID: %s) parameters: %s", 
+				log.Printf("Command %s (requestID: %s) parameters: %s",
 					command.Command, command.RequestID, string(paramsJSON))
 			} else {
-				log.Printf("Command %s (requestID: %s) has parameters but failed to marshal: %v", 
+				log.Printf("Command %s (requestID: %s) has parameters but failed to marshal: %v",
 					command.Command, command.RequestID, err)
 			}
 		} else {
-			log.Printf("Command %s (requestID: %s) has no parameters", 
+			log.Printf("Command %s (requestID: %s) has no parameters",
 				command.Command, command.RequestID)
 		}
 	}

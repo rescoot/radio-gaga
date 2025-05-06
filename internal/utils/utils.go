@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"hash"
+	"log"
 	"os"
 	"radio-gaga/internal/models"
 	"strconv"
@@ -36,9 +37,9 @@ func IsTLSURL(url string) bool {
 
 // SyncTimeNTP attempts to sync the system time using NTP
 func SyncTimeNTP(config *models.NTPConfig) error {
-	// If NTP sync is disabled, return immediately
-	if config != nil && !config.Enabled {
-		fmt.Println("NTP time synchronization is disabled in configuration")
+	// If NTP sync is explicitly disabled, return immediately
+	if config != nil && config.Enabled == false {
+		log.Println("NTP time synchronization is disabled in configuration")
 		return nil
 	}
 
@@ -55,7 +56,7 @@ func SyncTimeNTP(config *models.NTPConfig) error {
 		ntpTime, err := ntp.Time(server)
 		if err != nil {
 			lastErr = err
-			fmt.Printf("Failed to get time from %s: %v\n", server, err)
+			log.Printf("Failed to get time from %s: %v", server, err)
 			continue
 		}
 
@@ -65,13 +66,13 @@ func SyncTimeNTP(config *models.NTPConfig) error {
 		// Set system time (requires root privileges)
 		if err := syscall.Settimeofday(&tv); err != nil {
 			lastErr = fmt.Errorf("failed to set system time: %v", err)
-			fmt.Printf("Warning: %v\n", lastErr)
+			log.Printf("Warning: %v", lastErr)
 			// Even if we can't set the system time, return success
 			// as we at least got a valid time from NTP
 			return nil
 		}
 
-		fmt.Printf("Successfully synchronized time with %s\n", server)
+		log.Printf("Successfully synchronized time with %s", server)
 		return nil
 	}
 
