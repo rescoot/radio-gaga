@@ -70,7 +70,13 @@ environment: "production"     # production or development
 
 mqtt:
   broker_url: "ssl://mqtt.example.com:8883"  # Fallback to Redis `HGET settings cloud:mqtt-url` if not set
-  ca_cert: "/path/to/ca.crt"  # Optional CA certificate for TLS (fallback to Redis `HGET settings cloud:mqtt-ca` if not set)
+  ca_cert: "/path/to/ca.crt"  # Optional CA certificate file path for TLS (fallback to Redis `HGET settings cloud:mqtt-ca` if not set)
+  # Alternatively, embed the certificate directly in the config file
+  # ca_cert_embedded: |
+  #   -----BEGIN CERTIFICATE-----
+  #   MIIFTTCCAzWgAwIBAgIBATANBgkqhkiG9w0BAQsFADBIMQswCQYDVQQGEwJERTEa
+  #   ... certificate content ...
+  #   -----END CERTIFICATE-----
   keepalive: "180s"           # MQTT keepalive interval
 
 ntp:

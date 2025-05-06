@@ -51,9 +51,10 @@ type ScooterConfig struct {
 
 // MQTTConfig contains MQTT configuration
 type MQTTConfig struct {
-	BrokerURL string `yaml:"broker_url"`
-	CACert    string `yaml:"ca_cert"`
-	KeepAlive string `yaml:"keepalive"`
+	BrokerURL      string `yaml:"broker_url"`
+	CACert         string `yaml:"ca_cert"`
+	CACertEmbedded string `yaml:"ca_cert_embedded,omitempty"`
+	KeepAlive      string `yaml:"keepalive"`
 }
 
 // NTPConfig contains NTP time synchronization configuration

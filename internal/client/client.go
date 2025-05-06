@@ -142,7 +142,20 @@ func NewScooterMQTTClient(config *models.Config, version string) (*ScooterMQTTCl
 
 	if utils.IsTLSURL(config.MQTT.BrokerURL) {
 		tlsConfig := new(tls.Config)
-		if config.MQTT.CACert != "" {
+		
+		// Check if we have a CA certificate to use
+		if config.MQTT.CACertEmbedded != "" {
+			// Use the embedded certificate
+			log.Printf("Using embedded CA certificate")
+			caCertPool := x509.NewCertPool()
+			if ok := caCertPool.AppendCertsFromPEM([]byte(config.MQTT.CACertEmbedded)); !ok {
+				cancel()
+				return nil, fmt.Errorf("failed to parse embedded CA certificate")
+			}
+			tlsConfig.RootCAs = caCertPool
+		} else if config.MQTT.CACert != "" {
+			// Use the certificate from file
+			log.Printf("Using CA certificate from file: %s", config.MQTT.CACert)
 			caCert, err := os.ReadFile(config.MQTT.CACert)
 			if err != nil {
 				cancel()
@@ -200,7 +213,18 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 			// If we get here, both normal connection and NTP sync failed
 			// Create new client with insecure TLS
 			insecureOpts := opts
-			if tlsConfig, err := utils.CreateInsecureTLSConfig(config.MQTT.CACert); err == nil {
+			
+			var tlsConfig *tls.Config
+			var err error
+			
+			// Check if we have an embedded certificate or a file path
+			if config.MQTT.CACertEmbedded != "" {
+				tlsConfig, err = utils.CreateInsecureTLSConfigWithEmbeddedCert(config.MQTT.CACertEmbedded)
+			} else {
+				tlsConfig, err = utils.CreateInsecureTLSConfig(config.MQTT.CACert)
+			}
+			
+			if err == nil {
 				insecureOpts.SetTLSConfig(tlsConfig)
 				insecureClient := mqtt.NewClient(insecureOpts)
 				if token := insecureClient.Connect(); token.Wait() && token.Error() != nil {

@@ -101,6 +101,24 @@ func CreateInsecureTLSConfig(caCertPath string) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
+// CreateInsecureTLSConfigWithEmbeddedCert creates a TLS config that skips verification using an embedded certificate
+func CreateInsecureTLSConfigWithEmbeddedCert(caCertEmbedded string) (*tls.Config, error) {
+	tlsConfig := new(tls.Config)
+	tlsConfig.InsecureSkipVerify = true
+
+	// If we have an embedded CA cert, use it for basic verification
+	if caCertEmbedded != "" {
+		caCertPool := x509.NewCertPool()
+		if ok := caCertPool.AppendCertsFromPEM([]byte(caCertEmbedded)); !ok {
+			return nil, fmt.Errorf("failed to parse embedded CA certificate")
+		}
+
+		tlsConfig.RootCAs = caCertPool
+	}
+
+	return tlsConfig, nil
+}
+
 // CreateHash creates a hash based on the algorithm name
 func CreateHash(algorithm string) (hash.Hash, error) {
 	switch algorithm {
