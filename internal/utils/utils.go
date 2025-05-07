@@ -204,7 +204,7 @@ func readHexValueFromFile(path string) (uint64, error) {
 
 	// Parse the hexadecimal value
 	var value uint64
-	_, err = fmt.Sscanf(string(data), "%x", &value)
+	_, err = fmt.Sscanf(string(data), "0x%x", &value)
 	if err != nil {
 		return 0, fmt.Errorf("cannot read value from %s: %v", path, err)
 	}
