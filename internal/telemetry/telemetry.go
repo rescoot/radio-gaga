@@ -207,13 +207,24 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 	if err != nil {
 		return nil, fmt.Errorf("failed to get system info: %v", err)
 	}
+
+	// Read MDB serial number
+	mdbSN, err := utils.ReadMdbSerialNumber()
+	if err != nil {
+		log.Printf("Warning: Failed to read MDB serial number: %v", err)
+		mdbSN = ""
+	}
+
 	telemetry.System = models.SystemInfo{
-		Environment:  system["environment"],
-		DbcVersion:   system["dbc-version"],
-		MdbVersion:   system["mdb-version"],
-		NrfFWVersion: system["nrf-fw-version"],
-		DBCFlavor:    system["dbc-flavor"],
-		MDBFlavor:    system["mdb-flavor"],
+		Environment:     system["environment"],
+		DbcVersion:      system["dbc-version"],
+		MdbVersion:      system["mdb-version"],
+		NrfFWVersion:    system["nrf-fw-version"],
+		DBCFlavor:       system["dbc-flavor"],
+		MDBFlavor:       system["mdb-flavor"],
+		MdbSerialNumber: mdbSN,
+		// Dashboard serial number is already collected in the Dashboard struct
+		DbcSerialNumber: telemetry.Dashboard.SerialNumber,
 	}
 
 	// Get internet connectivity status

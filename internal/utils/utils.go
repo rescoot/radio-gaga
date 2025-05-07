@@ -174,3 +174,40 @@ func ConvertToStringKeyMap(m interface{}) interface{} {
 		return m
 	}
 }
+
+// ReadMdbSerialNumber reads the MDB serial number from the system
+func ReadMdbSerialNumber() (string, error) {
+	// Read the first value
+	cfg0, err := readHexValueFromFile("/sys/fsl_otp/HW_OCOTP_CFG0")
+	if err != nil {
+		return "", fmt.Errorf("failed to read MDB serial number part 1: %v", err)
+	}
+
+	// Read the second value
+	cfg1, err := readHexValueFromFile("/sys/fsl_otp/HW_OCOTP_CFG1")
+	if err != nil {
+		return "", fmt.Errorf("failed to read MDB serial number part 2: %v", err)
+	}
+
+	// Combine the values
+	sn := cfg0 + cfg1
+	return fmt.Sprintf("%d", sn), nil
+}
+
+// readHexValueFromFile reads a hexadecimal value from a file
+func readHexValueFromFile(path string) (uint64, error) {
+	// Read the file
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("cannot open %s: %v", path, err)
+	}
+
+	// Parse the hexadecimal value
+	var value uint64
+	_, err = fmt.Sscanf(string(data), "%x", &value)
+	if err != nil {
+		return 0, fmt.Errorf("cannot read value from %s: %v", path, err)
+	}
+
+	return value, nil
+}
