@@ -483,13 +483,12 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 		return fmt.Errorf("shell command not specified")
 	}
 
-	// Split command string into command and arguments
-	cmdParts := strings.Fields(cmdStr)
-	if len(cmdParts) == 0 {
+	// Execute command through shell to handle quotes, pipes, and other shell syntax
+	if cmdStr == "" {
 		return fmt.Errorf("empty command")
 	}
 
-	cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
+	cmd := exec.Command("sh", "-c", cmdStr)
 
 	// Create pipes for stdout and stderr
 	stdout, err := cmd.StdoutPipe()
