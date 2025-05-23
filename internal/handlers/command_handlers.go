@@ -9,6 +9,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -531,9 +532,12 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 
 	// Collect output
 	var stdoutBuf, stderrBuf bytes.Buffer
+	var wg sync.WaitGroup
 
 	// Read stdout
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			text := scanner.Text()
@@ -545,7 +549,9 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 	}()
 
 	// Read stderr
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			text := scanner.Text()
@@ -556,7 +562,10 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 		}
 	}()
 
-	// Wait for command to complete
+	// Wait for all output to be read first
+	wg.Wait()
+
+	// Then wait for command to complete
 	err = cmd.Wait()
 
 	// Send final response
