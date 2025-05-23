@@ -508,11 +508,18 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 
 	topic := fmt.Sprintf("scooters/%s/data", config.Scooter.Identifier)
 
-	// Function to send output
-	sendOutput := func(outputType string, data string) error {
+	// Function to send batched output as concatenated string
+	sendBatchedOutput := func(outputType string, lines []string) error {
+		if len(lines) == 0 {
+			return nil
+		}
+
+		// Concatenate lines with newlines
+		output := strings.Join(lines, "\n")
+
 		response := map[string]interface{}{
 			"type":        "shell",
-			"output":      data,
+			"output":      output,
 			"stream":      stream,
 			"done":        false,
 			"output_type": outputType,
@@ -534,32 +541,78 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 	var stdoutBuf, stderrBuf bytes.Buffer
 	var wg sync.WaitGroup
 
-	// Read stdout
+	// Batching configuration
+	const (
+		batchSize    = 10                     // Send batch every 10 lines
+		batchTimeout = 500 * time.Millisecond // Or every 500ms, whichever comes first
+	)
+
+	// Read stdout with batching
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stdout)
+		var batch []string
+		lastSent := time.Now()
+
+		flushBatch := func() {
+			if len(batch) > 0 && stream {
+				sendBatchedOutput("stdout", batch)
+				batch = nil
+				lastSent = time.Now()
+			}
+		}
+
 		for scanner.Scan() {
 			text := scanner.Text()
-			if stream {
-				sendOutput("stdout", text)
-			}
 			stdoutBuf.WriteString(text + "\n")
+
+			if stream {
+				batch = append(batch, text)
+
+				// Send batch if we hit size limit or timeout
+				if len(batch) >= batchSize || time.Since(lastSent) >= batchTimeout {
+					flushBatch()
+				}
+			}
 		}
+
+		// Send remaining lines in batch
+		flushBatch()
 	}()
 
-	// Read stderr
+	// Read stderr with batching
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
+		var batch []string
+		lastSent := time.Now()
+
+		flushBatch := func() {
+			if len(batch) > 0 && stream {
+				sendBatchedOutput("stderr", batch)
+				batch = nil
+				lastSent = time.Now()
+			}
+		}
+
 		for scanner.Scan() {
 			text := scanner.Text()
-			if stream {
-				sendOutput("stderr", text)
-			}
 			stderrBuf.WriteString(text + "\n")
+
+			if stream {
+				batch = append(batch, text)
+
+				// Send batch if we hit size limit or timeout
+				if len(batch) >= batchSize || time.Since(lastSent) >= batchTimeout {
+					flushBatch()
+				}
+			}
 		}
+
+		// Send remaining lines in batch
+		flushBatch()
 	}()
 
 	// Wait for all output to be read first
