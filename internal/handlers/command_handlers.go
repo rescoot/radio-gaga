@@ -178,6 +178,8 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		err = handleShellCommand(client, mqttClient, config, command.Params, command.RequestID, command.Stream)
 	case "navigate":
 		err = handleNavigateCommand(redisClient, ctx, command.Params, command.RequestID)
+	case "hibernate":
+		err = handleHibernateCommand(redisClient, ctx)
 	default:
 		err = fmt.Errorf("unknown command: %s", command.Command)
 	}
@@ -673,4 +675,9 @@ func handleNavigateCommand(redisClient *redis.Client, ctx context.Context, param
 
 	log.Printf("Navigation target set to: %s", coords)
 	return nil
+}
+
+// handleHibernateCommand handles the hibernate command
+func handleHibernateCommand(redisClient *redis.Client, ctx context.Context) error {
+	return redisClient.LPush(ctx, "scooter:power", "hibernate").Err()
 }
