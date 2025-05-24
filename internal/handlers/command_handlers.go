@@ -15,6 +15,7 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-redis/redis/v8"
 
+	"radio-gaga/internal/handlers/commands"
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/telemetry"
 	"radio-gaga/internal/utils"
@@ -180,6 +181,16 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		err = handleNavigateCommand(redisClient, ctx, command.Params, command.RequestID)
 	case "hibernate":
 		err = handleHibernateCommand(redisClient, ctx)
+	case "keycards:list":
+		err = commands.HandleKeycardsListCommand(client, mqttClient, config, command.RequestID)
+	case "keycards:add":
+		err = commands.HandleKeycardsAddCommand(command.Params)
+	case "keycards:delete":
+		err = commands.HandleKeycardsDeleteCommand(command.Params)
+	case "keycards:master_key:get":
+		err = commands.HandleKeycardsMasterKeyGetCommand(client, mqttClient, config, command.RequestID)
+	case "keycards:master_key:set":
+		err = commands.HandleKeycardsMasterKeySetCommand(command.Params)
 	default:
 		err = fmt.Errorf("unknown command: %s", command.Command)
 	}
