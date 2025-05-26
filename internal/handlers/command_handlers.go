@@ -666,6 +666,24 @@ func handleNavigateCommand(redisClient *redis.Client, ctx context.Context, param
 	lat, latOK := params["latitude"].(float64)
 	lng, lngOK := params["longitude"].(float64)
 
+	// Check if this is a clear navigation command (both latitude and longitude are nil or missing)
+	if (!latOK && !lngOK) || (params["latitude"] == nil && params["longitude"] == nil) {
+		// Clear the navigation destination
+		if err := redisClient.HDel(ctx, "navigation", "destination").Err(); err != nil {
+			return fmt.Errorf("failed to clear navigation destination in Redis: %v", err)
+		}
+
+		// Publish notification to the navigation channel
+		if err := redisClient.Publish(ctx, "navigation", "cleared").Err(); err != nil {
+			// Log the error but don't fail the command, as the HDEL succeeded
+			log.Printf("Warning: Failed to publish navigation clear notification: %v", err)
+		}
+
+		log.Printf("Navigation target cleared")
+		return nil
+	}
+
+	// Check if both coordinates are provided for setting a destination
 	if !latOK || !lngOK {
 		return fmt.Errorf("invalid or missing latitude/longitude parameters")
 	}
