@@ -50,6 +50,7 @@ func NewScooterMQTTClient(config *models.Config, version string) (*ScooterMQTTCl
 		return nil, fmt.Errorf("redis connection failed: %v", err)
 	}
 
+	// --- MDB Flavor and Version Handling ---
 	// Determine and store MDB flavor (SUN-47)
 	mdbHostname, err := os.Hostname()
 	if err != nil {
@@ -65,11 +66,109 @@ func NewScooterMQTTClient(config *models.Config, version string) (*ScooterMQTTCl
 			mdbFlavor = "unknown"
 			log.Printf("Unrecognized MDB hostname format: %s", mdbHostname)
 		}
-		err = redisClient.HSet(ctx, "system", "mdb-flavor", mdbFlavor).Err()
-		if err != nil {
-			log.Printf("Failed to store MDB flavor '%s' in Redis: %v", mdbFlavor, err)
+		if storeErr := redisClient.HSet(ctx, "system", "mdb-flavor", mdbFlavor).Err(); storeErr != nil {
+			log.Printf("Failed to store MDB flavor '%s' in Redis: %v", mdbFlavor, storeErr)
 		} else {
 			log.Printf("Stored MDB flavor as '%s' based on hostname '%s'", mdbFlavor, mdbHostname)
+		}
+	}
+
+	// MDB Version
+	log.Println("Checking MDB version information at startup...")
+	mdbVersionInfo, err := redisClient.HGetAll(ctx, "version:mdb").Result()
+	mdbVersion := ""
+	if err == nil && mdbVersionInfo["version_id"] != "" {
+		mdbVersion = mdbVersionInfo["version_id"]
+		log.Printf("Found MDB version_id in version:mdb Redis hash: %s", mdbVersion)
+	} else {
+		if err != redis.Nil && err != nil {
+			log.Printf("Error reading version:mdb from Redis: %v. Falling back to local os-release.", err)
+		} else {
+			log.Println("MDB version_id not found in version:mdb Redis hash or hash missing. Reading local /etc/os-release.")
+		}
+		// Read local /etc/os-release for MDB
+		mdbOsReleaseBytes, readErr := os.ReadFile("/etc/os-release")
+		if readErr != nil {
+			log.Printf("Failed to read local /etc/os-release for MDB version: %v", readErr)
+			mdbVersion = "unknown_os_release_read_error"
+		} else {
+			mdbOsRelease := string(mdbOsReleaseBytes)
+			mdbOsVersionID := ""
+			mdbOsID := ""
+
+			// Extract VERSION_ID
+			versionMatch := strings.Split(mdbOsRelease, "VERSION_ID=")
+			if len(versionMatch) > 1 {
+				mdbOsVersionID = strings.Trim(strings.Split(versionMatch[1], "\n")[0], "\"'")
+			} else {
+				log.Println("Could not find VERSION_ID in MDB /etc/os-release")
+			}
+			// Extract ID
+			idMatch := strings.Split(mdbOsRelease, "ID=")
+			if len(idMatch) > 1 {
+				mdbOsID = strings.Trim(strings.Split(idMatch[1], "\n")[0], "\"'")
+			} else {
+				log.Println("Could not find ID in MDB /etc/os-release")
+			}
+
+			if mdbOsVersionID != "" {
+				mdbVersion = mdbOsVersionID
+				// Populate version:mdb hash
+				fieldsToSet := map[string]interface{}{"version_id": mdbOsVersionID}
+				if mdbOsID != "" {
+					fieldsToSet["id"] = mdbOsID
+				}
+				// Add other common fields if desired, e.g. name, pretty_name, etc.
+				// For now, just id and version_id
+				if pipeErr := redisClient.HSet(ctx, "version:mdb", fieldsToSet).Err(); pipeErr != nil {
+					log.Printf("Failed to populate version:mdb Redis hash: %v", pipeErr)
+				} else {
+					log.Printf("Populated version:mdb Redis hash with ID: %s, VersionID: %s", mdbOsID, mdbOsVersionID)
+				}
+			} else {
+				mdbVersion = "unknown_os_release_parse_error"
+			}
+		}
+	}
+	if storeErr := redisClient.HSet(ctx, "system", "mdb-version", mdbVersion).Err(); storeErr != nil {
+		log.Printf("Failed to store MDB version '%s' in Redis: %v", mdbVersion, storeErr)
+	} else {
+		log.Printf("Stored MDB version as '%s' in system hash", mdbVersion)
+	}
+
+	// --- Initial DBC Info (from Redis only) ---
+	log.Println("Checking initial DBC information from Redis at startup...")
+	dbcVersionInfo, err := redisClient.HGetAll(ctx, "version:dbc").Result()
+	if err == nil && dbcVersionInfo["version_id"] != "" && dbcVersionInfo["id"] != "" {
+		dbcRedisVersion := dbcVersionInfo["version_id"]
+		dbcRedisID := dbcVersionInfo["id"]
+		log.Printf("Found DBC info in version:dbc Redis hash - ID: %s, Version: %s", dbcRedisID, dbcRedisVersion)
+
+		var dbcFlavor string
+		if strings.Contains(dbcRedisID, "librescoot") {
+			dbcFlavor = "librescoot"
+		} else if strings.Contains(dbcRedisID, "unu") {
+			dbcFlavor = "stock"
+		} else {
+			dbcFlavor = dbcRedisID
+			log.Printf("Unrecognized DBC ID from version:dbc Redis hash: %s", dbcRedisID)
+		}
+
+		if storeErr := redisClient.HSet(ctx, "system", "dbc-flavor", dbcFlavor).Err(); storeErr != nil {
+			log.Printf("Failed to store initial DBC flavor '%s' from Redis: %v", dbcFlavor, storeErr)
+		} else {
+			log.Printf("Stored initial DBC flavor as '%s' from Redis", dbcFlavor)
+		}
+		if storeErr := redisClient.HSet(ctx, "system", "dbc-version", dbcRedisVersion).Err(); storeErr != nil {
+			log.Printf("Failed to store initial DBC version '%s' from Redis: %v", dbcRedisVersion, storeErr)
+		} else {
+			log.Printf("Stored initial DBC version as '%s' from Redis", dbcRedisVersion)
+		}
+	} else {
+		if err != redis.Nil && err != nil {
+			log.Printf("Error reading version:dbc from Redis at startup: %v. DBC info will be fetched later.", err)
+		} else {
+			log.Println("Initial DBC info not found or incomplete in version:dbc Redis hash. Will be fetched when dashboard is ready.")
 		}
 	}
 
@@ -311,108 +410,112 @@ func (s *ScooterMQTTClient) watchDashboardStatus() {
 	}
 }
 
-// checkAndStoreDBCFlavor checks the DBC and MDB information and stores flavor and version
+// checkAndStoreDBCFlavor is called when the dashboard signals readiness.
+// It checks DBC information, prioritizing Redis, then SSH, and updates Redis hashes.
 func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
-	// Execute ssh command to get DBC os-release
-	// Note: Ensure ssh keys are set up for passwordless login from MDB to DBC
-	// Use a timeout for the SSH command
-	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second) // 10-second timeout
+	// Use a timeout for the whole operation, including SSH if needed
+	ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second) // 15-second overall timeout for this function
 	defer cancel()
 
-	// Use Dropbear-compatible options: -y -y attempts to auto-accept host key. Timeout handled by Go context.
-	cmd := exec.CommandContext(ctx, "ssh", "-y", "-y", "root@192.168.7.2", "cat /etc/os-release")
-	output, err := cmd.Output()
+	var dbcFlavor, dbcVersionID, dbcID string
+	var fetchedViaSSH bool = false
 
-	if ctx.Err() == context.DeadlineExceeded {
-		log.Printf("SSH command timed out while checking DBC os-release")
-		s.redisClient.HSet(s.ctx, "system", "dbc-flavor", "unknown_timeout").Err()
-		return
-	}
-	if err != nil {
-		log.Printf("Failed to SSH to DBC or get os-release: %v", err)
-		// Set unknown states in Redis
-		s.redisClient.HSet(s.ctx, "system", "dbc-flavor", "unknown_ssh_error").Err()
-		s.redisClient.HSet(s.ctx, "system", "dbc-version", "unknown_ssh_error").Err()
-		return
-	}
+	log.Println("Dashboard ready: Checking/Fetching DBC information...")
+	dbcVersionInfo, err := s.redisClient.HGetAll(ctx, "version:dbc").Result()
 
-	// Parse os-release output
-	osRelease := string(output)
-	var dbcFlavor string
-	var dbcVersion string
-
-	// Extract ID for flavor
-	idMatch := strings.Split(osRelease, "ID=")
-	if len(idMatch) > 1 {
-		id := strings.Split(idMatch[1], "\n")[0]
-		id = strings.Trim(id, "\"'")
-
-		if strings.Contains(id, "librescoot") {
-			dbcFlavor = "librescoot"
-		} else if strings.Contains(id, "unu") {
-			dbcFlavor = "stock"
+	if err == nil && dbcVersionInfo["version_id"] != "" && dbcVersionInfo["id"] != "" {
+		log.Printf("Found complete DBC info in version:dbc Redis hash: %v", dbcVersionInfo)
+		dbcVersionID = dbcVersionInfo["version_id"]
+		dbcID = dbcVersionInfo["id"]
+	} else {
+		if err != redis.Nil && err != nil {
+			log.Printf("Error reading version:dbc from Redis: %v. Proceeding with SSH.", err)
 		} else {
-			dbcFlavor = id // Use the actual ID if it doesn't match known patterns
-			log.Printf("Unrecognized DBC ID: %s", id)
-		}
-	} else {
-		dbcFlavor = "unknown"
-		log.Printf("Could not find ID in os-release")
-	}
-
-	// Extract VERSION_ID for version
-	versionMatch := strings.Split(osRelease, "VERSION_ID=")
-	if len(versionMatch) > 1 {
-		dbcVersion = strings.Split(versionMatch[1], "\n")[0]
-		dbcVersion = strings.Trim(dbcVersion, "\"'")
-	} else {
-		dbcVersion = "unknown"
-		log.Printf("Could not find VERSION_ID in os-release")
-	}
-
-	// Store DBC flavor and version in Redis
-	err = s.redisClient.HSet(s.ctx, "system", "dbc-flavor", dbcFlavor).Err()
-	if err != nil {
-		log.Printf("Failed to store DBC flavor '%s' in Redis: %v", dbcFlavor, err)
-	} else {
-		log.Printf("Stored DBC flavor as '%s'", dbcFlavor)
-	}
-
-	err = s.redisClient.HSet(s.ctx, "system", "dbc-version", dbcVersion).Err()
-	if err != nil {
-		log.Printf("Failed to store DBC version '%s' in Redis: %v", dbcVersion, err)
-	} else {
-		log.Printf("Stored DBC version as '%s'", dbcVersion)
-	}
-
-	// Now get MDB version from local os-release
-	mdbCmd := exec.CommandContext(ctx, "sh", "-c", "cat /etc/os-release")
-	mdbOutput, err := mdbCmd.Output()
-
-	if err != nil {
-		log.Printf("Failed to get MDB os-release: %v", err)
-		s.redisClient.HSet(s.ctx, "system", "mdb-version", "unknown_error").Err()
-	} else {
-		mdbOsRelease := string(mdbOutput)
-		var mdbVersion string
-
-		// Extract VERSION_ID for MDB version
-		versionMatch := strings.Split(mdbOsRelease, "VERSION_ID=")
-		if len(versionMatch) > 1 {
-			mdbVersion = strings.Split(versionMatch[1], "\n")[0]
-			mdbVersion = strings.Trim(mdbVersion, "\"'")
-		} else {
-			mdbVersion = "unknown"
-			log.Printf("Could not find VERSION_ID in MDB os-release")
+			log.Println("DBC version info not found or incomplete in version:dbc Redis hash, attempting SSH to DBC.")
 		}
 
-		// Store MDB version in Redis
-		err = s.redisClient.HSet(s.ctx, "system", "mdb-version", mdbVersion).Err()
-		if err != nil {
-			log.Printf("Failed to store MDB version '%s' in Redis: %v", mdbVersion, err)
+		// Execute ssh command to get DBC os-release
+		sshCtx, sshCancel := context.WithTimeout(ctx, 10*time.Second) // 10-second timeout for SSH itself
+		defer sshCancel()
+
+		cmd := exec.CommandContext(sshCtx, "ssh", "-y", "-y", "root@192.168.7.2", "cat /etc/os-release")
+		output, sshErr := cmd.Output()
+
+		if sshCtx.Err() == context.DeadlineExceeded {
+			log.Printf("SSH command timed out while checking DBC os-release")
+			dbcID = "unknown_timeout"
+			dbcVersionID = "unknown_timeout"
+		} else if sshErr != nil {
+			log.Printf("Failed to SSH to DBC or get os-release: %v", sshErr)
+			dbcID = "unknown_ssh_error"
+			dbcVersionID = "unknown_ssh_error"
 		} else {
-			log.Printf("Stored MDB version as '%s'", mdbVersion)
+			// Parse os-release output
+			osRelease := string(output)
+			fetchedViaSSH = true // Mark that we got new data
+
+			// Extract ID
+			idMatch := strings.Split(osRelease, "ID=")
+			if len(idMatch) > 1 {
+				dbcID = strings.Trim(strings.Split(idMatch[1], "\n")[0], "\"'")
+			} else {
+				dbcID = "unknown_os_release_id"
+				log.Printf("Could not find ID in DBC os-release")
+			}
+
+			// Extract VERSION_ID
+			versionMatch := strings.Split(osRelease, "VERSION_ID=")
+			if len(versionMatch) > 1 {
+				dbcVersionID = strings.Trim(strings.Split(versionMatch[1], "\n")[0], "\"'")
+			} else {
+				dbcVersionID = "unknown_os_release_version"
+				log.Printf("Could not find VERSION_ID in DBC os-release")
+			}
+
+			// Populate version:dbc hash in Redis since we fetched it
+			if dbcID != "" && dbcVersionID != "" &&
+				!strings.HasPrefix(dbcID, "unknown_") && !strings.HasPrefix(dbcVersionID, "unknown_") {
+				fieldsToSet := map[string]interface{}{
+					"id":         dbcID,
+					"version_id": dbcVersionID,
+					// Potentially add other fields like "name", "pretty_name" if available and desired
+				}
+				if pipeErr := s.redisClient.HSet(ctx, "version:dbc", fieldsToSet).Err(); pipeErr != nil {
+					log.Printf("Failed to populate version:dbc Redis hash after SSH: %v", pipeErr)
+				} else {
+					log.Printf("Populated version:dbc Redis hash with ID: %s, VersionID: %s from SSH", dbcID, dbcVersionID)
+				}
+			}
 		}
+	}
+
+	// Determine flavor from dbcID (either from Redis or SSH)
+	if strings.Contains(dbcID, "librescoot") {
+		dbcFlavor = "librescoot"
+	} else if strings.Contains(dbcID, "unu") { // Assuming "unu" might be part of stock ID
+		dbcFlavor = "stock"
+	} else if dbcID != "" && !strings.HasPrefix(dbcID, "unknown_") {
+		dbcFlavor = dbcID // Use the actual ID if it doesn't match known patterns and isn't an error placeholder
+		log.Printf("Unrecognized DBC ID '%s', using as flavor.", dbcID)
+	} else {
+		dbcFlavor = dbcID // This will be "unknown_..." if there was an error
+		if dbcID == "" {  // Should not happen if logic above is correct, but as a fallback
+			dbcFlavor = "unknown"
+		}
+		log.Printf("DBC ID is '%s', resulting in flavor '%s'", dbcID, dbcFlavor)
+	}
+
+	// Store final DBC flavor and version in Redis 'system' hash
+	if storeErr := s.redisClient.HSet(ctx, "system", "dbc-flavor", dbcFlavor).Err(); storeErr != nil {
+		log.Printf("Failed to store DBC flavor '%s' in system hash: %v", dbcFlavor, storeErr)
+	} else {
+		log.Printf("Stored DBC flavor as '%s' in system hash (fetched via SSH: %t)", dbcFlavor, fetchedViaSSH)
+	}
+
+	if storeErr := s.redisClient.HSet(ctx, "system", "dbc-version", dbcVersionID).Err(); storeErr != nil {
+		log.Printf("Failed to store DBC version '%s' in system hash: %v", dbcVersionID, storeErr)
+	} else {
+		log.Printf("Stored DBC version as '%s' in system hash (fetched via SSH: %t)", dbcVersionID, fetchedViaSSH)
 	}
 }
 
