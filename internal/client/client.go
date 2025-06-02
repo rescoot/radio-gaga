@@ -365,14 +365,42 @@ func (s *ScooterMQTTClient) Start() error {
 
 // Stop stops the MQTT client and closes connections
 func (s *ScooterMQTTClient) Stop() {
+	// Ensure any buffered telemetry is sent before shutting down
+	if s.config.Telemetry.Buffer.Enabled {
+		log.Println("Flushing telemetry buffer before shutdown...")
+		if err := s.transmitBuffer(); err != nil {
+			log.Printf("Error flushing telemetry buffer during shutdown: %v", err)
+		} else {
+			log.Println("Telemetry buffer flushed.")
+		}
+	}
+
 	// Unsubscribe from command topic
 	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
-	s.mqttClient.Unsubscribe(commandTopic)
+	if s.mqttClient.IsConnected() {
+		log.Printf("Unsubscribing from %s", commandTopic)
+		if token := s.mqttClient.Unsubscribe(commandTopic); token.WaitTimeout(2*time.Second) && token.Error() != nil {
+			log.Printf("Error unsubscribing from command topic: %v", token.Error())
+		}
+	}
 
-	// Cancel context and close connections
+	// Cancel context
+	log.Println("Cancelling client context...")
 	s.cancel()
-	s.mqttClient.Disconnect(250)
-	s.redisClient.Close()
+
+	// Disconnect MQTT client
+	if s.mqttClient.IsConnected() {
+		log.Println("Disconnecting MQTT client...")
+		s.mqttClient.Disconnect(500) // Wait 500ms for disconnect
+	}
+
+	// Close Redis client
+	log.Println("Closing Redis client...")
+	if err := s.redisClient.Close(); err != nil {
+		log.Printf("Error closing Redis client: %v", err)
+	}
+
+	log.Println("ScooterMQTTClient stopped.")
 }
 
 // watchDashboardStatus monitors dashboard status changes
@@ -580,63 +608,87 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 		for {
 			msg, err := pubsub.ReceiveMessage(s.ctx)
 			if err != nil {
-				if err != context.Canceled {
-					log.Printf("Error receiving message: %v", err)
+				if err != context.Canceled && s.ctx.Err() == nil {
+					log.Printf("Error receiving pub/sub message: %v", err)
 				}
 				return
 			}
 
 			switch msg.Channel {
 			case "vehicle":
-				// Get new interval when state changes
-				newInterval, reason := telemetry.GetTelemetryInterval(s.ctx, s.redisClient, s.config)
-				if newInterval != interval {
-					log.Printf("Updating telemetry interval to %v (%s)", newInterval, reason)
-					ticker.Reset(newInterval)
-					interval = newInterval
+				log.Printf("Received message on 'vehicle' channel. Payload: %s", msg.Payload)
+				currentVehicleState, err := s.redisClient.HGet(s.ctx, "vehicle", "state").Result()
+				if err != nil {
+					log.Printf("Error getting vehicle state from Redis: %v", err)
+					continue
+				}
+
+				if currentVehicleState != lastState {
+					log.Printf("Vehicle state changed from '%s' to '%s' (detected via pub/sub). Publishing telemetry.", lastState, currentVehicleState)
+					if err := s.collectAndPublishTelemetry(); err != nil {
+						log.Printf("Failed to publish telemetry on vehicle state change (pub/sub): %v", err)
+					}
+					lastState = currentVehicleState
+
+					// Also update telemetry interval if necessary
+					newInterval, reason := telemetry.GetTelemetryInterval(s.ctx, s.redisClient, s.config)
+					if newInterval != interval {
+						log.Printf("Updating telemetry interval to %v (%s) due to vehicle state change to '%s'", newInterval, reason, currentVehicleState)
+						ticker.Reset(newInterval)
+						interval = newInterval
+					}
 				}
 			case "power-manager":
-				// Check if we need to handle power state change
+				log.Printf("Received message on 'power-manager' channel. Payload: %s", msg.Payload)
+				// Fetch the detailed power state from the hash
 				powerState, err := s.redisClient.HGet(s.ctx, "power-manager", "state").Result()
 				if err != nil {
 					log.Printf("Error getting power state: %v", err)
 					continue
 				}
 
-				if powerState == "suspend" {
-					log.Printf("Power manager entering suspend state")
+				log.Printf("Power manager state is now: %s", powerState)
+
+				// States that require immediate final telemetry flush
+				switch powerState {
+				case "suspend", "suspending", "hibernating-imminent", "rebooting", "pre-hibernation":
+					log.Printf("Power manager entering critical state '%s'. Preparing to send final telemetry.", powerState)
 
 					// Create a brief inhibitor to give us time for final telemetry
-					if err := s.redisClient.Set(s.ctx, "power-manager:inhibit:radio-gaga", "final telemetry", time.Second*2).Err(); err != nil {
-						log.Printf("Failed to set power manager inhibit: %v", err)
+					inhibitDuration := 5 * time.Second // Increased for critical states
+					if err := s.redisClient.Set(s.ctx, "power-manager:inhibit:radio-gaga", "final telemetry", inhibitDuration).Err(); err != nil {
+						log.Printf("Failed to set power manager inhibit for state '%s': %v", powerState, err)
+					} else {
+						log.Printf("Set power manager inhibitor for %v for state '%s'", inhibitDuration, powerState)
 					}
 
-					// Get and publish final telemetry
-					if current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version); err == nil {
+					currentData, telErr := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version)
+					if telErr == nil {
+						log.Printf("Collected final telemetry data for state '%s'.", powerState)
 						if s.config.Telemetry.Buffer.Enabled {
-							if err := s.addTelemetryToBuffer(current); err != nil {
-								log.Printf("Failed to add final telemetry to buffer: %v", err)
+							if addErr := s.addTelemetryToBuffer(currentData); addErr != nil {
+								log.Printf("Failed to add final telemetry to buffer for state '%s': %v", powerState, addErr)
 							} else {
-								log.Printf("Added final telemetry to buffer before suspend")
-								// Force transmit buffer
-								if err := s.transmitBuffer(); err != nil {
-									log.Printf("Failed to transmit buffer before suspend: %v", err)
+								log.Printf("Added final telemetry to buffer for state '%s'. Transmitting buffer...", powerState)
+								if transErr := s.transmitBuffer(); transErr != nil {
+									log.Printf("Failed to transmit buffer for state '%s': %v", powerState, transErr)
 								} else {
-									log.Printf("Transmitted buffer before suspend")
+									log.Printf("Telemetry buffer transmitted successfully for state '%s'.", powerState)
 								}
 							}
 						} else {
-							if err := s.publishTelemetryData(current); err != nil {
-								log.Printf("Failed to publish final telemetry: %v", err)
+							if pubErr := s.publishTelemetryData(currentData); pubErr != nil {
+								log.Printf("Failed to publish final telemetry data for state '%s': %v", powerState, pubErr)
 							} else {
-								log.Printf("Published final telemetry before suspend")
+								log.Printf("Published final telemetry data successfully for state '%s'.", powerState)
 							}
 						}
 					} else {
-						log.Printf("Failed to get final telemetry: %v", err)
+						log.Printf("Failed to get final telemetry data for state '%s': %v", powerState, telErr)
 					}
-
-					// The inhibitor will automatically expire after 2 seconds
+					// Inhibitor will expire automatically.
+				default:
+					log.Printf("Power manager state '%s' does not require immediate telemetry flush.", powerState)
 				}
 			}
 		}
@@ -644,6 +696,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 	// Publish initial telemetry immediately
 	if current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version); err == nil {
+		log.Println("Publishing initial telemetry...")
 		if err := s.collectAndPublishTelemetry(); err == nil {
 			lastState = current.VehicleState.State
 		} else {
@@ -656,29 +709,41 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 	for {
 		select {
 		case <-s.ctx.Done():
+			log.Println("Telemetry publisher stopping due to context cancellation.")
 			return
 		case <-ticker.C:
 			current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version)
 			if err != nil {
-				log.Printf("Failed to get telemetry: %v", err)
+				log.Printf("Failed to get telemetry on ticker: %v", err)
 				continue
 			}
 
-			// Check if state changed
-			if current.VehicleState.State != lastState {
+			// Ensure VehicleState is not nil before accessing State
+			var currentVehicleState string
+			currentVehicleState = current.VehicleState.State
+
+			// Check if vehicle state changed (detected by polling)
+			if currentVehicleState != lastState {
+				log.Printf("Vehicle state changed from '%s' to '%s' (detected via ticker). Publishing telemetry.", lastState, currentVehicleState)
+				// Publish telemetry due to state change FIRST
+				if err := s.collectAndPublishTelemetry(); err != nil {
+					log.Printf("Failed to publish telemetry on vehicle state change (ticker): %v", err)
+					// Continue to update interval and lastState even if publish fails
+				}
+				lastState = currentVehicleState
+
+				// Then, update telemetry interval if necessary
 				newInterval, reason := telemetry.GetTelemetryInterval(s.ctx, s.redisClient, s.config)
 				if newInterval != interval {
-					log.Printf("State changed to %s, updating telemetry interval to %v (%s)",
-						current.VehicleState.State, newInterval, reason)
+					log.Printf("Updating telemetry interval to %v (%s) due to vehicle state change to '%s'", newInterval, reason, currentVehicleState)
 					ticker.Reset(newInterval)
 					interval = newInterval
 				}
-				lastState = current.VehicleState.State
-			}
-
-			if err := s.collectAndPublishTelemetry(); err != nil {
-				log.Printf("Failed to collect and publish telemetry: %v", err)
-				continue
+			} else {
+				// State hasn't changed, just publish normally per interval
+				if err := s.collectAndPublishTelemetry(); err != nil {
+					log.Printf("Failed to collect and publish telemetry on ticker: %v", err)
+				}
 			}
 		}
 	}
