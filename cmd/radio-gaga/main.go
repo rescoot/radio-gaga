@@ -14,6 +14,17 @@ import (
 var version string
 
 func main() {
+	// Create logger
+	if os.Getenv("INVOCATION_ID") != "" {
+		log.SetOutput(os.Stdout)
+		log.SetFlags(0)
+		log.SetPrefix("")
+	} else {
+		log.SetOutput(os.Stdout)
+		log.SetFlags(log.LstdFlags | log.Lmsgprefix)
+		log.SetPrefix("radio-gaga: ")
+	}
+
 	if version != "" {
 		log.Printf("Starting radio-gaga version %s", version)
 	} else {
