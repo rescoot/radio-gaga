@@ -209,10 +209,10 @@ func NewScooterMQTTClient(config *models.Config, version string) (*ScooterMQTTCl
 		SetPassword(config.Scooter.Token).
 		SetKeepAlive(keepAlive).
 		SetAutoReconnect(true).
-		SetMaxReconnectInterval(30 * time.Second).
-		SetConnectTimeout(30 * time.Second).
-		SetWriteTimeout(10 * time.Second).
-		SetPingTimeout(10 * time.Second).
+		SetMaxReconnectInterval(30*time.Second).
+		SetConnectTimeout(30*time.Second).
+		SetWriteTimeout(10*time.Second).
+		SetPingTimeout(10*time.Second).
 		SetCleanSession(false).                           // Maintain session for message queueing
 		SetWill(willTopic, string(willMessage), 1, true). // QoS 1 and retained
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
@@ -650,6 +650,10 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *models.TelemetryData) 
 	}
 
 	log.Printf("Published telemetry to %s", topic)
+
+	// Update cloud status since we successfully published to MQTT
+	s.updateCloudStatus()
+
 	return nil
 }
 
@@ -844,6 +848,16 @@ func (s *ScooterMQTTClient) getCommandParam(cmd, param string, defaultValue inte
 	return defaultValue
 }
 
+// updateCloudStatus sets unu-cloud status to connected and publishes notification
+func (s *ScooterMQTTClient) updateCloudStatus() {
+	if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "connected").Err(); err != nil {
+		log.Printf("Failed to set unu-cloud status: %v", err)
+	}
+	if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
+		log.Printf("Failed to publish unu-cloud status: %v", err)
+	}
+}
+
 // sendCommandResponse sends a response to a command
 func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg string) {
 	response := models.CommandResponse{
@@ -861,6 +875,9 @@ func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg stri
 	topic := fmt.Sprintf("scooters/%s/acks", s.config.Scooter.Identifier)
 	if token := s.mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
 		log.Printf("Failed to publish response: %v", token.Error())
+	} else {
+		// Update cloud status since we successfully published to MQTT
+		s.updateCloudStatus()
 	}
 
 	log.Printf("Published response to %s: %s", topic, string(responseJSON))

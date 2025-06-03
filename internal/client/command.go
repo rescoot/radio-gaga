@@ -12,6 +12,9 @@ import (
 
 // handleCommand processes incoming MQTT commands
 func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) {
+	// Update cloud status since we successfully received an MQTT message
+	s.updateCloudStatus()
+
 	// First, unmarshal the command message to access parameters for logging
 	var command models.CommandMessage
 	if err := json.Unmarshal(msg.Payload(), &command); err == nil {

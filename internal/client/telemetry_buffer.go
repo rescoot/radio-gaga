@@ -282,6 +282,9 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 
 	log.Printf("Published telemetry batch with %d events to %s", len(buffer.Events), topic)
 
+	// Update cloud status since we successfully published to MQTT
+	s.updateCloudStatus()
+
 	// Clear buffer
 	buffer.Events = []models.BufferedTelemetryEvent{}
 	buffer.BatchID, _ = generateRandomID()
