@@ -556,9 +556,48 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 
 	// Batching configuration
 	const (
-		batchSize    = 10                     // Send batch every 10 lines
-		batchTimeout = 500 * time.Millisecond // Or every 500ms, whichever comes first
+		batchSize       = 10                     // Send batch every 10 lines
+		batchTimeout    = 500 * time.Millisecond // Or every 500ms, whichever comes first
+		keepaliveInterval = 10 * time.Second     // Send keepalive every 10 seconds
 	)
+
+	// Keepalive mechanism - send empty frames periodically to maintain connection
+	keepaliveDone := make(chan bool)
+	if stream {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(keepaliveInterval)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-keepaliveDone:
+					return
+				case <-ticker.C:
+					// Send keepalive frame
+					keepaliveResponse := map[string]interface{}{
+						"type":       "shell",
+						"output":     "",
+						"stream":     true,
+						"done":       false,
+						"keepalive":  true,
+						"request_id": requestID,
+					}
+
+					keepaliveJSON, err := json.Marshal(keepaliveResponse)
+					if err != nil {
+						log.Printf("Failed to marshal keepalive response: %v", err)
+						continue
+					}
+
+					if token := mqttClient.Publish(topic, 1, false, keepaliveJSON); token.Wait() && token.Error() != nil {
+						log.Printf("Failed to publish keepalive: %v", token.Error())
+					}
+				}
+			}
+		}()
+	}
 
 	// Read stdout with batching
 	wg.Add(1)
@@ -630,6 +669,11 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 
 	// Wait for all output to be read first
 	wg.Wait()
+
+	// Stop keepalive ticker if streaming
+	if stream {
+		keepaliveDone <- true
+	}
 
 	// Then wait for command to complete
 	err = cmd.Wait()
