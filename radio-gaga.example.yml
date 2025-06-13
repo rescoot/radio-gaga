@@ -46,9 +46,9 @@ ntp:
 redis_url: redis://localhost:6379
 telemetry:
   intervals:
-    driving: 1s
-    standby: 30m
-    standby_no_battery: 8h
+    driving: 10s
+    standby: 5m
+    standby_no_battery: 2h
     hibernate: 24h
   buffer:
     enabled: true
@@ -56,7 +56,7 @@ telemetry:
     max_retries: 5
     retry_interval: 1m
     persist_path: /var/lib/radio-gaga/telemetry-buffer.json
-  transmit_period: 5m
+  transmit_period: 30m
 commands:
   lock:
   unlock:
