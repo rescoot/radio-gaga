@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -144,8 +145,16 @@ func (s *ScooterMQTTClient) saveBufferToDisk(buffer *models.TelemetryBuffer) err
 		return fmt.Errorf("failed to marshal buffer: %v", err)
 	}
 
-	// Create directory if it doesn't exist
-	dir := s.config.Telemetry.Buffer.PersistPath
+	// Ensure the persist path is not a directory
+	persistPath := s.config.Telemetry.Buffer.PersistPath
+	if info, err := os.Stat(persistPath); err == nil && info.IsDir() {
+		if err := os.RemoveAll(persistPath); err != nil {
+			return fmt.Errorf("failed to remove existing directory: %v", err)
+		}
+	}
+
+	// Create parent directory
+	dir := filepath.Dir(persistPath)
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory: %v", err)
@@ -153,7 +162,7 @@ func (s *ScooterMQTTClient) saveBufferToDisk(buffer *models.TelemetryBuffer) err
 	}
 
 	// Write buffer to disk
-	if err := os.WriteFile(s.config.Telemetry.Buffer.PersistPath, bufferJSON, 0644); err != nil {
+	if err := os.WriteFile(persistPath, bufferJSON, 0644); err != nil {
 		return fmt.Errorf("failed to write buffer to disk: %v", err)
 	}
 
