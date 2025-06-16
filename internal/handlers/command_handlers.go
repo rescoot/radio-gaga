@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"strings"
@@ -490,7 +491,7 @@ func handleRedisCommand(client CommandHandlerClient, redisClient *redis.Client, 
 	return nil
 }
 
-// handleShellCommand handles the shell command
+// handleShellCommand handles the shell command asynchronously
 func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, config *models.Config, params map[string]interface{}, requestID string, stream bool) error {
 	cmdStr, ok := params["cmd"].(string)
 	if !ok {
@@ -519,6 +520,17 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 		return fmt.Errorf("failed to start command: %v", err)
 	}
 
+	// Run the command execution asynchronously
+	go func() {
+		executeShellCommandAsync(cmd, stdout, stderr, mqttClient, config, requestID, stream)
+	}()
+
+	// Return immediately - the command has been started successfully
+	return nil
+}
+
+// executeShellCommandAsync runs the shell command execution asynchronously
+func executeShellCommandAsync(cmd *exec.Cmd, stdout, stderr io.ReadCloser, mqttClient mqtt.Client, config *models.Config, requestID string, stream bool) {
 	topic := fmt.Sprintf("scooters/%s/data", config.Scooter.Identifier)
 
 	// Function to send batched output as concatenated string
@@ -676,7 +688,7 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 	}
 
 	// Then wait for command to complete
-	err = cmd.Wait()
+	err := cmd.Wait()
 
 	// Send final response
 	response := map[string]interface{}{
@@ -695,14 +707,16 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 
 	responseJSON, err := json.Marshal(response)
 	if err != nil {
-		return fmt.Errorf("failed to marshal final response: %v", err)
+		log.Printf("Failed to marshal final shell response: %v", err)
+		return
 	}
 
 	if token := mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to publish final response: %v", token.Error())
+		log.Printf("Failed to publish final shell response: %v", token.Error())
+		return
 	}
 
-	return nil
+	log.Printf("Shell command completed with exit code %d", cmd.ProcessState.ExitCode())
 }
 
 // handleNavigateCommand handles the navigate command
