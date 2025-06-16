@@ -576,9 +576,7 @@ func executeShellCommandAsync(cmd *exec.Cmd, stdout, stderr io.ReadCloser, mqttC
 	// Keepalive mechanism - send empty frames periodically to maintain connection
 	keepaliveDone := make(chan bool)
 	if stream {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			ticker := time.NewTicker(keepaliveInterval)
 			defer ticker.Stop()
 
@@ -715,8 +713,6 @@ func executeShellCommandAsync(cmd *exec.Cmd, stdout, stderr io.ReadCloser, mqttC
 		log.Printf("Failed to publish final shell response: %v", token.Error())
 		return
 	}
-
-	log.Printf("Shell command completed with exit code %d", cmd.ProcessState.ExitCode())
 }
 
 // handleNavigateCommand handles the navigate command
