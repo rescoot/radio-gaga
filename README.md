@@ -46,10 +46,162 @@ The system interfaces with Redis for local state management and uses MQTT for se
 - `locate`: Help locate scooter (flashes lights and honks in a pattern)
 - `alarm`: Trigger alarm system with configurable parameters (hazard lights, horn patterns)
 - `navigate`: Set destination coordinates for navigation
+- `config:get`: Retrieve current configuration values
+- `config:set`: Update runtime configuration values
+- `config:del`: Delete/clear configuration values (reset to zero value)
+- `config:save`: Persist current configuration to file
 
 #### Development Environment Only
 - `redis`: Execute Redis commands (get, set, hget, hset, hgetall, lpush, lpop, publish)
 - `shell`: Execute shell commands with output streaming capability
+
+### Configuration Management Commands
+
+Radio-gaga provides three commands for managing configuration at runtime:
+
+#### config:get - Retrieve Configuration Values
+
+Retrieves current configuration values. Can get a specific field or the entire configuration.
+
+**Usage**:
+```json
+{
+  "command": "config:get",
+  "params": {
+    "field": "Telemetry.Intervals.Driving"  // Optional: omit to get entire config
+  },
+  "request_id": "unique-request-id"
+}
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "config": "5s",  // or entire config object if no field specified
+  "request_id": "unique-request-id"
+}
+```
+
+#### config:set - Update Configuration Values
+
+Updates a specific configuration field in runtime memory. Changes take effect immediately but are not persisted until `config:save` is called.
+
+**Usage**:
+```json
+{
+  "command": "config:set",
+  "params": {
+    "field": "telemetry.intervals.driving",
+    "value": "3s"
+  },
+  "request_id": "unique-request-id"
+}
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "message": "Configuration field updated successfully",
+  "field": "telemetry.intervals.driving",
+  "value": "3s",
+  "request_id": "unique-request-id"
+}
+```
+
+#### config:del - Delete Configuration Values
+
+Deletes/clears a specific configuration field by setting it to its zero value. Changes take effect immediately but are not persisted until `config:save` is called.
+
+**Usage**:
+```json
+{
+  "command": "config:del",
+  "params": {
+    "field": "telemetry.intervals.driving"
+  },
+  "request_id": "unique-request-id"
+}
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "message": "Configuration field deleted successfully",
+  "field": "telemetry.intervals.driving",
+  "previous_value": "5s",
+  "request_id": "unique-request-id"
+}
+```
+
+#### config:save - Persist Configuration
+
+Saves the current runtime configuration to the configuration file, creating a backup of the existing file.
+
+**Usage**:
+```json
+{
+  "command": "config:save",
+  "params": {},
+  "request_id": "unique-request-id"
+}
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "message": "Configuration saved successfully",
+  "path": "/path/to/config.yml",
+  "request_id": "unique-request-id"
+}
+```
+
+**Configuration Fields**:
+Configuration fields use YAML dot notation for easy access. Common fields include:
+
+**Top-level fields:**
+- `debug` - Debug logging toggle (boolean)
+- `environment` - Environment setting (string)
+- `redis_url` - Redis connection URL (string)
+- `service_name` - Service name (string)
+
+**Scooter configuration:**
+- `scooter.identifier` - Vehicle identifier (string)
+- `scooter.token` - Authentication token (string)
+
+**MQTT configuration:**
+- `mqtt.broker_url` - MQTT broker URL (string)
+- `mqtt.ca_cert` - CA certificate path (string)
+- `mqtt.keep_alive` - Keep alive interval (duration string)
+
+**Telemetry configuration:**
+- `telemetry.intervals.driving` - Telemetry interval while driving (duration)
+- `telemetry.intervals.standby` - Telemetry interval in standby (duration)
+- `telemetry.intervals.standby_no_battery` - Telemetry interval without battery (duration)
+- `telemetry.intervals.hibernate` - Telemetry interval in hibernate (duration)
+- `telemetry.buffer.enabled` - Enable telemetry buffering (boolean)
+- `telemetry.buffer.max_size` - Maximum buffer size (integer)
+- `telemetry.buffer.max_retries` - Maximum retry attempts (integer)
+- `telemetry.buffer.retry_interval` - Retry interval (duration)
+- `telemetry.transmit_period` - Buffer transmission period (duration)
+
+**NTP configuration:**
+- `ntp.enabled` - Enable NTP synchronization (boolean)
+- `ntp.server` - NTP server address (string)
+
+**Command configuration:**
+- `commands.{command_name}.disabled` - Disable specific command (boolean)
+- `commands.{command_name}.params` - Command parameters (object)
+
+**Features**:
+- **Immediate Effect**: `config:set` changes take effect immediately
+- **Flexible Persistence**: Use `config:save` when you want to persist changes
+- **Backup Creation**: `config:save` automatically creates a backup file
+- **No Restrictions**: Any configuration field can be modified
+- **Atomic Operations**: Each command is atomic and independent
 
 ## Configuration
 

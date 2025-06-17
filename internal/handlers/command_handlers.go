@@ -28,11 +28,13 @@ type CommandHandlerClient interface {
 	GetCommandParam(cmd, param string, defaultValue interface{}) interface{}
 	CleanRetainedMessage(topic string) error
 	PublishTelemetryData(current *models.TelemetryData) error
+	GetConfigPath() string
 }
 
 // ClientImplementation implements CommandHandlerClient and provides access to client methods
 type ClientImplementation struct {
 	Config      *models.Config
+	ConfigPath  string
 	MQTTClient  mqtt.Client
 	RedisClient *redis.Client
 	Ctx         context.Context
@@ -106,6 +108,11 @@ func (c *ClientImplementation) PublishTelemetryData(current *models.TelemetryDat
 
 	log.Printf("Published telemetry to %s", topic)
 	return nil
+}
+
+// GetConfigPath returns the configuration file path
+func (c *ClientImplementation) GetConfigPath() string {
+	return c.ConfigPath
 }
 
 // HandleCommand processes incoming MQTT commands
@@ -192,6 +199,14 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		err = commands.HandleKeycardsMasterKeyGetCommand(client, mqttClient, config, command.RequestID)
 	case "keycards:master_key:set":
 		err = commands.HandleKeycardsMasterKeySetCommand(command.Params)
+	case "config:get":
+		err = commands.HandleConfigGetCommand(client, mqttClient, config, command.Params, command.RequestID)
+	case "config:set":
+		err = commands.HandleConfigSetCommand(client, mqttClient, config, command.Params, command.RequestID)
+	case "config:del":
+		err = commands.HandleConfigDelCommand(client, mqttClient, config, command.Params, command.RequestID)
+	case "config:save":
+		err = commands.HandleConfigSaveCommand(client, mqttClient, config, command.RequestID)
 	default:
 		err = fmt.Errorf("unknown command: %s", command.Command)
 	}
@@ -568,9 +583,9 @@ func executeShellCommandAsync(cmd *exec.Cmd, stdout, stderr io.ReadCloser, mqttC
 
 	// Batching configuration
 	const (
-		batchSize       = 10                     // Send batch every 10 lines
-		batchTimeout    = 500 * time.Millisecond // Or every 500ms, whichever comes first
-		keepaliveInterval = 10 * time.Second     // Send keepalive every 10 seconds
+		batchSize         = 10                     // Send batch every 10 lines
+		batchTimeout      = 500 * time.Millisecond // Or every 500ms, whichever comes first
+		keepaliveInterval = 10 * time.Second       // Send keepalive every 10 seconds
 	)
 
 	// Keepalive mechanism - send empty frames periodically to maintain connection

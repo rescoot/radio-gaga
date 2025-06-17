@@ -37,6 +37,7 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 	// Create a client implementation that can be used by command handlers
 	clientImpl := &handlers.ClientImplementation{
 		Config:      s.config,
+		ConfigPath:  s.configPath,
 		MQTTClient:  s.mqttClient,
 		RedisClient: s.redisClient,
 		Ctx:         s.ctx,
@@ -51,6 +52,7 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 func (s *ScooterMQTTClient) SendCommandResponse(requestID, status, errorMsg string) {
 	clientImpl := &handlers.ClientImplementation{
 		Config:      s.config,
+		ConfigPath:  s.configPath,
 		MQTTClient:  s.mqttClient,
 		RedisClient: s.redisClient,
 		Ctx:         s.ctx,

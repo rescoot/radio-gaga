@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"time"
 
@@ -52,7 +53,7 @@ func ParseFlags() *models.CommandLineFlags {
 }
 
 // LoadConfig loads configuration from file and/or command line flags
-func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
+func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) {
 	var config *models.Config
 
 	// Try to load config file
@@ -65,12 +66,12 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 	if data, err := os.ReadFile(configPath); err == nil {
 		config = &models.Config{}
 		if err := yaml.Unmarshal(data, config); err != nil {
-			return nil, fmt.Errorf("failed to parse config file: %v", err)
+			return nil, "", fmt.Errorf("failed to parse config file: %v", err)
 		}
 		log.Printf("Loaded configuration from %s", configPath)
 	} else if flags.ConfigPath != "" {
 		// Only return error if config file was explicitly specified
-		return nil, fmt.Errorf("failed to read config file: %v", err)
+		return nil, "", fmt.Errorf("failed to read config file: %v", err)
 	} else {
 		// Initialize with default values
 		config = &models.Config{
@@ -156,7 +157,7 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 
 	// Validate the final configuration
 	if err := ValidateConfig(config); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %v", err)
+		return nil, "", fmt.Errorf("invalid configuration: %v", err)
 	}
 
 	// Set service name if not specified
@@ -165,7 +166,7 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, error) {
 		log.Printf("Auto-detected systemd service name: %s", config.ServiceName)
 	}
 
-	return config, nil
+	return config, configPath, nil
 }
 
 // ValidateConfig validates configuration
@@ -287,4 +288,376 @@ func DetectServiceName() string {
 	// Default to rescoot-radio-gaga.service if we can't detect it
 	log.Printf("Could not detect service name, using default: rescoot-radio-gaga.service")
 	return "rescoot-radio-gaga.service"
+}
+
+// SaveConfig saves the configuration to a YAML file
+func SaveConfig(config *models.Config, configPath string) error {
+	// Marshal the config to YAML
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config to YAML: %v", err)
+	}
+
+	// Create a backup of the existing config file if it exists
+	if _, err := os.Stat(configPath); err == nil {
+		backupPath := configPath + ".backup"
+		if err := copyFile(configPath, backupPath); err != nil {
+			log.Printf("Warning: failed to create backup of config file: %v", err)
+		} else {
+			log.Printf("Created backup of config file at %s", backupPath)
+		}
+	}
+
+	// Write the new config file
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %v", err)
+	}
+
+	log.Printf("Configuration saved to %s", configPath)
+	return nil
+}
+
+// copyFile copies a file from src to dst
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0644)
+}
+
+// setNestedField sets a nested field in a struct using reflection
+func setNestedField(obj interface{}, parts []string, value interface{}) error {
+	if len(parts) == 0 {
+		return fmt.Errorf("empty field path")
+	}
+
+	v := reflect.ValueOf(obj)
+	if v.Kind() != reflect.Ptr || v.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("object must be a pointer to a struct")
+	}
+
+	v = v.Elem()
+
+	// Navigate to the nested field
+	for i, part := range parts[:len(parts)-1] {
+		field := v.FieldByName(titleCase(part))
+		if !field.IsValid() {
+			return fmt.Errorf("field '%s' not found at level %d", part, i)
+		}
+		if field.Kind() == reflect.Ptr {
+			if field.IsNil() {
+				return fmt.Errorf("nil pointer encountered at field '%s'", part)
+			}
+			field = field.Elem()
+		}
+		if field.Kind() != reflect.Struct {
+			return fmt.Errorf("field '%s' is not a struct", part)
+		}
+		v = field
+	}
+
+	// Set the final field
+	finalField := titleCase(parts[len(parts)-1])
+	field := v.FieldByName(finalField)
+	if !field.IsValid() {
+		return fmt.Errorf("field '%s' not found", finalField)
+	}
+	if !field.CanSet() {
+		return fmt.Errorf("field '%s' cannot be set", finalField)
+	}
+
+	// Convert and set the value
+	return setFieldValue(field, value)
+}
+
+// setFieldValue sets a field value with type conversion
+func setFieldValue(field reflect.Value, value interface{}) error {
+	valueReflect := reflect.ValueOf(value)
+	fieldType := field.Type()
+
+	// Handle type conversions
+	switch fieldType.Kind() {
+	case reflect.String:
+		if valueReflect.Kind() == reflect.String {
+			field.SetString(valueReflect.String())
+		} else {
+			field.SetString(fmt.Sprintf("%v", value))
+		}
+	case reflect.Bool:
+		if valueReflect.Kind() == reflect.Bool {
+			field.SetBool(valueReflect.Bool())
+		} else {
+			// Try to parse string as bool
+			if str, ok := value.(string); ok {
+				if str == "true" || str == "1" {
+					field.SetBool(true)
+				} else if str == "false" || str == "0" {
+					field.SetBool(false)
+				} else {
+					return fmt.Errorf("cannot convert '%s' to bool", str)
+				}
+			} else {
+				return fmt.Errorf("cannot convert %T to bool", value)
+			}
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if valueReflect.Kind() >= reflect.Int && valueReflect.Kind() <= reflect.Int64 {
+			field.SetInt(valueReflect.Int())
+		} else if valueReflect.Kind() >= reflect.Uint && valueReflect.Kind() <= reflect.Uint64 {
+			field.SetInt(int64(valueReflect.Uint()))
+		} else if valueReflect.Kind() >= reflect.Float32 && valueReflect.Kind() <= reflect.Float64 {
+			field.SetInt(int64(valueReflect.Float()))
+		} else {
+			return fmt.Errorf("cannot convert %T to int", value)
+		}
+	default:
+		if valueReflect.Type().ConvertibleTo(fieldType) {
+			field.Set(valueReflect.Convert(fieldType))
+		} else {
+			return fmt.Errorf("cannot convert %T to %s", value, fieldType)
+		}
+	}
+
+	return nil
+}
+
+// titleCase converts a string to title case (first letter uppercase)
+func titleCase(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// GetConfigField retrieves a specific field from the configuration using YAML dot syntax
+func GetConfigField(config *models.Config, field string) (interface{}, error) {
+	structPath := convertYamlPathToStructPath(field)
+	parts := strings.Split(structPath, ".")
+	return getNestedField(config, parts)
+}
+
+// SetConfigField sets a specific field in the configuration using YAML dot syntax
+func SetConfigField(config *models.Config, field string, value interface{}) error {
+	structPath := convertYamlPathToStructPath(field)
+	parts := strings.Split(structPath, ".")
+	return setNestedFieldUnrestricted(config, parts, value)
+}
+
+// DeleteConfigField clears/resets a specific field in the configuration using YAML dot syntax
+func DeleteConfigField(config *models.Config, field string) error {
+	structPath := convertYamlPathToStructPath(field)
+	parts := strings.Split(structPath, ".")
+	return deleteNestedField(config, parts)
+}
+
+// getNestedField retrieves a nested field value using reflection
+func getNestedField(obj interface{}, parts []string) (interface{}, error) {
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("empty field path")
+	}
+
+	v := reflect.ValueOf(obj)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("object must be a struct or pointer to struct")
+	}
+
+	// Navigate to the nested field
+	for i, part := range parts[:len(parts)-1] {
+		field := v.FieldByName(titleCase(part))
+		if !field.IsValid() {
+			return nil, fmt.Errorf("field '%s' not found at level %d", part, i)
+		}
+		if field.Kind() == reflect.Ptr {
+			if field.IsNil() {
+				return nil, fmt.Errorf("nil pointer encountered at field '%s'", part)
+			}
+			field = field.Elem()
+		}
+		if field.Kind() != reflect.Struct {
+			return nil, fmt.Errorf("field '%s' is not a struct", part)
+		}
+		v = field
+	}
+
+	// Get the final field
+	finalField := titleCase(parts[len(parts)-1])
+	field := v.FieldByName(finalField)
+	if !field.IsValid() {
+		return nil, fmt.Errorf("field '%s' not found", finalField)
+	}
+
+	return field.Interface(), nil
+}
+
+// setNestedFieldUnrestricted sets a nested field without any restrictions
+func setNestedFieldUnrestricted(obj interface{}, parts []string, value interface{}) error {
+	if len(parts) == 0 {
+		return fmt.Errorf("empty field path")
+	}
+
+	v := reflect.ValueOf(obj)
+	if v.Kind() != reflect.Ptr || v.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("object must be a pointer to a struct")
+	}
+
+	v = v.Elem()
+
+	// Navigate to the nested field
+	for i, part := range parts[:len(parts)-1] {
+		field := v.FieldByName(titleCase(part))
+		if !field.IsValid() {
+			return fmt.Errorf("field '%s' not found at level %d", part, i)
+		}
+		if field.Kind() == reflect.Ptr {
+			if field.IsNil() {
+				return fmt.Errorf("nil pointer encountered at field '%s'", part)
+			}
+			field = field.Elem()
+		}
+		if field.Kind() != reflect.Struct {
+			return fmt.Errorf("field '%s' is not a struct", part)
+		}
+		v = field
+	}
+
+	// Set the final field
+	finalField := titleCase(parts[len(parts)-1])
+	field := v.FieldByName(finalField)
+	if !field.IsValid() {
+		return fmt.Errorf("field '%s' not found", finalField)
+	}
+	if !field.CanSet() {
+		return fmt.Errorf("field '%s' cannot be set", finalField)
+	}
+
+	// Convert and set the value
+	return setFieldValue(field, value)
+}
+
+// deleteNestedField sets a nested field to its zero value
+func deleteNestedField(obj interface{}, parts []string) error {
+	if len(parts) == 0 {
+		return fmt.Errorf("empty field path")
+	}
+
+	v := reflect.ValueOf(obj)
+	if v.Kind() != reflect.Ptr || v.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("object must be a pointer to a struct")
+	}
+
+	v = v.Elem()
+
+	// Navigate to the nested field
+	for i, part := range parts[:len(parts)-1] {
+		field := v.FieldByName(titleCase(part))
+		if !field.IsValid() {
+			return fmt.Errorf("field '%s' not found at level %d", part, i)
+		}
+		if field.Kind() == reflect.Ptr {
+			if field.IsNil() {
+				return fmt.Errorf("nil pointer encountered at field '%s'", part)
+			}
+			field = field.Elem()
+		}
+		if field.Kind() != reflect.Struct {
+			return fmt.Errorf("field '%s' is not a struct", part)
+		}
+		v = field
+	}
+
+	// Set the final field to its zero value
+	finalField := titleCase(parts[len(parts)-1])
+	field := v.FieldByName(finalField)
+	if !field.IsValid() {
+		return fmt.Errorf("field '%s' not found", finalField)
+	}
+	if !field.CanSet() {
+		return fmt.Errorf("field '%s' cannot be set", finalField)
+	}
+
+	// Set to zero value
+	zeroValue := reflect.Zero(field.Type())
+	field.Set(zeroValue)
+
+	return nil
+}
+
+// convertYamlPathToStructPath converts YAML dot notation to Go struct field path
+func convertYamlPathToStructPath(yamlPath string) string {
+	// Map of YAML field names to Go struct field names
+	fieldMap := map[string]string{
+		// Top level fields
+		"scooter":      "Scooter",
+		"environment":  "Environment",
+		"mqtt":         "MQTT",
+		"ntp":          "NTP",
+		"redis_url":    "RedisURL",
+		"telemetry":    "Telemetry",
+		"commands":     "Commands",
+		"service_name": "ServiceName",
+		"debug":        "Debug",
+
+		// Scooter fields
+		"identifier": "Identifier",
+		"token":      "Token",
+
+		// MQTT fields
+		"broker_url":       "BrokerURL",
+		"ca_cert":          "CACert",
+		"ca_cert_embedded": "CACertEmbedded",
+		"keep_alive":       "KeepAlive",
+		"keepalive":        "KeepAlive", // Alternative naming
+
+		// NTP fields
+		"enabled": "Enabled",
+		"server":  "Server",
+
+		// Telemetry fields
+		"intervals":       "Intervals",
+		"buffer":          "Buffer",
+		"transmit_period": "TransmitPeriod",
+
+		// Telemetry.Intervals fields
+		"driving":            "Driving",
+		"standby":            "Standby",
+		"standby_no_battery": "StandbyNoBattery",
+		"hibernate":          "Hibernate",
+
+		// Telemetry.Buffer fields
+		"max_size":       "MaxSize",
+		"max_retries":    "MaxRetries",
+		"retry_interval": "RetryInterval",
+		"persist_path":   "PersistPath",
+
+		// Commands fields (command names)
+		"alarm":        "alarm",
+		"blinkers":     "blinkers",
+		"honk":         "honk",
+		"locate":       "locate",
+		"lock":         "lock",
+		"open_seatbox": "open_seatbox",
+		"unlock":       "unlock",
+
+		// Command sub-fields
+		"disabled": "Disabled",
+		"params":   "Params",
+	}
+
+	parts := strings.Split(yamlPath, ".")
+	structParts := make([]string, len(parts))
+
+	for i, part := range parts {
+		if mapped, exists := fieldMap[part]; exists {
+			structParts[i] = mapped
+		} else {
+			// If no mapping exists, use titleCase as fallback
+			structParts[i] = titleCase(part)
+		}
+	}
+
+	return strings.Join(structParts, ".")
 }

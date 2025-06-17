@@ -35,13 +35,13 @@ func main() {
 	flags := config.ParseFlags()
 
 	// Load configuration
-	cfg, err := config.LoadConfig(flags)
+	cfg, configPath, err := config.LoadConfig(flags)
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
 	// Create and start MQTT client
-	mqttClient, err := client.NewScooterMQTTClient(cfg, version)
+	mqttClient, err := client.NewScooterMQTTClient(cfg, configPath, version)
 	if err != nil {
 		log.Fatalf("Failed to create MQTT client: %v", err)
 	}

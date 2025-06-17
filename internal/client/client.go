@@ -24,6 +24,7 @@ import (
 // ScooterMQTTClient manages the MQTT and Redis connections
 type ScooterMQTTClient struct {
 	config      *models.Config
+	configPath  string
 	mqttClient  mqtt.Client
 	redisClient *redis.Client
 	ctx         context.Context
@@ -32,7 +33,7 @@ type ScooterMQTTClient struct {
 }
 
 // NewScooterMQTTClient creates a new MQTT client
-func NewScooterMQTTClient(config *models.Config, version string) (*ScooterMQTTClient, error) {
+func NewScooterMQTTClient(config *models.Config, configPath string, version string) (*ScooterMQTTClient, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	redisOptions, err := redis.ParseURL(config.RedisURL)
@@ -284,6 +285,7 @@ func NewScooterMQTTClient(config *models.Config, version string) (*ScooterMQTTCl
 
 	return &ScooterMQTTClient{
 		config:      config,
+		configPath:  configPath,
 		mqttClient:  mqttClient,
 		redisClient: redisClient,
 		ctx:         ctx,
