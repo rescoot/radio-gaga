@@ -71,17 +71,17 @@ func writeKeycardFile(filePath string, uids []string) error {
 // HandleKeycardsListCommand handles the keycards:list command
 func HandleKeycardsListCommand(client CommandHandlerClient, mqttClient mqtt.Client, config *models.Config, requestID string) error {
 	authorizedPath, _ := getKeycardPaths()
-	
+
 	uids, err := readKeycardFile(authorizedPath)
 	if err != nil {
 		return err
 	}
 
 	response := map[string]interface{}{
-		"type":        "keycards",
-		"subcommand":  "list",
-		"uids":        uids,
-		"request_id":  requestID,
+		"type":       "keycards",
+		"subcommand": "list",
+		"uids":       uids,
+		"request_id": requestID,
 	}
 
 	responseJSON, err := json.Marshal(response)
@@ -105,7 +105,7 @@ func HandleKeycardsAddCommand(params map[string]interface{}) error {
 	}
 
 	authorizedPath, _ := getKeycardPaths()
-	
+
 	uids, err := readKeycardFile(authorizedPath)
 	if err != nil {
 		return err
@@ -120,7 +120,7 @@ func HandleKeycardsAddCommand(params map[string]interface{}) error {
 
 	// Add new UID
 	uids = append(uids, uid)
-	
+
 	return writeKeycardFile(authorizedPath, uids)
 }
 
@@ -132,7 +132,7 @@ func HandleKeycardsDeleteCommand(params map[string]interface{}) error {
 	}
 
 	authorizedPath, _ := getKeycardPaths()
-	
+
 	uids, err := readKeycardFile(authorizedPath)
 	if err != nil {
 		return err
@@ -159,7 +159,7 @@ func HandleKeycardsDeleteCommand(params map[string]interface{}) error {
 // HandleKeycardsMasterKeyGetCommand handles the keycards:master_key:get command
 func HandleKeycardsMasterKeyGetCommand(client CommandHandlerClient, mqttClient mqtt.Client, config *models.Config, requestID string) error {
 	_, masterPath := getKeycardPaths()
-	
+
 	uids, err := readKeycardFile(masterPath)
 	if err != nil {
 		return err
@@ -171,10 +171,10 @@ func HandleKeycardsMasterKeyGetCommand(client CommandHandlerClient, mqttClient m
 	}
 
 	response := map[string]interface{}{
-		"type":        "keycards",
-		"subcommand":  "master_key_get",
-		"master_uid":  masterUID,
-		"request_id":  requestID,
+		"type":       "keycards",
+		"subcommand": "master_key_get",
+		"master_uid": masterUID,
+		"request_id": requestID,
 	}
 
 	responseJSON, err := json.Marshal(response)
@@ -198,7 +198,7 @@ func HandleKeycardsMasterKeySetCommand(params map[string]interface{}) error {
 	}
 
 	_, masterPath := getKeycardPaths()
-	
+
 	// Write single UID to master file (replacing any existing content)
 	return writeKeycardFile(masterPath, []string{uid})
 }

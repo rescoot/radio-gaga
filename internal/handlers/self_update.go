@@ -49,7 +49,7 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 
 	// Track whether we successfully created the update script
 	var updateScriptCreated bool
-	
+
 	// Ensure cleanup of temporary file on error
 	defer func() {
 		if tempFile != nil {
@@ -128,7 +128,7 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		os.Remove(scriptPath)
 		return fmt.Errorf("failed to make helper script executable: %v", err)
 	}
-	
+
 	// Mark that we've successfully created the update script, so temp file should not be cleaned up
 	updateScriptCreated = true
 
