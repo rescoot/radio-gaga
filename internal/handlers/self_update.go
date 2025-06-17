@@ -47,14 +47,19 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 	}
 	tempFileName := tempFile.Name()
 
+	// Track whether we successfully created the update script
+	var updateScriptCreated bool
+	
 	// Ensure cleanup of temporary file on error
 	defer func() {
 		if tempFile != nil {
 			tempFile.Close()
 		}
-		// Only clean up temp file if we haven't passed it to the update script
-		if _, statErr := os.Stat(tempFileName); statErr == nil {
-			os.Remove(tempFileName)
+		// Only clean up temp file if we haven't successfully passed it to the update script
+		if !updateScriptCreated {
+			if _, statErr := os.Stat(tempFileName); statErr == nil {
+				os.Remove(tempFileName)
+			}
 		}
 	}()
 
@@ -123,6 +128,9 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		os.Remove(scriptPath)
 		return fmt.Errorf("failed to make helper script executable: %v", err)
 	}
+	
+	// Mark that we've successfully created the update script, so temp file should not be cleaned up
+	updateScriptCreated = true
 
 	// Execute the update helper script in background
 	log.Printf("Starting update helper script to replace binary and restart service")
