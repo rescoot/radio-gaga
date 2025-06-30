@@ -305,4 +305,5 @@ type CommandResponse struct {
 	Status    string `json:"status"`
 	Error     string `json:"error,omitempty"`
 	RequestID string `json:"request_id"`
+	PID       int    `json:"pid,omitempty"`
 }

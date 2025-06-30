@@ -25,6 +25,7 @@ import (
 // CommandHandlerClient is the interface needed by command handlers
 type CommandHandlerClient interface {
 	SendCommandResponse(requestID, status, errorMsg string)
+	SendCommandResponseWithPID(requestID, status, errorMsg string, pid int)
 	GetCommandParam(cmd, param string, defaultValue interface{}) interface{}
 	CleanRetainedMessage(topic string) error
 	PublishTelemetryData(current *models.TelemetryData) error
@@ -43,10 +44,19 @@ type ClientImplementation struct {
 
 // SendCommandResponse sends a response to a command
 func (c *ClientImplementation) SendCommandResponse(requestID, status, errorMsg string) {
+	c.SendCommandResponseWithPID(requestID, status, errorMsg, 0)
+}
+
+// SendCommandResponseWithPID sends a response to a command including process ID
+func (c *ClientImplementation) SendCommandResponseWithPID(requestID, status, errorMsg string, pid int) {
 	response := models.CommandResponse{
 		Status:    status,
 		Error:     errorMsg,
 		RequestID: requestID,
+	}
+	
+	if pid > 0 {
+		response.PID = pid
 	}
 
 	responseJSON, err := json.Marshal(response)
@@ -535,6 +545,10 @@ func handleShellCommand(client CommandHandlerClient, mqttClient mqtt.Client, con
 		return fmt.Errorf("failed to start command: %v", err)
 	}
 
+	// Send immediate "process started" response with PID
+	pid := cmd.Process.Pid
+	client.SendCommandResponseWithPID(requestID, "process_started", "", pid)
+
 	// Run the command execution asynchronously
 	go func() {
 		executeShellCommandAsync(cmd, stdout, stderr, mqttClient, config, requestID, stream)
@@ -712,6 +726,7 @@ func executeShellCommandAsync(cmd *exec.Cmd, stdout, stderr io.ReadCloser, mqttC
 		"stream":     stream,
 		"done":       true,
 		"request_id": requestID,
+		"pid":        cmd.Process.Pid,
 	}
 
 	if err != nil {
