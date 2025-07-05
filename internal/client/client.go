@@ -212,8 +212,8 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		SetAutoReconnect(true).
 		SetMaxReconnectInterval(30*time.Second).
 		SetConnectTimeout(30*time.Second).
-		SetWriteTimeout(10*time.Second).
-		SetPingTimeout(10*time.Second).
+		SetWriteTimeout(30*time.Second).
+		SetPingTimeout(30*time.Second).
 		SetCleanSession(false).                           // Maintain session for message queueing
 		SetWill(willTopic, string(willMessage), 1, true). // QoS 1 and retained
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
