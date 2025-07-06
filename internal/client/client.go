@@ -148,7 +148,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		var dbcFlavor string
 		if strings.Contains(dbcRedisID, "librescoot") {
 			dbcFlavor = "librescoot"
-		} else if strings.Contains(dbcRedisID, "unu") {
+		} else if strings.Contains(dbcRedisID, "scooteros") {
 			dbcFlavor = "stock"
 		} else {
 			dbcFlavor = dbcRedisID
@@ -586,7 +586,7 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 	// Determine flavor from dbcID (either from Redis or SSH)
 	if strings.Contains(dbcID, "librescoot") {
 		dbcFlavor = "librescoot"
-	} else if strings.Contains(dbcID, "unu") { // Assuming "unu" might be part of stock ID
+	} else if strings.Contains(dbcID, "scooteros") {
 		dbcFlavor = "stock"
 	} else if dbcID != "" && !strings.HasPrefix(dbcID, "unknown_") {
 		dbcFlavor = dbcID // Use the actual ID if it doesn't match known patterns and isn't an error placeholder
