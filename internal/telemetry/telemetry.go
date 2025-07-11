@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -13,6 +14,13 @@ import (
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/utils"
 )
+
+// validateTimestamp checks if a timestamp is valid based on cutoff date
+func validateTimestamp(timestamp time.Time) bool {
+	// Get cutoff date (2025-05-01)
+	cutoffDate := time.Date(2025, 5, 1, 0, 0, 0, 0, time.UTC)
+	return !timestamp.Before(cutoffDate)
+}
 
 // GetTelemetryInterval returns the appropriate telemetry interval based on vehicle state
 func GetTelemetryInterval(ctx context.Context, redisClient *redis.Client, config *models.Config) (time.Duration, string) {
@@ -98,7 +106,7 @@ func GetBatteryData(ctx context.Context, redisClient *redis.Client, index int) (
 }
 
 // GetTelemetryFromRedis retrieves telemetry data from Redis
-func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, config *models.Config, version string) (*models.TelemetryData, error) {
+func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, config *models.Config, version string, serviceStartTime time.Time) (*models.TelemetryData, error) {
 	// Create a map from the config struct, excluding the token
 	configMap := make(map[string]interface{})
 	configBytes, _ := yaml.Marshal(config)
@@ -332,7 +340,18 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		}
 	}
 
-	telemetry.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	// Validate timestamp and handle invalid ones
+	now := time.Now().UTC()
+	valid := validateTimestamp(now)
+
+	if valid {
+		telemetry.Timestamp = now.Format(time.RFC3339)
+	} else {
+		// Store as relative timestamp from service start for later recalibration
+		offsetSeconds := now.Sub(serviceStartTime).Seconds()
+		telemetry.Timestamp = fmt.Sprintf("INVALID_RELATIVE:%.3f", offsetSeconds)
+		log.Printf("Warning: Invalid timestamp detected, storing as relative offset: %.3f seconds", offsetSeconds)
+	}
 
 	return telemetry, nil
 }

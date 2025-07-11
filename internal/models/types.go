@@ -271,16 +271,19 @@ type TelemetryData struct {
 
 // BufferedTelemetryEvent represents a telemetry event in the buffer
 type BufferedTelemetryEvent struct {
-	Data      *TelemetryData `json:"data"`
-	Timestamp time.Time      `json:"timestamp"`
-	Attempts  int            `json:"attempts"`
+	Data       *TelemetryData `json:"data"`
+	Timestamp  time.Time      `json:"timestamp"`
+	Attempts   int            `json:"attempts"`
+	SequenceID uint64         `json:"sequence_id"`
 }
 
 // TelemetryBuffer represents a buffer of telemetry events
 type TelemetryBuffer struct {
-	Events    []BufferedTelemetryEvent `json:"events"`
-	BatchID   string                   `json:"batch_id"`
-	CreatedAt time.Time                `json:"created_at"`
+	Events          []BufferedTelemetryEvent `json:"events"`
+	BatchID         string                   `json:"batch_id"`
+	CreatedAt       time.Time                `json:"created_at"`
+	SequenceCounter uint64                   `json:"sequence_counter"`
+	LastSystemTime  time.Time                `json:"last_system_time"`
 }
 
 // TelemetryBatch represents a batch of telemetry events to be sent

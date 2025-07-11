@@ -239,7 +239,10 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 
 // handleGetStateCommand handles the get_state command
 func handleGetStateCommand(client CommandHandlerClient, redisClient *redis.Client, ctx context.Context, config *models.Config, version string) error {
-	telemetryData, err := telemetry.GetTelemetryFromRedis(ctx, redisClient, config, version)
+	// For immediate get_state requests, use current time as service start time fallback
+	// This means get_state will always use absolute timestamps since it's immediate
+	serviceStartTime := time.Now().UTC()
+	telemetryData, err := telemetry.GetTelemetryFromRedis(ctx, redisClient, config, version, serviceStartTime)
 	if err != nil {
 		return err
 	}

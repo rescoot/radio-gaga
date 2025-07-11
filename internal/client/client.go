@@ -23,13 +23,14 @@ import (
 
 // ScooterMQTTClient manages the MQTT and Redis connections
 type ScooterMQTTClient struct {
-	config      *models.Config
-	configPath  string
-	mqttClient  mqtt.Client
-	redisClient *redis.Client
-	ctx         context.Context
-	cancel      context.CancelFunc
-	version     string
+	config           *models.Config
+	configPath       string
+	mqttClient       mqtt.Client
+	redisClient      *redis.Client
+	ctx              context.Context
+	cancel           context.CancelFunc
+	version          string
+	serviceStartTime time.Time
 }
 
 // NewScooterMQTTClient creates a new MQTT client
@@ -283,14 +284,18 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		return nil, fmt.Errorf("MQTT connection failed: %v", err)
 	}
 
+	// Store service start time for timestamp validation and recalibration
+	serviceStartTime := time.Now().UTC()
+
 	return &ScooterMQTTClient{
-		config:      config,
-		configPath:  configPath,
-		mqttClient:  mqttClient,
-		redisClient: redisClient,
-		ctx:         ctx,
-		cancel:      cancel,
-		version:     version,
+		config:           config,
+		configPath:       configPath,
+		mqttClient:       mqttClient,
+		redisClient:      redisClient,
+		ctx:              ctx,
+		cancel:           cancel,
+		version:          version,
+		serviceStartTime: serviceStartTime,
 	}, nil
 }
 
@@ -732,7 +737,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 						log.Printf("Set power manager inhibitor for %v for state '%s'", inhibitDuration, powerState)
 					}
 
-					currentData, telErr := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version)
+					currentData, telErr := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime)
 					if telErr == nil {
 						log.Printf("Collected final telemetry data for state '%s'.", powerState)
 						if s.config.Telemetry.Buffer.Enabled {
@@ -765,7 +770,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 	}()
 
 	// Publish initial telemetry immediately
-	if current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version); err == nil {
+	if current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime); err == nil {
 		log.Println("Publishing initial telemetry...")
 		if err := s.collectAndPublishTelemetry(); err == nil {
 			lastState = current.VehicleState.State
@@ -782,7 +787,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 			log.Println("Telemetry publisher stopping due to context cancellation.")
 			return
 		case <-ticker.C:
-			current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version)
+			current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime)
 			if err != nil {
 				log.Printf("Failed to get telemetry on ticker: %v", err)
 				continue

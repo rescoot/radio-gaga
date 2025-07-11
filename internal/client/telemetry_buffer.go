@@ -10,6 +10,8 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,10 +72,13 @@ func (s *ScooterMQTTClient) createNewBuffer() *models.TelemetryBuffer {
 		batchID = fmt.Sprintf("batch-%d", time.Now().UnixNano())
 	}
 
+	now := time.Now()
 	return &models.TelemetryBuffer{
-		Events:    []models.BufferedTelemetryEvent{},
-		BatchID:   batchID,
-		CreatedAt: time.Now(),
+		Events:          []models.BufferedTelemetryEvent{},
+		BatchID:         batchID,
+		CreatedAt:       now,
+		SequenceCounter: 0,
+		LastSystemTime:  now,
 	}
 }
 
@@ -184,11 +189,55 @@ func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) err
 		buffer = s.createNewBuffer()
 	}
 
-	// Add telemetry to buffer
+	now := time.Now()
+	
+	// Check for significant backward time jump or unreasonably large forward jump
+	// Backward jump: any negative time difference
+	// Large forward jump: more than 10 minutes since last update (suggesting NTP correction)
+	timeSinceLastUpdate := now.Sub(buffer.LastSystemTime)
+	isBackwardJump := timeSinceLastUpdate < 0
+	isLargeForwardJump := timeSinceLastUpdate > 10*time.Minute
+	
+	if (isBackwardJump || isLargeForwardJump) && len(buffer.Events) > 0 {
+		log.Printf("Detected time jump of %.1f seconds, recalibrating buffer timestamps", timeSinceLastUpdate.Seconds())
+		
+		// Calculate the time difference
+		timeDiff := now.Sub(buffer.LastSystemTime)
+		
+		// Recalibrate all existing events in this buffer
+		for i := range buffer.Events {
+			event := &buffer.Events[i]
+			
+			// Only recalibrate relative timestamps from this session
+			if strings.HasPrefix(event.Data.Timestamp, "INVALID_RELATIVE:") {
+				correctedTimestamp, recalErr := s.recalibrateTimestamp(event.Data.Timestamp, now)
+				if recalErr != nil {
+					log.Printf("Failed to recalibrate event %d: %v", i, recalErr)
+					continue
+				}
+				event.Data.Timestamp = correctedTimestamp
+				log.Printf("Recalibrated event %d timestamp", i)
+			} else {
+				// For absolute timestamps, adjust by the time difference
+				if eventTime, parseErr := time.Parse(time.RFC3339, event.Data.Timestamp); parseErr == nil {
+					adjustedTime := eventTime.Add(timeDiff)
+					event.Data.Timestamp = adjustedTime.Format(time.RFC3339)
+					log.Printf("Recalibrated event %d timestamp by %.1f seconds", i, timeDiff.Seconds())
+				}
+			}
+		}
+	}
+	
+	// Update last system time
+	buffer.LastSystemTime = now
+
+	// Increment sequence counter and add telemetry to buffer
+	buffer.SequenceCounter++
 	event := models.BufferedTelemetryEvent{
-		Data:      data,
-		Timestamp: time.Now(),
-		Attempts:  0,
+		Data:       data,
+		Timestamp:  now,
+		Attempts:   0,
+		SequenceID: buffer.SequenceCounter,
 	}
 	buffer.Events = append(buffer.Events, event)
 
@@ -294,10 +343,13 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 	// Update cloud status since we successfully published to MQTT
 	s.updateCloudStatus()
 
-	// Clear buffer
+	// Clear buffer and reset sequence counter
+	now := time.Now()
 	buffer.Events = []models.BufferedTelemetryEvent{}
 	buffer.BatchID, _ = generateRandomID()
-	buffer.CreatedAt = time.Now()
+	buffer.CreatedAt = now
+	buffer.SequenceCounter = 0
+	buffer.LastSystemTime = now
 
 	// Save buffer to Redis
 	if err := s.saveBufferToRedis(buffer); err != nil {
@@ -403,10 +455,13 @@ func (s *ScooterMQTTClient) retryTransmitBuffer(mutex *sync.Mutex) {
 	// If max retries exceeded, log and return
 	if maxAttempts >= maxRetries {
 		log.Printf("Max retries exceeded (%d), dropping %d events", maxRetries, len(buffer.Events))
-		// Clear buffer
+		// Clear buffer and reset sequence counter
+		now := time.Now()
 		buffer.Events = []models.BufferedTelemetryEvent{}
 		buffer.BatchID, _ = generateRandomID()
-		buffer.CreatedAt = time.Now()
+		buffer.CreatedAt = now
+		buffer.SequenceCounter = 0
+		buffer.LastSystemTime = now
 
 		// Save buffer to Redis
 		if err := s.saveBufferToRedis(buffer); err != nil {
@@ -461,7 +516,7 @@ func generateRandomID() (string, error) {
 // collectAndPublishTelemetry collects telemetry data and publishes it
 func (s *ScooterMQTTClient) collectAndPublishTelemetry() error {
 	// Get telemetry data
-	current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version)
+	current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime)
 	if err != nil {
 		return fmt.Errorf("failed to get telemetry: %v", err)
 	}
@@ -476,4 +531,30 @@ func (s *ScooterMQTTClient) collectAndPublishTelemetry() error {
 
 	// Otherwise, publish directly
 	return s.publishTelemetryData(current)
+}
+
+// recalibrateTimestamp converts a relative timestamp back to absolute time using NTP-corrected time
+func (s *ScooterMQTTClient) recalibrateTimestamp(relativeTimestamp string, ntpTime time.Time) (string, error) {
+	// Check if this is a relative timestamp
+	if !strings.HasPrefix(relativeTimestamp, "INVALID_RELATIVE:") {
+		return relativeTimestamp, nil // Already absolute, return as-is
+	}
+
+	// Parse the relative offset
+	offsetStr := strings.TrimPrefix(relativeTimestamp, "INVALID_RELATIVE:")
+	offsetSeconds, err := strconv.ParseFloat(offsetStr, 64)
+	if err != nil {
+		return relativeTimestamp, fmt.Errorf("failed to parse relative offset: %v", err)
+	}
+
+	// Use service start time from client
+	serviceStart := s.serviceStartTime
+
+	// Calculate the time difference between now and service start
+	currentServiceOffset := ntpTime.Sub(serviceStart).Seconds()
+	
+	// Calculate the corrected absolute timestamp
+	correctedTime := ntpTime.Add(time.Duration((offsetSeconds - currentServiceOffset) * float64(time.Second)))
+	
+	return correctedTime.UTC().Format(time.RFC3339), nil
 }
