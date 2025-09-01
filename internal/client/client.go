@@ -284,10 +284,9 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		return nil, fmt.Errorf("MQTT connection failed: %v", err)
 	}
 
-	// Store service start time for timestamp validation and recalibration
 	serviceStartTime := time.Now().UTC()
 
-	return &ScooterMQTTClient{
+	client := &ScooterMQTTClient{
 		config:           config,
 		configPath:       configPath,
 		mqttClient:       mqttClient,
@@ -296,7 +295,10 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		cancel:           cancel,
 		version:          version,
 		serviceStartTime: serviceStartTime,
-	}, nil
+	}
+
+
+	return client, nil
 }
 
 // createMQTTClient creates and connects an MQTT client
@@ -395,6 +397,7 @@ func (s *ScooterMQTTClient) Stop() {
 			log.Printf("Error unsubscribing from command topic: %v", token.Error())
 		}
 	}
+
 
 	// Cancel context
 	log.Println("Cancelling client context...")
@@ -724,46 +727,33 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 				log.Printf("Power manager state is now: %s", powerState)
 
-				// States that require immediate final telemetry flush
 				switch powerState {
-				case "suspend", "suspending", "hibernating-imminent", "rebooting", "pre-hibernation":
-					log.Printf("Power manager entering critical state '%s'. Preparing to send final telemetry.", powerState)
-
-					// Create a brief inhibitor to give us time for final telemetry
-					inhibitDuration := 5 * time.Second // Increased for critical states
-					if err := s.redisClient.Set(s.ctx, "power-manager:inhibit:radio-gaga", "final telemetry", inhibitDuration).Err(); err != nil {
-						log.Printf("Failed to set power manager inhibit for state '%s': %v", powerState, err)
-					} else {
-						log.Printf("Set power manager inhibitor for %v for state '%s'", inhibitDuration, powerState)
-					}
+				case "suspending-imminent", "hibernating-imminent", "hibernating-manual-imminent", "hibernating-timer-imminent", "reboot-imminent":
+					log.Printf("Power manager entering critical state '%s', sending final telemetry", powerState)
 
 					currentData, telErr := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime)
 					if telErr == nil {
-						log.Printf("Collected final telemetry data for state '%s'.", powerState)
 						if s.config.Telemetry.Buffer.Enabled {
-							if addErr := s.addTelemetryToBuffer(currentData); addErr != nil {
-								log.Printf("Failed to add final telemetry to buffer for state '%s': %v", powerState, addErr)
-							} else {
-								log.Printf("Added final telemetry to buffer for state '%s'. Transmitting buffer...", powerState)
+							if addErr := s.addTelemetryToBuffer(currentData); addErr == nil {
 								if transErr := s.transmitBuffer(); transErr != nil {
 									log.Printf("Failed to transmit buffer for state '%s': %v", powerState, transErr)
-								} else {
-									log.Printf("Telemetry buffer transmitted successfully for state '%s'.", powerState)
 								}
+							} else {
+								log.Printf("Failed to add final telemetry to buffer for state '%s': %v", powerState, addErr)
 							}
 						} else {
 							if pubErr := s.publishTelemetryData(currentData); pubErr != nil {
-								log.Printf("Failed to publish final telemetry data for state '%s': %v", powerState, pubErr)
-							} else {
-								log.Printf("Published final telemetry data successfully for state '%s'.", powerState)
+								log.Printf("Failed to publish final telemetry for state '%s': %v", powerState, pubErr)
 							}
 						}
 					} else {
-						log.Printf("Failed to get final telemetry data for state '%s': %v", powerState, telErr)
+						log.Printf("Failed to get telemetry data for state '%s': %v", powerState, telErr)
 					}
-					// Inhibitor will expire automatically.
-				default:
-					log.Printf("Power manager state '%s' does not require immediate telemetry flush.", powerState)
+
+					log.Printf("Disconnecting MQTT client gracefully for state '%s'", powerState)
+					if s.mqttClient.IsConnected() {
+						s.mqttClient.Disconnect(1000)
+					}
 				}
 			}
 		}
