@@ -728,6 +728,15 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				log.Printf("Power manager state is now: %s", powerState)
 
 				switch powerState {
+				case "running":
+					if !s.mqttClient.IsConnected() {
+						log.Printf("Power state changed to running, reconnecting MQTT client")
+						if token := s.mqttClient.Connect(); token.Wait() && token.Error() != nil {
+							log.Printf("Failed to reconnect MQTT client: %v", token.Error())
+						} else {
+							log.Printf("MQTT client reconnected successfully")
+						}
+					}
 				case "suspending-imminent", "hibernating-imminent", "hibernating-manual-imminent", "hibernating-timer-imminent", "reboot-imminent":
 					log.Printf("Power manager entering critical state '%s', sending final telemetry", powerState)
 
