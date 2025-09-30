@@ -199,30 +199,45 @@ func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) err
 	isLargeForwardJump := timeSinceLastUpdate > 10*time.Minute
 	
 	if (isBackwardJump || isLargeForwardJump) && len(buffer.Events) > 0 {
-		log.Printf("Detected time jump of %.1f seconds, recalibrating buffer timestamps", timeSinceLastUpdate.Seconds())
-		
-		// Calculate the time difference
-		timeDiff := now.Sub(buffer.LastSystemTime)
-		
+		// Calculate the clock correction (how much the system clock jumped)
+		clockCorrection := now.Sub(buffer.LastSystemTime)
+		log.Printf("Detected time jump of %.1f seconds, recalibrating buffer timestamps", clockCorrection.Seconds())
+
+		// Update serviceStartTime to account for the clock correction
+		// This is critical: the relative offsets were calculated using the wrong clock,
+		// but they represent real elapsed time. By correcting serviceStartTime, we make
+		// serviceStartTime + offset give us the correct absolute time.
+		oldServiceStart := s.serviceStartTime
+		s.serviceStartTime = s.serviceStartTime.Add(clockCorrection)
+		log.Printf("Updated serviceStartTime from %s to %s (correction: %.1f seconds)",
+			oldServiceStart.Format(time.RFC3339),
+			s.serviceStartTime.Format(time.RFC3339),
+			clockCorrection.Seconds())
+
 		// Recalibrate all existing events in this buffer
 		for i := range buffer.Events {
 			event := &buffer.Events[i]
-			
+
 			// Only recalibrate relative timestamps from this session
 			if strings.HasPrefix(event.Data.Timestamp, "INVALID_RELATIVE:") {
-				correctedTimestamp, recalErr := s.recalibrateTimestamp(event.Data.Timestamp, now)
-				if recalErr != nil {
-					log.Printf("Failed to recalibrate event %d: %v", i, recalErr)
+				// Parse the relative offset
+				offsetStr := strings.TrimPrefix(event.Data.Timestamp, "INVALID_RELATIVE:")
+				offsetSeconds, parseErr := strconv.ParseFloat(offsetStr, 64)
+				if parseErr != nil {
+					log.Printf("Failed to parse offset for event %d: %v", i, parseErr)
 					continue
 				}
-				event.Data.Timestamp = correctedTimestamp
-				log.Printf("Recalibrated event %d timestamp", i)
+
+				// Now that serviceStartTime is corrected, calculate absolute time
+				correctedTime := s.serviceStartTime.Add(time.Duration(offsetSeconds * float64(time.Second)))
+				event.Data.Timestamp = correctedTime.UTC().Format(time.RFC3339)
+				log.Printf("Recalibrated event %d: offset %.3fs -> %s", i, offsetSeconds, event.Data.Timestamp)
 			} else {
-				// For absolute timestamps, adjust by the time difference
+				// For absolute timestamps, apply the clock correction directly
 				if eventTime, parseErr := time.Parse(time.RFC3339, event.Data.Timestamp); parseErr == nil {
-					adjustedTime := eventTime.Add(timeDiff)
-					event.Data.Timestamp = adjustedTime.Format(time.RFC3339)
-					log.Printf("Recalibrated event %d timestamp by %.1f seconds", i, timeDiff.Seconds())
+					adjustedTime := eventTime.Add(clockCorrection)
+					event.Data.Timestamp = adjustedTime.UTC().Format(time.RFC3339)
+					log.Printf("Adjusted event %d timestamp by %.1f seconds -> %s", i, clockCorrection.Seconds(), event.Data.Timestamp)
 				}
 			}
 		}
@@ -533,28 +548,26 @@ func (s *ScooterMQTTClient) collectAndPublishTelemetry() error {
 	return s.publishTelemetryData(current)
 }
 
-// recalibrateTimestamp converts a relative timestamp back to absolute time using NTP-corrected time
+// recalibrateTimestamp converts a relative timestamp back to absolute time
+// Note: This function assumes serviceStartTime has already been corrected for clock jumps.
+// The offset represents real elapsed time since service start, so we can simply add it
+// to the corrected serviceStartTime to get the absolute timestamp.
 func (s *ScooterMQTTClient) recalibrateTimestamp(relativeTimestamp string, ntpTime time.Time) (string, error) {
 	// Check if this is a relative timestamp
 	if !strings.HasPrefix(relativeTimestamp, "INVALID_RELATIVE:") {
 		return relativeTimestamp, nil // Already absolute, return as-is
 	}
 
-	// Parse the relative offset
+	// Parse the relative offset (seconds since service start)
 	offsetStr := strings.TrimPrefix(relativeTimestamp, "INVALID_RELATIVE:")
 	offsetSeconds, err := strconv.ParseFloat(offsetStr, 64)
 	if err != nil {
 		return relativeTimestamp, fmt.Errorf("failed to parse relative offset: %v", err)
 	}
 
-	// Use service start time from client
-	serviceStart := s.serviceStartTime
+	// The offset represents real elapsed time since service start.
+	// Simply add it to the (corrected) serviceStartTime to get the absolute time.
+	correctedTime := s.serviceStartTime.Add(time.Duration(offsetSeconds * float64(time.Second)))
 
-	// Calculate the time difference between now and service start
-	currentServiceOffset := ntpTime.Sub(serviceStart).Seconds()
-	
-	// Calculate the corrected absolute timestamp
-	correctedTime := ntpTime.Add(time.Duration((offsetSeconds - currentServiceOffset) * float64(time.Second)))
-	
 	return correctedTime.UTC().Format(time.RFC3339), nil
 }
