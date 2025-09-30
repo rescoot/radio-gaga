@@ -373,6 +373,7 @@ func (s *ScooterMQTTClient) Start() error {
 	go s.publishTelemetry()
 	go s.watchDashboardStatus()
 	go s.watchInternetStatus()
+	go s.watchAlarmStatus()
 
 	return nil
 }
@@ -509,6 +510,56 @@ func (s *ScooterMQTTClient) watchDashboardStatus() {
 			log.Println("Dashboard reported ready, checking hostname...")
 			go s.checkAndStoreDBCFlavor()
 		}
+	}
+}
+
+// watchAlarmStatus monitors alarm status changes and publishes events to MQTT
+func (s *ScooterMQTTClient) watchAlarmStatus() {
+	pubsub := s.redisClient.Subscribe(s.ctx, "alarm")
+	defer pubsub.Close()
+
+	log.Println("Subscribed to alarm status channel")
+
+	for {
+		msg, err := pubsub.ReceiveMessage(s.ctx)
+		if err != nil {
+			// Check if the error is due to context cancellation (expected on shutdown)
+			if s.ctx.Err() != nil {
+				log.Println("Alarm status watcher stopping due to context cancellation.")
+				return
+			}
+			log.Printf("Error receiving alarm message: %v", err)
+			// Avoid busy-looping on persistent errors
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		if msg.Channel == "alarm" {
+			log.Printf("Alarm status changed to: %s", msg.Payload)
+			s.publishAlarmEvent(msg.Payload)
+		}
+	}
+}
+
+// publishAlarmEvent publishes an alarm event to MQTT
+func (s *ScooterMQTTClient) publishAlarmEvent(status string) {
+	event := map[string]interface{}{
+		"event_type": "alarm",
+		"status":     status,
+		"timestamp":  time.Now().Unix(),
+	}
+
+	eventJSON, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("Failed to marshal alarm event: %v", err)
+		return
+	}
+
+	topic := fmt.Sprintf("scooters/%s/events", s.config.Scooter.Identifier)
+	if token := s.mqttClient.Publish(topic, 1, false, eventJSON); token.Wait() && token.Error() != nil {
+		log.Printf("Failed to publish alarm event: %v", token.Error())
+	} else {
+		log.Printf("Published alarm event to %s: %s", topic, string(eventJSON))
 	}
 }
 
