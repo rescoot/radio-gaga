@@ -69,29 +69,55 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	}
 
 	// --- MDB Flavor and Version Handling ---
-	// Determine and store MDB flavor (SUN-47)
-	mdbHostname, err := os.Hostname()
-	if err != nil {
-		log.Printf("Warning: Failed to get MDB hostname: %v", err)
-		redisClient.HSet(ctx, "system", "mdb-flavor", "unknown_error").Err()
-	} else {
-		var mdbFlavor string
-		if strings.HasPrefix(mdbHostname, "librescoot-") {
+	mdbOsReleaseBytes, readErr := os.ReadFile("/etc/os-release")
+	var mdbFlavor string
+	var mdbFlavorSource string
+
+	if readErr == nil {
+		mdbOsID, _ := parseOSRelease(string(mdbOsReleaseBytes))
+		if strings.Contains(mdbOsID, "librescoot") {
 			mdbFlavor = "librescoot"
-		} else if strings.HasPrefix(mdbHostname, "mdb-") {
+			mdbFlavorSource = "os-release ID"
+		} else if strings.Contains(mdbOsID, "scooteros") {
 			mdbFlavor = "stock"
-		} else {
-			mdbFlavor = "unknown"
-			log.Printf("Unrecognized MDB hostname format: %s", mdbHostname)
-		}
-		if storeErr := redisClient.HSet(ctx, "system", "mdb-flavor", mdbFlavor).Err(); storeErr != nil {
-			log.Printf("Failed to store MDB flavor '%s' in Redis: %v", mdbFlavor, storeErr)
-		} else {
-			log.Printf("Stored MDB flavor as '%s' based on hostname '%s'", mdbFlavor, mdbHostname)
+			mdbFlavorSource = "os-release ID"
+		} else if mdbOsID != "" {
+			mdbFlavor = mdbOsID
+			mdbFlavorSource = "os-release ID (unrecognized)"
+			log.Printf("Using unrecognized MDB ID from os-release as flavor: %s", mdbOsID)
 		}
 	}
 
-	// MDB Version
+	if mdbFlavor == "" {
+		if readErr != nil {
+			log.Printf("Warning: Failed to read /etc/os-release: %v, falling back to hostname", readErr)
+		}
+		mdbHostname, err := os.Hostname()
+		if err != nil {
+			log.Printf("Warning: Failed to get MDB hostname: %v", err)
+			mdbFlavor = "unknown_error"
+			mdbFlavorSource = "error"
+		} else {
+			if strings.HasPrefix(mdbHostname, "librescoot-") {
+				mdbFlavor = "librescoot"
+				mdbFlavorSource = "hostname"
+			} else if strings.HasPrefix(mdbHostname, "mdb-") {
+				mdbFlavor = "stock"
+				mdbFlavorSource = "hostname"
+			} else {
+				mdbFlavor = "unknown"
+				mdbFlavorSource = "hostname (unrecognized)"
+				log.Printf("Unrecognized MDB hostname format: %s", mdbHostname)
+			}
+		}
+	}
+
+	if storeErr := redisClient.HSet(ctx, "system", "mdb-flavor", mdbFlavor).Err(); storeErr != nil {
+		log.Printf("Failed to store MDB flavor '%s' in Redis: %v", mdbFlavor, storeErr)
+	} else {
+		log.Printf("Stored MDB flavor as '%s' (detected via %s)", mdbFlavor, mdbFlavorSource)
+	}
+
 	log.Println("Checking MDB version information at startup...")
 	mdbVersionInfo, err := redisClient.HGetAll(ctx, "version:mdb").Result()
 	mdbVersion := ""
@@ -100,11 +126,11 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		log.Printf("Found MDB version_id in version:mdb Redis hash: %s", mdbVersion)
 	} else {
 		if err != redis.Nil && err != nil {
-			log.Printf("Error reading version:mdb from Redis: %v. Falling back to local os-release.", err)
+			log.Printf("Error reading version:mdb from Redis: %v. Using os-release data.", err)
 		} else {
-			log.Println("MDB version_id not found in version:mdb Redis hash or hash missing. Reading local /etc/os-release.")
+			log.Println("MDB version_id not found in version:mdb Redis hash, using os-release data.")
 		}
-		mdbOsReleaseBytes, readErr := os.ReadFile("/etc/os-release")
+
 		if readErr != nil {
 			log.Printf("Failed to read local /etc/os-release for MDB version: %v", readErr)
 			mdbVersion = "unknown_os_release_read_error"
@@ -412,6 +438,8 @@ func (s *ScooterMQTTClient) Stop() {
 
 	log.Println("Waiting for goroutines to finish...")
 	s.wg.Wait()
+
+	time.Sleep(100 * time.Millisecond)
 
 	log.Println("Setting cloud status to disconnected before shutdown")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
