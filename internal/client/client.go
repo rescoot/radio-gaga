@@ -196,7 +196,14 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		return nil, fmt.Errorf("could not parse keepalive interval: %v", err)
 	}
 
-	// Use VIN as client ID and username
+	log.Println("Setting initial cloud status to disconnected")
+	if err := redisClient.HSet(ctx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
+		log.Printf("Failed to set initial unu-cloud status: %v", err)
+	}
+	if err := redisClient.Publish(ctx, "internet", "unu-cloud").Err(); err != nil {
+		log.Printf("Failed to publish initial unu-cloud status: %v", err)
+	}
+
 	clientID := fmt.Sprintf("radio-gaga-%s", config.Scooter.Identifier)
 
 	willTopic := fmt.Sprintf("scooters/%s/status", config.Scooter.Identifier)
@@ -403,14 +410,22 @@ func (s *ScooterMQTTClient) Stop() {
 	log.Println("Cancelling client context...")
 	s.cancel()
 
-	// Wait for all goroutines to finish cleaning up their PubSub connections
 	log.Println("Waiting for goroutines to finish...")
 	s.wg.Wait()
 
-	// Disconnect MQTT client
+	log.Println("Setting cloud status to disconnected before shutdown")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	if err := s.redisClient.HSet(shutdownCtx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
+		log.Printf("Failed to set unu-cloud status on shutdown: %v", err)
+	}
+	if err := s.redisClient.Publish(shutdownCtx, "internet", "unu-cloud").Err(); err != nil {
+		log.Printf("Failed to publish unu-cloud status on shutdown: %v", err)
+	}
+
 	if s.mqttClient.IsConnected() {
 		log.Println("Disconnecting MQTT client...")
-		s.mqttClient.Disconnect(500) // Wait 500ms for disconnect
+		s.mqttClient.Disconnect(500)
 	}
 
 	// Close Redis client
