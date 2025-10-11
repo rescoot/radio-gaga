@@ -518,13 +518,11 @@ func generateRandomID() (string, error) {
 
 // collectAndPublishTelemetry collects telemetry data and publishes it
 func (s *ScooterMQTTClient) collectAndPublishTelemetry() error {
-	// Get telemetry data
 	current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime)
 	if err != nil {
 		return fmt.Errorf("failed to get telemetry: %v", err)
 	}
 
-	// If buffer is enabled, add to buffer
 	if s.config.Telemetry.Buffer.Enabled {
 		if err := s.addTelemetryToBuffer(current); err != nil {
 			log.Printf("Failed to add telemetry to buffer: %v", err)
@@ -532,30 +530,5 @@ func (s *ScooterMQTTClient) collectAndPublishTelemetry() error {
 		return nil
 	}
 
-	// Otherwise, publish directly
 	return s.publishTelemetryData(current)
-}
-
-// recalibrateTimestamp converts a relative timestamp back to absolute time
-// Note: This function assumes serviceStartTime has already been corrected for clock jumps.
-// The offset represents real elapsed time since service start, so we can simply add it
-// to the corrected serviceStartTime to get the absolute timestamp.
-func (s *ScooterMQTTClient) recalibrateTimestamp(relativeTimestamp string, ntpTime time.Time) (string, error) {
-	// Check if this is a relative timestamp
-	if !strings.HasPrefix(relativeTimestamp, "INVALID_RELATIVE:") {
-		return relativeTimestamp, nil // Already absolute, return as-is
-	}
-
-	// Parse the relative offset (seconds since service start)
-	offsetStr := strings.TrimPrefix(relativeTimestamp, "INVALID_RELATIVE:")
-	offsetSeconds, err := strconv.ParseFloat(offsetStr, 64)
-	if err != nil {
-		return relativeTimestamp, fmt.Errorf("failed to parse relative offset: %v", err)
-	}
-
-	// The offset represents real elapsed time since service start.
-	// Simply add it to the (corrected) serviceStartTime to get the absolute time.
-	correctedTime := s.serviceStartTime.Add(time.Duration(offsetSeconds * float64(time.Second)))
-
-	return correctedTime.UTC().Format(time.RFC3339), nil
 }
