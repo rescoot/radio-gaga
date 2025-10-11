@@ -292,25 +292,36 @@ func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) err
 
 // subsampleBuffer reduces the size of the buffer by removing every 2nd event
 func (s *ScooterMQTTClient) subsampleBuffer(buffer *models.TelemetryBuffer) {
-	// If buffer has less than 3 events, don't subsample
 	if len(buffer.Events) < 3 {
 		return
 	}
 
-	// Keep first and last events
 	first := buffer.Events[0]
 	last := buffer.Events[len(buffer.Events)-1]
 
-	// Remove every 2nd event in between
 	newEvents := []models.BufferedTelemetryEvent{first}
 	for i := 1; i < len(buffer.Events)-1; i += 2 {
 		newEvents = append(newEvents, buffer.Events[i])
 	}
 	newEvents = append(newEvents, last)
 
-	// Update buffer
 	buffer.Events = newEvents
 	log.Printf("Subsampled buffer from %d to %d events", len(buffer.Events), len(newEvents))
+}
+
+// resetBuffer clears the buffer and generates a new batch ID
+func (s *ScooterMQTTClient) resetBuffer(buffer *models.TelemetryBuffer) {
+	now := time.Now()
+	buffer.Events = []models.BufferedTelemetryEvent{}
+	batchID, err := generateRandomID()
+	if err != nil {
+		log.Printf("Failed to generate batch ID: %v", err)
+		batchID = fmt.Sprintf("batch-%d", now.UnixNano())
+	}
+	buffer.BatchID = batchID
+	buffer.CreatedAt = now
+	buffer.SequenceCounter = 0
+	buffer.LastSystemTime = now
 }
 
 // transmitBuffer transmits the telemetry buffer
@@ -369,18 +380,10 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 
 	log.Printf("Published telemetry batch with %d events to %s", len(buffer.Events), topic)
 
-	// Update cloud status since we successfully published to MQTT
 	s.updateCloudStatus()
 
-	// Clear buffer and reset sequence counter
-	now := time.Now()
-	buffer.Events = []models.BufferedTelemetryEvent{}
-	buffer.BatchID, _ = generateRandomID()
-	buffer.CreatedAt = now
-	buffer.SequenceCounter = 0
-	buffer.LastSystemTime = now
+	s.resetBuffer(buffer)
 
-	// Save buffer to Redis
 	if err := s.saveBufferToRedis(buffer); err != nil {
 		return fmt.Errorf("failed to save buffer to Redis: %v", err)
 	}
@@ -466,12 +469,7 @@ func (s *ScooterMQTTClient) retryTransmitBuffer() {
 
 	if maxAttempts >= maxRetries {
 		log.Printf("Max retries exceeded (%d), dropping %d events", maxRetries, len(buffer.Events))
-		now := time.Now()
-		buffer.Events = []models.BufferedTelemetryEvent{}
-		buffer.BatchID, _ = generateRandomID()
-		buffer.CreatedAt = now
-		buffer.SequenceCounter = 0
-		buffer.LastSystemTime = now
+		s.resetBuffer(buffer)
 
 		if err := s.saveBufferToRedis(buffer); err != nil {
 			log.Printf("Failed to save buffer to Redis: %v", err)
