@@ -36,6 +36,19 @@ type ScooterMQTTClient struct {
 	bufferMu         sync.Mutex // Protects telemetry buffer operations
 }
 
+// parseOSRelease extracts ID and VERSION_ID from /etc/os-release content
+func parseOSRelease(content string) (id, versionID string) {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "ID=") {
+			id = strings.Trim(strings.TrimPrefix(line, "ID="), "\"'")
+		} else if strings.HasPrefix(line, "VERSION_ID=") {
+			versionID = strings.Trim(strings.TrimPrefix(line, "VERSION_ID="), "\"'")
+		}
+	}
+	return id, versionID
+}
+
 // NewScooterMQTTClient creates a new MQTT client
 func NewScooterMQTTClient(config *models.Config, configPath string, version string) (*ScooterMQTTClient, error) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -91,47 +104,29 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		} else {
 			log.Println("MDB version_id not found in version:mdb Redis hash or hash missing. Reading local /etc/os-release.")
 		}
-		// Read local /etc/os-release for MDB
 		mdbOsReleaseBytes, readErr := os.ReadFile("/etc/os-release")
 		if readErr != nil {
 			log.Printf("Failed to read local /etc/os-release for MDB version: %v", readErr)
 			mdbVersion = "unknown_os_release_read_error"
 		} else {
-			mdbOsRelease := string(mdbOsReleaseBytes)
-			mdbOsVersionID := ""
-			mdbOsID := ""
+			mdbOsID, mdbOsVersionID := parseOSRelease(string(mdbOsReleaseBytes))
 
-			// Extract VERSION_ID
-			versionMatch := strings.Split(mdbOsRelease, "VERSION_ID=")
-			if len(versionMatch) > 1 {
-				mdbOsVersionID = strings.Trim(strings.Split(versionMatch[1], "\n")[0], "\"'")
-			} else {
+			if mdbOsVersionID == "" {
 				log.Println("Could not find VERSION_ID in MDB /etc/os-release")
-			}
-			// Extract ID
-			idMatch := strings.Split(mdbOsRelease, "ID=")
-			if len(idMatch) > 1 {
-				mdbOsID = strings.Trim(strings.Split(idMatch[1], "\n")[0], "\"'")
+				mdbVersion = "unknown_os_release_parse_error"
 			} else {
-				log.Println("Could not find ID in MDB /etc/os-release")
-			}
-
-			if mdbOsVersionID != "" {
 				mdbVersion = mdbOsVersionID
-				// Populate version:mdb hash
 				fieldsToSet := map[string]interface{}{"version_id": mdbOsVersionID}
 				if mdbOsID != "" {
 					fieldsToSet["id"] = mdbOsID
+				} else {
+					log.Println("Could not find ID in MDB /etc/os-release")
 				}
-				// Add other common fields if desired, e.g. name, pretty_name, etc.
-				// For now, just id and version_id
 				if pipeErr := redisClient.HSet(ctx, "version:mdb", fieldsToSet).Err(); pipeErr != nil {
 					log.Printf("Failed to populate version:mdb Redis hash: %v", pipeErr)
 				} else {
 					log.Printf("Populated version:mdb Redis hash with ID: %s, VersionID: %s", mdbOsID, mdbOsVersionID)
 				}
-			} else {
-				mdbVersion = "unknown_os_release_parse_error"
 			}
 		}
 	}
@@ -614,35 +609,23 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 			dbcID = "unknown_ssh_error"
 			dbcVersionID = "unknown_ssh_error"
 		} else {
-			// Parse os-release output
-			osRelease := string(output)
-			fetchedViaSSH = true // Mark that we got new data
+			fetchedViaSSH = true
+			dbcID, dbcVersionID = parseOSRelease(string(output))
 
-			// Extract ID
-			idMatch := strings.Split(osRelease, "ID=")
-			if len(idMatch) > 1 {
-				dbcID = strings.Trim(strings.Split(idMatch[1], "\n")[0], "\"'")
-			} else {
+			if dbcID == "" {
 				dbcID = "unknown_os_release_id"
 				log.Printf("Could not find ID in DBC os-release")
 			}
-
-			// Extract VERSION_ID
-			versionMatch := strings.Split(osRelease, "VERSION_ID=")
-			if len(versionMatch) > 1 {
-				dbcVersionID = strings.Trim(strings.Split(versionMatch[1], "\n")[0], "\"'")
-			} else {
+			if dbcVersionID == "" {
 				dbcVersionID = "unknown_os_release_version"
 				log.Printf("Could not find VERSION_ID in DBC os-release")
 			}
 
-			// Populate version:dbc hash in Redis since we fetched it
 			if dbcID != "" && dbcVersionID != "" &&
 				!strings.HasPrefix(dbcID, "unknown_") && !strings.HasPrefix(dbcVersionID, "unknown_") {
 				fieldsToSet := map[string]interface{}{
 					"id":         dbcID,
 					"version_id": dbcVersionID,
-					// Potentially add other fields like "name", "pretty_name" if available and desired
 				}
 				if pipeErr := s.redisClient.HSet(ctx, "version:dbc", fieldsToSet).Err(); pipeErr != nil {
 					log.Printf("Failed to populate version:dbc Redis hash after SSH: %v", pipeErr)
