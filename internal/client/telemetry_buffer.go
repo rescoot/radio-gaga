@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"radio-gaga/internal/models"
@@ -181,6 +180,9 @@ func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) err
 		return nil
 	}
 
+	s.bufferMu.Lock()
+	defer s.bufferMu.Unlock()
+
 	// Load buffer from Redis
 	buffer, err := s.loadBufferFromRedis()
 	if err != nil {
@@ -302,12 +304,13 @@ func (s *ScooterMQTTClient) subsampleBuffer(buffer *models.TelemetryBuffer) {
 
 // transmitBuffer transmits the telemetry buffer
 func (s *ScooterMQTTClient) transmitBuffer() error {
-	// If buffer is not enabled, return
 	if !s.config.Telemetry.Buffer.Enabled {
 		return nil
 	}
 
-	// Load buffer from Redis
+	s.bufferMu.Lock()
+	defer s.bufferMu.Unlock()
+
 	buffer, err := s.loadBufferFromRedis()
 	if err != nil {
 		return fmt.Errorf("failed to load buffer from Redis: %v", err)
@@ -383,72 +386,56 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 
 // transmitBufferPeriodically transmits the telemetry buffer periodically
 func (s *ScooterMQTTClient) transmitBufferPeriodically() {
-	// If buffer is not enabled, return
 	if !s.config.Telemetry.Buffer.Enabled {
 		return
 	}
 
-	// Parse transmit period
 	transmitPeriod, err := time.ParseDuration(s.config.Telemetry.TransmitPeriod)
 	if err != nil {
 		log.Printf("Failed to parse transmit period: %v, using default of 5m", err)
 		transmitPeriod = 5 * time.Minute
 	}
 
-	// Create ticker
 	ticker := time.NewTicker(transmitPeriod)
 	defer ticker.Stop()
-
-	// Create mutex for buffer access
-	var mutex sync.Mutex
 
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			// Lock mutex
-			mutex.Lock()
-
-			// Transmit buffer
 			if err := s.transmitBuffer(); err != nil {
 				log.Printf("Failed to transmit buffer: %v", err)
-				// Retry with backoff
-				go s.retryTransmitBuffer(&mutex)
+				go s.retryTransmitBuffer()
 			}
-
-			// Unlock mutex
-			mutex.Unlock()
 		}
 	}
 }
 
 // retryTransmitBuffer retries transmitting the buffer with exponential backoff
-func (s *ScooterMQTTClient) retryTransmitBuffer(mutex *sync.Mutex) {
-	// If buffer is not enabled, return
+func (s *ScooterMQTTClient) retryTransmitBuffer() {
 	if !s.config.Telemetry.Buffer.Enabled {
 		return
 	}
 
-	// Load buffer from Redis
+	s.bufferMu.Lock()
 	buffer, err := s.loadBufferFromRedis()
 	if err != nil {
+		s.bufferMu.Unlock()
 		log.Printf("Failed to load buffer from Redis: %v", err)
 		return
 	}
 
-	// If buffer is empty, return
 	if len(buffer.Events) == 0 {
+		s.bufferMu.Unlock()
 		return
 	}
 
-	// Get max retries
 	maxRetries := s.config.Telemetry.Buffer.MaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 5
 	}
 
-	// Get retry interval
 	retryIntervalStr := s.config.Telemetry.Buffer.RetryInterval
 	if retryIntervalStr == "" {
 		retryIntervalStr = "1m"
@@ -459,7 +446,6 @@ func (s *ScooterMQTTClient) retryTransmitBuffer(mutex *sync.Mutex) {
 		retryInterval = time.Minute
 	}
 
-	// Check if any event has exceeded max retries
 	maxAttempts := 0
 	for _, event := range buffer.Events {
 		if event.Attempts > maxAttempts {
@@ -467,10 +453,8 @@ func (s *ScooterMQTTClient) retryTransmitBuffer(mutex *sync.Mutex) {
 		}
 	}
 
-	// If max retries exceeded, log and return
 	if maxAttempts >= maxRetries {
 		log.Printf("Max retries exceeded (%d), dropping %d events", maxRetries, len(buffer.Events))
-		// Clear buffer and reset sequence counter
 		now := time.Now()
 		buffer.Events = []models.BufferedTelemetryEvent{}
 		buffer.BatchID, _ = generateRandomID()
@@ -478,32 +462,25 @@ func (s *ScooterMQTTClient) retryTransmitBuffer(mutex *sync.Mutex) {
 		buffer.SequenceCounter = 0
 		buffer.LastSystemTime = now
 
-		// Save buffer to Redis
 		if err := s.saveBufferToRedis(buffer); err != nil {
 			log.Printf("Failed to save buffer to Redis: %v", err)
 		}
+		s.bufferMu.Unlock()
 		return
 	}
+	s.bufferMu.Unlock()
 
-	// Calculate backoff time
 	backoff := calculateBackoff(maxAttempts, retryInterval)
 	log.Printf("Retrying buffer transmission in %v (attempt %d/%d)", backoff, maxAttempts+1, maxRetries)
 
-	// Wait for backoff time
 	select {
 	case <-s.ctx.Done():
 		return
 	case <-time.After(backoff):
-		// Lock mutex
-		mutex.Lock()
-		defer mutex.Unlock()
-
-		// Transmit buffer
 		if err := s.transmitBuffer(); err != nil {
 			log.Printf("Failed to transmit buffer: %v", err)
-			// Retry again if not canceled
 			if s.ctx.Err() == nil {
-				go s.retryTransmitBuffer(mutex)
+				go s.retryTransmitBuffer()
 			}
 		}
 	}

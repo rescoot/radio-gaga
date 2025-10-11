@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -31,6 +32,8 @@ type ScooterMQTTClient struct {
 	cancel           context.CancelFunc
 	version          string
 	serviceStartTime time.Time
+	wg               sync.WaitGroup
+	bufferMu         sync.Mutex // Protects telemetry buffer operations
 }
 
 // NewScooterMQTTClient creates a new MQTT client
@@ -370,6 +373,7 @@ func (s *ScooterMQTTClient) Start() error {
 	}
 
 	// Start telemetry and dashboard watcher goroutines
+	s.wg.Add(4)
 	go s.publishTelemetry()
 	go s.watchDashboardStatus()
 	go s.watchInternetStatus()
@@ -404,6 +408,10 @@ func (s *ScooterMQTTClient) Stop() {
 	log.Println("Cancelling client context...")
 	s.cancel()
 
+	// Wait for all goroutines to finish cleaning up their PubSub connections
+	log.Println("Waiting for goroutines to finish...")
+	s.wg.Wait()
+
 	// Disconnect MQTT client
 	if s.mqttClient.IsConnected() {
 		log.Println("Disconnecting MQTT client...")
@@ -421,6 +429,7 @@ func (s *ScooterMQTTClient) Stop() {
 
 // watchInternetStatus monitors internet connectivity and updates unu-cloud status
 func (s *ScooterMQTTClient) watchInternetStatus() {
+	defer s.wg.Done()
 	pubsub := s.redisClient.Subscribe(s.ctx, "internet")
 	defer pubsub.Close()
 
@@ -480,6 +489,7 @@ func (s *ScooterMQTTClient) watchInternetStatus() {
 
 // watchDashboardStatus monitors dashboard status changes
 func (s *ScooterMQTTClient) watchDashboardStatus() {
+	defer s.wg.Done()
 	pubsub := s.redisClient.Subscribe(s.ctx, "dashboard")
 	defer pubsub.Close()
 
@@ -515,6 +525,7 @@ func (s *ScooterMQTTClient) watchDashboardStatus() {
 
 // watchAlarmStatus monitors alarm status changes and publishes events to MQTT
 func (s *ScooterMQTTClient) watchAlarmStatus() {
+	defer s.wg.Done()
 	pubsub := s.redisClient.Subscribe(s.ctx, "alarm")
 	defer pubsub.Close()
 
@@ -720,6 +731,7 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *models.TelemetryData) 
 
 // publishTelemetry periodically collects and publishes telemetry data
 func (s *ScooterMQTTClient) publishTelemetry() {
+	defer s.wg.Done()
 	// Get initial interval
 	interval, reason := telemetry.GetTelemetryInterval(s.ctx, s.redisClient, s.config)
 	log.Printf("Initial telemetry interval: %v (%s)", interval, reason)
