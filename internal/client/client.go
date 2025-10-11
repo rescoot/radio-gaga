@@ -33,7 +33,9 @@ type ScooterMQTTClient struct {
 	version          string
 	serviceStartTime time.Time
 	wg               sync.WaitGroup
-	bufferMu         sync.Mutex // Protects telemetry buffer operations
+	bufferMu         sync.Mutex
+	pubsubsMu        sync.Mutex
+	pubsubs          []*redis.PubSub
 }
 
 // parseOSRelease extracts ID and VERSION_ID from /etc/os-release content
@@ -410,9 +412,15 @@ func (s *ScooterMQTTClient) Start() error {
 	return nil
 }
 
+// registerPubSub registers a pubsub connection for cleanup on shutdown
+func (s *ScooterMQTTClient) registerPubSub(ps *redis.PubSub) {
+	s.pubsubsMu.Lock()
+	defer s.pubsubsMu.Unlock()
+	s.pubsubs = append(s.pubsubs, ps)
+}
+
 // Stop stops the MQTT client and closes connections
 func (s *ScooterMQTTClient) Stop() {
-	// Ensure any buffered telemetry is sent before shutting down
 	if s.config.Telemetry.Buffer.Enabled {
 		log.Println("Flushing telemetry buffer before shutdown...")
 		if err := s.transmitBuffer(); err != nil {
@@ -422,7 +430,6 @@ func (s *ScooterMQTTClient) Stop() {
 		}
 	}
 
-	// Unsubscribe from command topic
 	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
 	if s.mqttClient.IsConnected() {
 		log.Printf("Unsubscribing from %s", commandTopic)
@@ -431,15 +438,20 @@ func (s *ScooterMQTTClient) Stop() {
 		}
 	}
 
-
-	// Cancel context
 	log.Println("Cancelling client context...")
 	s.cancel()
 
+	log.Println("Closing pubsub connections...")
+	s.pubsubsMu.Lock()
+	for _, ps := range s.pubsubs {
+		if err := ps.Close(); err != nil {
+			log.Printf("Error closing pubsub: %v", err)
+		}
+	}
+	s.pubsubsMu.Unlock()
+
 	log.Println("Waiting for goroutines to finish...")
 	s.wg.Wait()
-
-	time.Sleep(100 * time.Millisecond)
 
 	log.Println("Setting cloud status to disconnected before shutdown")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -469,6 +481,7 @@ func (s *ScooterMQTTClient) Stop() {
 func (s *ScooterMQTTClient) watchInternetStatus() {
 	defer s.wg.Done()
 	pubsub := s.redisClient.Subscribe(s.ctx, "internet")
+	s.registerPubSub(pubsub)
 	defer pubsub.Close()
 
 	log.Println("Subscribed to internet status channel")
@@ -529,6 +542,7 @@ func (s *ScooterMQTTClient) watchInternetStatus() {
 func (s *ScooterMQTTClient) watchDashboardStatus() {
 	defer s.wg.Done()
 	pubsub := s.redisClient.Subscribe(s.ctx, "dashboard")
+	s.registerPubSub(pubsub)
 	defer pubsub.Close()
 
 	log.Println("Subscribed to dashboard status channel")
@@ -565,6 +579,7 @@ func (s *ScooterMQTTClient) watchDashboardStatus() {
 func (s *ScooterMQTTClient) watchAlarmStatus() {
 	defer s.wg.Done()
 	pubsub := s.redisClient.Subscribe(s.ctx, "alarm")
+	s.registerPubSub(pubsub)
 	defer pubsub.Close()
 
 	log.Println("Subscribed to alarm status channel")
@@ -767,6 +782,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 	// Subscribe to state changes
 	pubsub := s.redisClient.Subscribe(s.ctx, "vehicle", "power-manager")
+	s.registerPubSub(pubsub)
 	defer pubsub.Close()
 
 	// Start goroutine to handle state change notifications
