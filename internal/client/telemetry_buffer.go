@@ -19,9 +19,12 @@ import (
 )
 
 const (
-	// Redis key for storing the telemetry buffer
 	telemetryBufferKey = "radio-gaga:telemetry-buffer"
 )
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
 
 // initTelemetryBuffer initializes the telemetry buffer
 func (s *ScooterMQTTClient) initTelemetryBuffer() {
