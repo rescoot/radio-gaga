@@ -593,11 +593,10 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 			log.Println("DBC version info not found or incomplete in version:dbc Redis hash, attempting SSH to DBC.")
 		}
 
-		// Execute ssh command to get DBC os-release
-		sshCtx, sshCancel := context.WithTimeout(ctx, 10*time.Second) // 10-second timeout for SSH itself
+		sshCtx, sshCancel := context.WithTimeout(ctx, 10*time.Second)
 		defer sshCancel()
 
-		cmd := exec.CommandContext(sshCtx, "ssh", "-y", "-y", "root@192.168.7.2", "cat /etc/os-release")
+		cmd := exec.CommandContext(sshCtx, "ssh", "-y", "root@192.168.7.2", "cat /etc/os-release")
 		output, sshErr := cmd.Output()
 
 		if sshCtx.Err() == context.DeadlineExceeded {
