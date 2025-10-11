@@ -186,12 +186,20 @@ func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) err
 	s.bufferMu.Lock()
 	defer s.bufferMu.Unlock()
 
-	// Load buffer from Redis
 	buffer, err := s.loadBufferFromRedis()
 	if err != nil {
 		log.Printf("Failed to load buffer from Redis: %v", err)
-		// Create a new buffer
-		buffer = s.createNewBuffer()
+		if s.config.Telemetry.Buffer.PersistPath != "" {
+			buffer, err = s.loadBufferFromDisk()
+			if err != nil {
+				log.Printf("Failed to load buffer from disk: %v", err)
+				buffer = s.createNewBuffer()
+			} else {
+				log.Printf("Loaded buffer from disk with %d events", len(buffer.Events))
+			}
+		} else {
+			buffer = s.createNewBuffer()
+		}
 	}
 
 	now := time.Now()
