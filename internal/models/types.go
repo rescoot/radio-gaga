@@ -39,6 +39,7 @@ type Config struct {
 	RedisURL    string             `yaml:"redis_url"`
 	Telemetry   TelemetryConfig    `yaml:"telemetry"`
 	Commands    map[string]Command `yaml:"commands"`
+	UnuUplink   UnuUplinkConfig    `yaml:"unu_uplink,omitempty"`
 	ServiceName string             `yaml:"service_name,omitempty"`
 	Debug       bool               `yaml:"debug,omitempty"`
 }
@@ -61,6 +62,11 @@ type MQTTConfig struct {
 type NTPConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Server  string `yaml:"server"`
+}
+
+// UnuUplinkConfig contains unu-uplink reconfiguration settings
+type UnuUplinkConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // TelemetryConfig contains telemetry configuration
@@ -216,9 +222,12 @@ type GPSData struct {
 
 // PowerStatus represents power subsystem status
 type PowerStatus struct {
-	PowerState    string `json:"power_state"`
-	PowerMuxInput string `json:"power_mux_input"`
-	WakeupSource  string `json:"wakeup_source"`
+	PowerState      string `json:"power_state"`
+	PowerMuxInput   string `json:"power_mux_input"`
+	WakeupSource    string `json:"wakeup_source"`
+	NrfResetCount   int    `json:"nrf_reset_count,omitempty"`
+	NrfResetReason  string `json:"nrf_reset_reason,omitempty"`
+	HibernateLevel  string `json:"hibernate_level,omitempty"`
 }
 
 // BLEStatus represents Bluetooth status

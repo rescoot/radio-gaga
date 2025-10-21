@@ -992,3 +992,8 @@ func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg stri
 
 	log.Printf("Published response to %s: %s", topic, string(responseJSON))
 }
+
+// GetRedisClient returns the Redis client for external use
+func (s *ScooterMQTTClient) GetRedisClient() *redis.Client {
+	return s.redisClient
+}

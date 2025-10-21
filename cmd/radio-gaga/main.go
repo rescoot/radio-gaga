@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -8,6 +9,7 @@ import (
 
 	"radio-gaga/internal/client"
 	"radio-gaga/internal/config"
+	"radio-gaga/internal/handlers"
 )
 
 // Version is set during the build process
@@ -44,6 +46,14 @@ func main() {
 	mqttClient, err := client.NewScooterMQTTClient(cfg, configPath, version)
 	if err != nil {
 		log.Fatalf("Failed to create MQTT client: %v", err)
+	}
+
+	// Reconfigure unu-uplink if enabled (before starting MQTT client)
+	if cfg.UnuUplink.Enabled {
+		ctx := context.Background()
+		if err := handlers.ReconfigureUnuUplink(ctx, mqttClient.GetRedisClient(), cfg); err != nil {
+			log.Printf("Warning: Failed to reconfigure unu-uplink: %v", err)
+		}
 	}
 
 	if err := mqttClient.Start(); err != nil {

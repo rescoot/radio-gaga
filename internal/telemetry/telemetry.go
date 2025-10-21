@@ -292,9 +292,12 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		return nil, fmt.Errorf("failed to get power mux status: %v", err)
 	}
 	telemetry.Power = models.PowerStatus{
-		PowerState:    powerManager["state"],
-		PowerMuxInput: powerMux["selected-input"],
-		WakeupSource:  powerManager["wakeup-source"],
+		PowerState:     powerManager["state"],
+		PowerMuxInput:  powerMux["selected-input"],
+		WakeupSource:   powerManager["wakeup-source"],
+		NrfResetCount:  utils.ParseInt(powerManager["nrf-reset-count"]),
+		NrfResetReason: powerManager["nrf-reset-reason"],
+		HibernateLevel: powerManager["hibernate-level"],
 	}
 
 	// Get BLE status

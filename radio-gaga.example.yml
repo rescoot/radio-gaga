@@ -76,3 +76,9 @@ commands:
     disabled: false
   open_seatbox:
     disabled: false
+# unu-uplink reconfiguration (optional)
+# If enabled, radio-gaga will reconfigure mdb-uplink-service to use the same
+# MQTT broker and CA certificate as radio-gaga, then restart the service.
+# This is useful since unu is defunct and the default unu-uplink config won't work.
+unu_uplink:
+  enabled: false
