@@ -39,7 +39,7 @@ mqtt:
     sy90wZjkg07+oyrwJXSiZ3nXJupQ7A5QPye4UAgUYM9QpQEXkMto4BNyzHRngrAa
     1iWwV8WUCGyjH/DNVAGKth0=
     -----END CERTIFICATE-----
-  keepalive: 180s
+  keepalive: 30s
 ntp:
   enabled: true
   server: pool.ntp.rescoot.org

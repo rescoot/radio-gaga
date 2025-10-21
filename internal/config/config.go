@@ -78,7 +78,7 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) 
 			Scooter:     models.ScooterConfig{},
 			Environment: "production",
 			MQTT: models.MQTTConfig{
-				KeepAlive: "180s",
+				KeepAlive: "30s",
 			},
 			NTP: models.NTPConfig{
 				Enabled: true,
