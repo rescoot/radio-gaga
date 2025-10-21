@@ -755,8 +755,9 @@ func handleNavigateCommand(redisClient *redis.Client, ctx context.Context, param
 
 	// Check if this is a clear navigation command (both latitude and longitude are nil or missing)
 	if (!latOK && !lngOK) || (params["latitude"] == nil && params["longitude"] == nil) {
-		// Clear the navigation destination
-		if err := redisClient.HDel(ctx, "navigation", "destination").Err(); err != nil {
+		// Clear all navigation fields
+		fields := []string{"latitude", "longitude", "address", "timestamp", "destination"}
+		if err := redisClient.HDel(ctx, "navigation", fields...).Err(); err != nil {
 			return fmt.Errorf("failed to clear navigation destination in Redis: %v", err)
 		}
 
@@ -775,11 +776,29 @@ func handleNavigateCommand(redisClient *redis.Client, ctx context.Context, param
 		return fmt.Errorf("invalid or missing latitude/longitude parameters")
 	}
 
-	// Format coordinates as "latitude,longitude" string
+	// Get optional address parameter
+	address, _ := params["address"].(string)
+
+	// Format coordinates as "latitude,longitude" string for legacy compatibility
 	coords := fmt.Sprintf("%f,%f", lat, lng)
 
-	// Set the destination in Redis
-	if err := redisClient.HSet(ctx, "navigation", "destination", coords).Err(); err != nil {
+	// Get current timestamp in ISO8601 format
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+
+	// Set all navigation fields in Redis
+	navFields := map[string]interface{}{
+		"latitude":    fmt.Sprintf("%f", lat),
+		"longitude":   fmt.Sprintf("%f", lng),
+		"timestamp":   timestamp,
+		"destination": coords, // Legacy field for backward compatibility
+	}
+
+	// Add address if provided
+	if address != "" {
+		navFields["address"] = address
+	}
+
+	if err := redisClient.HSet(ctx, "navigation", navFields).Err(); err != nil {
 		return fmt.Errorf("failed to set navigation destination in Redis: %v", err)
 	}
 
@@ -789,7 +808,11 @@ func handleNavigateCommand(redisClient *redis.Client, ctx context.Context, param
 		log.Printf("Warning: Failed to publish navigation destination update: %v", err)
 	}
 
-	log.Printf("Navigation target set to: %s", coords)
+	if address != "" {
+		log.Printf("Navigation target set to: %s (%s)", coords, address)
+	} else {
+		log.Printf("Navigation target set to: %s", coords)
+	}
 	return nil
 }
 
