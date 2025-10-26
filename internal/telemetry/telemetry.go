@@ -209,6 +209,17 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		UniqueID:          cbbBattery["unique-id"],
 	}
 
+	// Get dashboard status (must be before system info to populate DBC serial number)
+	dashboard, err := redisClient.HGetAll(ctx, "dashboard").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get dashboard status: %v", err)
+	}
+	telemetry.Dashboard = models.DashboardStatus{
+		Mode:         dashboard["mode"],
+		Ready:        dashboard["ready"] == "true",
+		SerialNumber: dashboard["serial-number"],
+	}
+
 	// Get system information
 	system, err := redisClient.HGetAll(ctx, "system").Result()
 	if err != nil {
@@ -319,17 +330,6 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		Authentication: keycard["authentication"],
 		UID:            keycard["uid"],
 		Type:           keycard["type"],
-	}
-
-	// Get dashboard status
-	dashboard, err := redisClient.HGetAll(ctx, "dashboard").Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get dashboard status: %v", err)
-	}
-	telemetry.Dashboard = models.DashboardStatus{
-		Mode:         dashboard["mode"],
-		Ready:        dashboard["ready"] == "true",
-		SerialNumber: dashboard["serial-number"],
 	}
 
 	// Get navigation data
