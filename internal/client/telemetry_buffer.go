@@ -56,9 +56,12 @@ func (s *ScooterMQTTClient) initTelemetryBuffer() {
 		log.Printf("Loaded buffer from Redis with %d events", len(buffer.Events))
 	}
 
-	// Save buffer to Redis
+	// Set the in-memory buffer
+	s.buffer = buffer
+
+	// Persist initial buffer state (best effort)
 	if err := s.saveBufferToRedis(buffer); err != nil {
-		log.Printf("Failed to save buffer to Redis: %v", err)
+		log.Printf("Warning: failed to persist initial buffer to Redis: %v", err)
 	}
 
 	// Start buffer transmission goroutine
@@ -186,20 +189,28 @@ func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) err
 	s.bufferMu.Lock()
 	defer s.bufferMu.Unlock()
 
-	buffer, err := s.loadBufferFromRedis()
-	if err != nil {
-		log.Printf("Failed to load buffer from Redis: %v", err)
-		if s.config.Telemetry.Buffer.PersistPath != "" {
-			buffer, err = s.loadBufferFromDisk()
-			if err != nil {
-				log.Printf("Failed to load buffer from disk: %v", err)
-				buffer = s.createNewBuffer()
+	// Use in-memory buffer if available, otherwise load from persistence
+	var buffer *models.TelemetryBuffer
+	if s.buffer != nil {
+		buffer = s.buffer
+	} else {
+		var err error
+		buffer, err = s.loadBufferFromRedis()
+		if err != nil {
+			log.Printf("Failed to load buffer from Redis: %v", err)
+			if s.config.Telemetry.Buffer.PersistPath != "" {
+				buffer, err = s.loadBufferFromDisk()
+				if err != nil {
+					log.Printf("Failed to load buffer from disk: %v", err)
+					buffer = s.createNewBuffer()
+				} else {
+					log.Printf("Loaded buffer from disk with %d events", len(buffer.Events))
+				}
 			} else {
-				log.Printf("Loaded buffer from disk with %d events", len(buffer.Events))
+				buffer = s.createNewBuffer()
 			}
-		} else {
-			buffer = s.createNewBuffer()
 		}
+		s.buffer = buffer
 	}
 
 	now := time.Now()
@@ -275,18 +286,19 @@ func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) err
 		s.subsampleBuffer(buffer)
 	}
 
-	// Save buffer to Redis
+	// Persist buffer to Redis (best effort)
 	if err := s.saveBufferToRedis(buffer); err != nil {
-		return fmt.Errorf("failed to save buffer to Redis: %v", err)
+		log.Printf("Warning: failed to persist buffer to Redis: %v", err)
 	}
 
-	// Save buffer to disk if persist path is set
+	// Persist buffer to disk if configured (best effort)
 	if s.config.Telemetry.Buffer.PersistPath != "" {
 		if err := s.saveBufferToDisk(buffer); err != nil {
-			log.Printf("Failed to save buffer to disk: %v", err)
+			log.Printf("Warning: failed to persist buffer to disk: %v", err)
 		}
 	}
 
+	// Always succeed - telemetry is in memory even if persistence failed
 	return nil
 }
 
@@ -333,9 +345,17 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 	s.bufferMu.Lock()
 	defer s.bufferMu.Unlock()
 
-	buffer, err := s.loadBufferFromRedis()
-	if err != nil {
-		return fmt.Errorf("failed to load buffer from Redis: %v", err)
+	// Use in-memory buffer if available, otherwise load from persistence
+	var buffer *models.TelemetryBuffer
+	if s.buffer != nil {
+		buffer = s.buffer
+	} else {
+		var err error
+		buffer, err = s.loadBufferFromRedis()
+		if err != nil {
+			return fmt.Errorf("failed to load buffer from Redis: %v", err)
+		}
+		s.buffer = buffer
 	}
 
 	// If buffer is empty, return
@@ -380,21 +400,39 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 
 	log.Printf("Published telemetry batch with %d events to %s", len(buffer.Events), topic)
 
+	// Update cloud status (non-critical, just log if it fails)
 	s.updateCloudStatus()
 
+	// Transmission succeeded - reset in-memory buffer immediately
+	// This prevents re-transmission in the current process run
 	s.resetBuffer(buffer)
 
+	// Try to persist the reset for durability across restarts (best effort)
 	if err := s.saveBufferToRedis(buffer); err != nil {
-		return fmt.Errorf("failed to save buffer to Redis: %v", err)
-	}
+		log.Printf("Warning: failed to persist buffer reset to Redis: %v", err)
 
-	// Save buffer to disk if persist path is set
-	if s.config.Telemetry.Buffer.PersistPath != "" {
-		if err := s.saveBufferToDisk(buffer); err != nil {
-			log.Printf("Failed to save buffer to disk: %v", err)
+		// Fall back to disk if configured
+		if s.config.Telemetry.Buffer.PersistPath != "" {
+			if diskErr := s.saveBufferToDisk(buffer); diskErr != nil {
+				log.Printf("Warning: failed to persist buffer reset to disk: %v", diskErr)
+				log.Printf("Buffer reset in memory only - may re-transmit on restart (batch ID: %s)", buffer.BatchID)
+			} else {
+				log.Printf("Buffer reset persisted to disk (Redis failed)")
+			}
+		} else {
+			log.Printf("Buffer reset in memory only - may re-transmit on restart (batch ID: %s)", buffer.BatchID)
+		}
+	} else {
+		// Also save to disk for redundancy if configured
+		if s.config.Telemetry.Buffer.PersistPath != "" {
+			if err := s.saveBufferToDisk(buffer); err != nil {
+				log.Printf("Warning: failed to persist buffer reset to disk: %v", err)
+			}
 		}
 	}
 
+	// Always return success after MQTT transmission succeeds
+	// In-memory reset prevents re-transmission during this process run
 	return nil
 }
 

@@ -34,6 +34,7 @@ type ScooterMQTTClient struct {
 	serviceStartTime time.Time
 	wg               sync.WaitGroup
 	bufferMu         sync.Mutex
+	buffer           *models.TelemetryBuffer // In-memory buffer cache
 	pubsubsMu        sync.Mutex
 	pubsubs          []*redis.PubSub
 }
