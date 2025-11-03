@@ -384,7 +384,8 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 
 	// Publish batch
 	topic := fmt.Sprintf("scooters/%s/telemetry_batch", s.config.Scooter.Identifier)
-	if token := s.mqttClient.Publish(topic, 1, false, batchJSON); token.Wait() && token.Error() != nil {
+	token := s.mqttClient.Publish(topic, 1, false, batchJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		// Update attempt count for each event
 		for i := range buffer.Events {
 			buffer.Events[i].Attempts++
@@ -395,6 +396,9 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 			log.Printf("Failed to save buffer to Redis: %v", err)
 		}
 
+		if !token.WaitTimeout(0) {
+			return fmt.Errorf("failed to publish batch: timeout after %v", models.MQTTPublishTimeout)
+		}
 		return fmt.Errorf("failed to publish batch: %v", token.Error())
 	}
 

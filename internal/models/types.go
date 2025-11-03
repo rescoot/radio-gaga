@@ -2,6 +2,10 @@ package models
 
 import "time"
 
+// MQTTPublishTimeout is the timeout for MQTT publish/subscribe operations
+// Matches the WriteTimeout configured in the MQTT client options
+const MQTTPublishTimeout = 30 * time.Second
+
 // CommandLineFlags contains all command-line options
 type CommandLineFlags struct {
 	ConfigPath    string

@@ -54,7 +54,8 @@ func HandleConfigGetCommand(client ConfigCommandHandlerClient, mqttClient mqtt.C
 
 	// Send response on the data topic
 	topic := fmt.Sprintf("scooters/%s/data", config.Scooter.Identifier)
-	if token := mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+	token := mqttClient.Publish(topic, 1, false, responseJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		return fmt.Errorf("failed to publish response: %v", token.Error())
 	}
 
@@ -99,7 +100,8 @@ func HandleConfigSetCommand(client ConfigCommandHandlerClient, mqttClient mqtt.C
 
 	// Send response on the data topic
 	topic := fmt.Sprintf("scooters/%s/data", config.Scooter.Identifier)
-	if token := mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+	token := mqttClient.Publish(topic, 1, false, responseJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		log.Printf("Failed to publish config set response: %v", token.Error())
 		return nil // Don't fail the command if response publishing fails
 	}
@@ -139,7 +141,8 @@ func HandleConfigSaveCommand(client ConfigCommandHandlerClient, mqttClient mqtt.
 
 	// Send response on the data topic
 	topic := fmt.Sprintf("scooters/%s/data", config.Scooter.Identifier)
-	if token := mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+	token := mqttClient.Publish(topic, 1, false, responseJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		log.Printf("Failed to publish config save response: %v", token.Error())
 		return nil // Don't fail the command if response publishing fails
 	}
@@ -186,7 +189,8 @@ func HandleConfigDelCommand(client ConfigCommandHandlerClient, mqttClient mqtt.C
 
 	// Send response on the data topic
 	topic := fmt.Sprintf("scooters/%s/data", config.Scooter.Identifier)
-	if token := mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+	token := mqttClient.Publish(topic, 1, false, responseJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		log.Printf("Failed to publish config del response: %v", token.Error())
 		return nil // Don't fail the command if response publishing fails
 	}

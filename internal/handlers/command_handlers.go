@@ -66,7 +66,8 @@ func (c *ClientImplementation) SendCommandResponseWithPID(requestID, status, err
 	}
 
 	topic := fmt.Sprintf("scooters/%s/acks", c.Config.Scooter.Identifier)
-	if token := c.MQTTClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+	token := c.MQTTClient.Publish(topic, 1, false, responseJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		log.Printf("Failed to publish response: %v", token.Error())
 	}
 
@@ -91,7 +92,9 @@ func (c *ClientImplementation) CleanRetainedMessage(topic string) error {
 	log.Printf("Publishing empty payload with retain=true to topic %s", topic)
 
 	token := c.MQTTClient.Publish(topic, 1, true, emptyPayload)
-	token.Wait()
+	if !token.WaitTimeout(models.MQTTPublishTimeout) {
+		log.Printf("Timeout waiting to clean retained message on topic: %s", topic)
+	}
 
 	if err := token.Error(); err != nil {
 		log.Printf("MQTT publish token error details: %+v", token)
@@ -112,7 +115,8 @@ func (c *ClientImplementation) PublishTelemetryData(current *models.TelemetryDat
 	}
 
 	topic := fmt.Sprintf("scooters/%s/telemetry", c.Config.Scooter.Identifier)
-	if token := c.MQTTClient.Publish(topic, 1, false, telemetryJSON); token.Wait() && token.Error() != nil {
+	token := c.MQTTClient.Publish(topic, 1, false, telemetryJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		return fmt.Errorf("failed to publish telemetry: %v", token.Error())
 	}
 
@@ -512,7 +516,8 @@ func handleRedisCommand(client CommandHandlerClient, redisClient *redis.Client, 
 	}
 
 	topic := fmt.Sprintf("scooters/%s/data", config.Scooter.Identifier)
-	if token := mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+	token := mqttClient.Publish(topic, 1, false, responseJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		return fmt.Errorf("failed to publish response: %v", token.Error())
 	}
 
@@ -588,7 +593,8 @@ func executeShellCommandAsync(cmd *exec.Cmd, stdout, stderr io.ReadCloser, mqttC
 			return fmt.Errorf("failed to marshal response: %v", err)
 		}
 
-		if token := mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+		token := mqttClient.Publish(topic, 1, false, responseJSON)
+		if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 			return fmt.Errorf("failed to publish response: %v", token.Error())
 		}
 		return nil
@@ -633,7 +639,8 @@ func executeShellCommandAsync(cmd *exec.Cmd, stdout, stderr io.ReadCloser, mqttC
 						continue
 					}
 
-					if token := mqttClient.Publish(topic, 1, false, keepaliveJSON); token.Wait() && token.Error() != nil {
+					token := mqttClient.Publish(topic, 1, false, keepaliveJSON)
+					if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 						log.Printf("Failed to publish keepalive: %v", token.Error())
 					}
 				}
@@ -742,7 +749,8 @@ func executeShellCommandAsync(cmd *exec.Cmd, stdout, stderr io.ReadCloser, mqttC
 		return
 	}
 
-	if token := mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+	token := mqttClient.Publish(topic, 1, false, responseJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		log.Printf("Failed to publish final shell response: %v", token.Error())
 		return
 	}

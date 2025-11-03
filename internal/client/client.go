@@ -245,10 +245,10 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		SetPassword(config.Scooter.Token).
 		SetKeepAlive(keepAlive).
 		SetAutoReconnect(true).
-		SetMaxReconnectInterval(30*time.Second).
-		SetConnectTimeout(30*time.Second).
-		SetWriteTimeout(30*time.Second).
-		SetPingTimeout(30*time.Second).
+		SetMaxReconnectInterval(models.MQTTPublishTimeout).
+		SetConnectTimeout(models.MQTTPublishTimeout).
+		SetWriteTimeout(models.MQTTPublishTimeout).
+		SetPingTimeout(models.MQTTPublishTimeout).
 		SetCleanSession(false).                           // Maintain session for message queueing
 		SetWill(willTopic, string(willMessage), 1, true). // QoS 1 and retained
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
@@ -266,8 +266,13 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 			// Say hello to the cloud
 			statusTopic := fmt.Sprintf("scooters/%s/status", config.Scooter.Identifier)
 			statusMessage := []byte(`{"status": "connected"}`)
-			if token := c.Publish(statusTopic, 1, true, statusMessage); token.Wait() && token.Error() != nil {
-				log.Printf("Failed to publish connection status: %v", token.Error())
+			token := c.Publish(statusTopic, 1, true, statusMessage)
+			if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
+				if !token.WaitTimeout(0) {
+					log.Printf("Failed to publish connection status: timeout")
+				} else {
+					log.Printf("Failed to publish connection status: %v", token.Error())
+				}
 			}
 
 			// Update cloud status
@@ -338,7 +343,8 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 // createMQTTClient creates and connects an MQTT client
 func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Client, error) {
 	client := mqtt.NewClient(opts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
+	token := client.Connect()
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		err := token.Error()
 		if strings.Contains(err.Error(), "certificate has expired or is not yet valid") {
 			log.Printf("Certificate validity period error, attempting NTP sync...")
@@ -347,7 +353,8 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 			ntpErr := utils.SyncTimeNTP(&config.NTP)
 			if ntpErr == nil {
 				// Try connecting again after time sync
-				if token := client.Connect(); token.Wait() && token.Error() != nil {
+				token := client.Connect()
+				if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 					log.Printf("Connection failed after NTP sync: %v, falling back to insecure...", token.Error())
 				} else {
 					return client, nil
@@ -373,7 +380,8 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 			if err == nil {
 				insecureOpts.SetTLSConfig(tlsConfig)
 				insecureClient := mqtt.NewClient(insecureOpts)
-				if token := insecureClient.Connect(); token.Wait() && token.Error() != nil {
+				token := insecureClient.Connect()
+				if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 					return nil, fmt.Errorf("all connection attempts failed, last error: %v", token.Error())
 				}
 				log.Printf("Warning: Connected with insecure TLS configuration")
@@ -391,7 +399,8 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 func (s *ScooterMQTTClient) Start() error {
 	// Subscribe to command topic
 	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
-	if token := s.mqttClient.Subscribe(commandTopic, 1, s.handleCommand); token.Wait() && token.Error() != nil {
+	token := s.mqttClient.Subscribe(commandTopic, 1, s.handleCommand)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		return fmt.Errorf("failed to subscribe to commands: %v", token.Error())
 	}
 
@@ -532,6 +541,16 @@ func (s *ScooterMQTTClient) watchInternetStatus() {
 					}
 					if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
 						log.Printf("Failed to publish unu-cloud status: %v", err)
+					}
+				}
+			} else if internetStatus == "connected" {
+				// If internet reconnected but MQTT is disconnected, reconnect MQTT
+				if !s.mqttClient.IsConnected() {
+					log.Println("Internet reconnected but MQTT disconnected, attempting to reconnect MQTT")
+					if token := s.mqttClient.Connect(); token.WaitTimeout(models.MQTTPublishTimeout) && token.Error() != nil {
+						log.Printf("Failed to reconnect MQTT: %v", token.Error())
+					} else {
+						log.Println("MQTT reconnected successfully")
 					}
 				}
 			}
@@ -758,7 +777,8 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *models.TelemetryData) 
 	}
 
 	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.Scooter.Identifier)
-	if token := s.mqttClient.Publish(topic, 1, false, telemetryJSON); token.Wait() && token.Error() != nil {
+	token := s.mqttClient.Publish(topic, 1, false, telemetryJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		return fmt.Errorf("failed to publish telemetry: %v", token.Error())
 	}
 
@@ -799,7 +819,6 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 			switch msg.Channel {
 			case "vehicle":
-				log.Printf("Received message on 'vehicle' channel. Payload: %s", msg.Payload)
 				currentVehicleState, err := s.redisClient.HGet(s.ctx, "vehicle", "state").Result()
 				if err != nil {
 					log.Printf("Error getting vehicle state from Redis: %v", err)
@@ -807,7 +826,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				}
 
 				if currentVehicleState != lastState {
-					log.Printf("Vehicle state changed from '%s' to '%s' (detected via pub/sub). Publishing telemetry.", lastState, currentVehicleState)
+					log.Printf("Vehicle state changed from '%s' to '%s' (detected via pub/sub, payload: %s). Publishing telemetry.", lastState, currentVehicleState, msg.Payload)
 					if err := s.collectAndPublishTelemetry(); err != nil {
 						log.Printf("Failed to publish telemetry on vehicle state change (pub/sub): %v", err)
 					}
@@ -836,7 +855,8 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				case "running":
 					if !s.mqttClient.IsConnected() {
 						log.Printf("Power state changed to running, reconnecting MQTT client")
-						if token := s.mqttClient.Connect(); token.Wait() && token.Error() != nil {
+						token := s.mqttClient.Connect()
+						if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 							log.Printf("Failed to reconnect MQTT client: %v", token.Error())
 						} else {
 							log.Printf("MQTT client reconnected successfully")
@@ -936,7 +956,10 @@ func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
 	log.Printf("Publishing empty payload with retain=true to topic %s", topic)
 
 	token := s.mqttClient.Publish(topic, 1, true, emptyPayload)
-	token.Wait()
+	if !token.WaitTimeout(models.MQTTPublishTimeout) {
+		log.Printf("Timeout waiting to clean retained message on topic: %s", topic)
+		return fmt.Errorf("timeout cleaning retained message")
+	}
 
 	if err := token.Error(); err != nil {
 		log.Printf("MQTT publish token error details: %+v", token)
@@ -984,7 +1007,8 @@ func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg stri
 	}
 
 	topic := fmt.Sprintf("scooters/%s/acks", s.config.Scooter.Identifier)
-	if token := s.mqttClient.Publish(topic, 1, false, responseJSON); token.Wait() && token.Error() != nil {
+	token := s.mqttClient.Publish(topic, 1, false, responseJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		log.Printf("Failed to publish response: %v", token.Error())
 	} else {
 		// Update cloud status since we successfully published to MQTT
