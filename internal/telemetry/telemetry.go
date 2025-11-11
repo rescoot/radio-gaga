@@ -152,7 +152,7 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 	}
 	telemetry.Engine = models.EngineData{
 		Speed:         utils.ParseInt(engineEcu["speed"]),
-		Odometer:      utils.ParseInt(engineEcu["odometer"]),
+		Odometer:      utils.ParseIntPtr(engineEcu["odometer"]),
 		MotorVoltage:  utils.ParseInt(engineEcu["motor:voltage"]),
 		MotorCurrent:  utils.ParseInt(engineEcu["motor:current"]),
 		Temperature:   utils.ParseInt(engineEcu["temperature"]),

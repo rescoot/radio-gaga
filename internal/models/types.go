@@ -122,16 +122,16 @@ type VehicleState struct {
 // EngineData represents the engine control unit data
 type EngineData struct {
 	Speed         int    `json:"speed"`
-	Odometer      int    `json:"odometer"`
+	Odometer      *int   `json:"odometer,omitempty"`
 	MotorVoltage  int    `json:"motor_voltage"`
 	MotorCurrent  int    `json:"motor_current"`
 	Temperature   int    `json:"temperature"`
-	EngineState   string `json:"engine_state"`
-	KersState     string `json:"kers_state"`
-	KersReasonOff string `json:"kers_reason_off"`
+	EngineState   string `json:"engine_state,omitempty"`
+	KersState     string `json:"kers_state,omitempty"`
+	KersReasonOff string `json:"kers_reason_off,omitempty"`
 	MotorRPM      int    `json:"motor_rpm"`
-	ThrottleState string `json:"throttle_state"`
-	EngineFWVer   string `json:"engine_fw_version"`
+	ThrottleState string `json:"throttle_state,omitempty"`
+	EngineFWVer   string `json:"engine_fw_version,omitempty"`
 }
 
 // BatteryData represents data for a main battery

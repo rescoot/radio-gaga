@@ -24,6 +24,18 @@ func ParseInt(s string) int {
 	return v
 }
 
+// ParseIntPtr parses a string to an integer pointer, returns nil if empty
+func ParseIntPtr(s string) *int {
+	if s == "" {
+		return nil
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return nil
+	}
+	return &v
+}
+
 // ParseFloat safely parses a string to a float with default 0
 func ParseFloat(s string) float64 {
 	v, _ := strconv.ParseFloat(s, 64)
