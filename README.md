@@ -11,26 +11,29 @@ The system interfaces with Redis for local state management and uses MQTT for se
 ## Key Features
 
 - **Intelligent Telemetry**: Adaptive reporting intervals based on vehicle state (driving, standby, hibernating)
+- **Telemetry Buffering**: Optional buffering system for offline operation with Redis persistence and disk fallback
 - **Comprehensive State Monitoring**: Tracks vehicle state, engine data, battery information, location, and system status
 - **Remote Control Capabilities**: Execute commands remotely via MQTT
-- **Secure Communication**: TLS encryption with certificate validation for MQTT
+- **Secure Communication**: TLS encryption with certificate validation for MQTT and publish timeout protection
 - **Flexible Configuration**: YAML-based configuration with command-line overrides and Redis fallbacks
 - **Self-Update Mechanism**: OTA updates with checksum verification and automatic rollback
 - **Navigation Support**: Set destination coordinates for navigation (for LibreScoot DBC)
 - **Environment-Aware Operation**: Different behavior for development vs. production environments
 - **System Integration**: Systemd service management and filesystem handling
+- **unu-uplink Reconfiguration**: Automatic reconfiguration of stock unu-uplink to use the Sunshine MQTT broker
 - **Development Tools**: Shell and Redis command execution support (development environment only)
 
 ## System Architecture
 
 ### Components
 
-- **MQTT Client**: Manages secure communication with the MQTT broker, handles connection recovery and message delivery
+- **MQTT Client**: Manages secure communication with the MQTT broker, handles connection recovery and message delivery with publish timeout protection
 - **Redis Backend**: Stores and retrieves vehicle state information, provides pub/sub for internal events
 - **Telemetry Engine**: Collects and processes vehicle data with adaptive reporting intervals
+- **Telemetry Buffer**: Optional buffering system that stores telemetry when offline, persists to Redis (with disk fallback), and retransmits with exponential backoff
 - **Command Handler**: Processes incoming commands and executes appropriate actions
 - **Self-Update System**: Manages OTA updates with verification and rollback capabilities
-- **Configuration Management**: YAML-based configuration with fallback mechanisms
+- **Configuration Management**: YAML-based configuration with fallback mechanisms and runtime modification support
 
 ### Supported Commands
 
@@ -186,6 +189,7 @@ Configuration fields use YAML dot notation for easy access. Common fields includ
 - `telemetry.buffer.max_size` - Maximum buffer size (integer)
 - `telemetry.buffer.max_retries` - Maximum retry attempts (integer)
 - `telemetry.buffer.retry_interval` - Retry interval (duration)
+- `telemetry.buffer.persist_path` - Disk path for buffer persistence (optional, fallback when Redis fails)
 - `telemetry.transmit_period` - Buffer transmission period (duration)
 
 **NTP configuration:**
@@ -195,6 +199,9 @@ Configuration fields use YAML dot notation for easy access. Common fields includ
 **Command configuration:**
 - `commands.{command_name}.disabled` - Disable specific command (boolean)
 - `commands.{command_name}.params` - Command parameters (object)
+
+**unu-uplink configuration:**
+- `unu_uplink.enabled` - Enable automatic reconfiguration of unu-uplink to use the Sunshine MQTT broker (boolean)
 
 **Features**:
 - **Immediate Effect**: `config:set` changes take effect immediately
@@ -229,7 +236,7 @@ mqtt:
   #   MIIFTTCCAzWgAwIBAgIBATANBgkqhkiG9w0BAQsFADBIMQswCQYDVQQGEwJERTEa
   #   ... certificate content ...
   #   -----END CERTIFICATE-----
-  keepalive: "180s"           # MQTT keepalive interval
+  keepalive: "30s"            # MQTT keepalive interval (default: 30s for faster disconnect detection)
 
 ntp:
   enabled: true               # Enable/disable NTP time synchronization
@@ -243,6 +250,13 @@ telemetry:
     standby: "5m"            # Interval in standby with battery
     standby_no_battery: "8h" # Interval in standby without battery
     hibernate: "24h"         # Interval in hibernate mode
+  buffer:                    # Optional telemetry buffering
+    enabled: false           # Enable buffering for offline operation
+    max_size: 1000           # Maximum events to buffer
+    max_retries: 5           # Maximum transmission retry attempts
+    retry_interval: "1m"     # Retry interval
+    persist_path: "/var/lib/radio-gaga/buffer.json"  # Disk fallback (optional)
+  transmit_period: "5m"      # Buffer transmission period
 
 commands:                    # Optional command configuration
   honk:
@@ -255,6 +269,9 @@ commands:                    # Optional command configuration
       honk: true
       on_time: "400ms"
       off_time: "400ms"
+
+unu_uplink:                  # Optional unu-uplink reconfiguration
+  enabled: false             # Automatically reconfigure unu-uplink to use the Sunshine MQTT broker
 ```
 
 ### Command Line Flags
@@ -350,7 +367,31 @@ The system collects and reports comprehensive vehicle telemetry including:
 - Keycard reader status
 - Dashboard status
 - Navigation destination (if set)
- 
+
+### Telemetry Buffering
+
+Radio Gaga includes an optional telemetry buffering system for reliable offline operation:
+
+- **Persistence Strategy**: Buffer is primarily stored in Redis for fast access and sharing across service restarts. If Redis persistence fails, the system automatically falls back to disk-based persistence (if configured).
+- **Offline Buffering**: Telemetry events are collected and buffered when MQTT connection is unavailable
+- **Automatic Retransmission**: Buffered events are periodically transmitted with exponential backoff retry logic
+- **Configurable Limits**: Maximum buffer size, retry attempts, and retry intervals are all configurable
+- **Batch Transmission**: Events are transmitted in batches with unique batch IDs for tracking
+- **Graceful Degradation**: If both Redis and disk persistence fail, new events are still collected in memory
+
+The buffering system ensures that no telemetry data is lost during network outages or MQTT disconnections.
+
+## unu-uplink Integration
+
+For scooters running stock unu firmware alongside radio-gaga, the system can automatically reconfigure the legacy unu-uplink service:
+
+- **Automatic Reconfiguration**: When enabled, radio-gaga updates the unu-uplink Redis configuration to point to the Sunshine MQTT broker instead of defunct unu servers
+- **Certificate Handling**: Automatically handles CA certificate setup (writes embedded certificates or reuses file paths)
+- **Service Management**: Restarts the unu-uplink service after reconfiguration
+- **Safety Checks**: Only reconfigures if the current URL points to defunct unu servers, preserving custom configurations
+
+This allows both radio-gaga and the legacy unu-uplink service to coexist and communicate with the Sunshine MQTT broker.
+
 ## Self-Update System
 
 Radio Gaga includes a self-update mechanism that allows for Over-The-Air (OTA) updates with several safety features:
@@ -367,7 +408,7 @@ The system supports both in-band updates (via MQTT command) and out-of-band upda
 
 ## Prerequisites
 
-- Go 1.22 or higher
+- Go 1.20 or higher
 - Redis server (for state management)
 - MQTT broker (for cloud communication)
 
