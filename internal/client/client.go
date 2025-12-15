@@ -474,6 +474,15 @@ func (s *ScooterMQTTClient) Stop() {
 	}
 
 	if s.mqttClient.IsConnected() {
+		// Publish disconnected status before clean disconnect
+		// (LWT is only sent on unclean disconnects, so we need to do this explicitly)
+		statusTopic := fmt.Sprintf("scooters/%s/status", s.config.Scooter.Identifier)
+		statusMessage := []byte(`{"status": "disconnected"}`)
+		if token := s.mqttClient.Publish(statusTopic, 1, true, statusMessage); token.WaitTimeout(500*time.Millisecond) && token.Error() != nil {
+			log.Printf("Failed to publish disconnected status on shutdown: %v", token.Error())
+		} else {
+			log.Printf("Published disconnected status to %s", statusTopic)
+		}
 		log.Println("Disconnecting MQTT client...")
 		s.mqttClient.Disconnect(500)
 	}
@@ -886,6 +895,15 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 					log.Printf("Disconnecting MQTT client gracefully for state '%s'", powerState)
 					if s.mqttClient.IsConnected() {
+						// Publish disconnected status before clean disconnect
+						// (LWT is only sent on unclean disconnects, so we need to do this explicitly)
+						statusTopic := fmt.Sprintf("scooters/%s/status", s.config.Scooter.Identifier)
+						statusMessage := []byte(`{"status": "disconnected"}`)
+						if token := s.mqttClient.Publish(statusTopic, 1, true, statusMessage); token.WaitTimeout(models.MQTTPublishTimeout) && token.Error() != nil {
+							log.Printf("Failed to publish disconnected status: %v", token.Error())
+						} else {
+							log.Printf("Published disconnected status to %s", statusTopic)
+						}
 						s.mqttClient.Disconnect(1000)
 					}
 				}
