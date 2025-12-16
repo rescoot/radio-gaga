@@ -77,6 +77,14 @@ jobs:
           path: ${{ env.package_name }}
           retention-days: 7 # Keep nightly artifacts for a week
 
+      - name: Generate Changelog
+        if: github.ref_type == 'tag'
+        run: |
+          chmod +x create-changelog.sh
+          ./create-changelog.sh > changelog.md
+          echo "Generated changelog:"
+          cat changelog.md
+
       - name: Create Release and Upload Asset (for tags)
         if: github.ref_type == 'tag'
         env:
@@ -86,7 +94,7 @@ jobs:
         run: |
           echo "Creating release for tag: $TAG_NAME"
           gh release create "$TAG_NAME" \
-             --generate-notes \
              --title "Release $TAG_NAME" \
+             --notes-file changelog.md \
              "$PACKAGE_NAME"
           echo "Uploaded $PACKAGE_NAME to release $TAG_NAME"
