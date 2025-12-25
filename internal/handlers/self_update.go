@@ -317,6 +317,14 @@ exit 0
 		return "", fmt.Errorf("failed to write update script content: %v", err)
 	}
 
+	scriptPath := scriptFile.Name()
 	scriptFile.Close()
-	return scriptFile.Name(), nil
+
+	// Make script executable
+	if err := os.Chmod(scriptPath, 0755); err != nil {
+		os.Remove(scriptPath)
+		return "", fmt.Errorf("failed to make update script executable: %v", err)
+	}
+
+	return scriptPath, nil
 }

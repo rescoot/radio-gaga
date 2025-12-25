@@ -50,6 +50,13 @@ telemetry:
     standby: 5m
     standby_no_battery: 2h
     hibernate: 24h
+  # Priority-based flush deadlines for field changes
+  # Must be ordered: immediate <= quick <= medium <= slow
+  priorities:
+    immediate: 1s   # Vehicle state, lock status, blinkers
+    quick: 5s       # GPS, battery charge
+    medium: 1m      # Most other fields (default)
+    slow: 15m       # Aux battery, CBB, BLE
   buffer:
     enabled: true
     max_size: 1000
@@ -57,6 +64,12 @@ telemetry:
     retry_interval: 1m
     persist_path: /var/lib/radio-gaga/telemetry-buffer.json
   transmit_period: 30m
+
+# Event detection and buffering configuration
+events:
+  enabled: true
+  buffer_path: /var/lib/radio-gaga/events-buffer.json
+  max_retries: 10
 commands:
   lock:
   unlock:

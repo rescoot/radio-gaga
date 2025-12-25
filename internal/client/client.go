@@ -17,6 +17,7 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-redis/redis/v8"
 
+	"radio-gaga/internal/events"
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/telemetry"
 	"radio-gaga/internal/utils"
@@ -37,6 +38,12 @@ type ScooterMQTTClient struct {
 	buffer           *models.TelemetryBuffer // In-memory buffer cache
 	pubsubsMu        sync.Mutex
 	pubsubs          []*redis.PubSub
+
+	// Priority-based telemetry monitor
+	monitor *telemetry.Monitor
+
+	// Event detector
+	eventDetector *events.Detector
 }
 
 // parseOSRelease extracts ID and VERSION_ID from /etc/os-release content
@@ -336,6 +343,14 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		serviceStartTime: serviceStartTime,
 	}
 
+	// Initialize telemetry monitor
+	client.monitor = telemetry.NewMonitor(redisClient, config)
+	client.monitor.SetFlusher(client)
+
+	// Initialize event detector
+	client.eventDetector = events.NewDetector(redisClient, config)
+	client.eventDetector.SetPublisher(client)
+	client.eventDetector.SetTelemetryFlusher(client.monitor)
 
 	return client, nil
 }
@@ -412,12 +427,30 @@ func (s *ScooterMQTTClient) Start() error {
 		s.initTelemetryBuffer()
 	}
 
+	// Initialize baselines for monitor and detector
+	s.monitor.InitializeBaseline(s.ctx)
+	s.eventDetector.InitializeBaseline(s.ctx)
+
 	// Start telemetry and dashboard watcher goroutines
 	s.wg.Add(4)
 	go s.publishTelemetry()
 	go s.watchDashboardStatus()
 	go s.watchInternetStatus()
 	go s.watchAlarmStatus()
+
+	// Start monitor and event detector
+	s.wg.Add(2)
+	go func() {
+		defer s.wg.Done()
+		s.monitor.Start(s.ctx)
+	}()
+	go func() {
+		defer s.wg.Done()
+		s.eventDetector.Start(s.ctx)
+	}()
+
+	// Flush any buffered events from previous session
+	go s.eventDetector.FlushBufferedEvents(s.ctx)
 
 	return nil
 }
@@ -431,6 +464,11 @@ func (s *ScooterMQTTClient) registerPubSub(ps *redis.PubSub) {
 
 // Stop stops the MQTT client and closes connections
 func (s *ScooterMQTTClient) Stop() {
+	// Stop monitor and event detector first
+	log.Println("Stopping monitor and event detector...")
+	s.monitor.Stop()
+	s.eventDetector.Stop()
+
 	if s.config.Telemetry.Buffer.Enabled {
 		log.Println("Flushing telemetry buffer before shutdown...")
 		if err := s.transmitBuffer(); err != nil {
@@ -1039,4 +1077,32 @@ func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg stri
 // GetRedisClient returns the Redis client for external use
 func (s *ScooterMQTTClient) GetRedisClient() *redis.Client {
 	return s.redisClient
+}
+
+// FlushTelemetry implements the TelemetryFlusher interface for the monitor
+func (s *ScooterMQTTClient) FlushTelemetry() error {
+	return s.collectAndPublishTelemetry()
+}
+
+// PublishEvent publishes an event to MQTT (implements EventPublisher interface)
+func (s *ScooterMQTTClient) PublishEvent(event events.Event) error {
+	eventJSON, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event: %v", err)
+	}
+
+	topic := fmt.Sprintf("scooters/%s/events", s.config.Scooter.Identifier)
+	token := s.mqttClient.Publish(topic, 1, false, eventJSON)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
+		return fmt.Errorf("failed to publish event: %v", token.Error())
+	}
+
+	log.Printf("Published event to %s: %s", topic, event.EventType)
+	s.updateCloudStatus()
+	return nil
+}
+
+// IsConnected returns whether the MQTT client is connected (implements EventPublisher interface)
+func (s *ScooterMQTTClient) IsConnected() bool {
+	return s.mqttClient.IsConnected()
 }
