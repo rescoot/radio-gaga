@@ -19,6 +19,9 @@ type MockCommandHandlerClient struct{}
 func (m *MockCommandHandlerClient) SendCommandResponse(requestID, status, message string) {
 }
 
+func (m *MockCommandHandlerClient) SendCommandResponseWithPID(requestID, status, message string, pid int) {
+}
+
 func (m *MockCommandHandlerClient) CleanRetainedMessage(topic string) error {
 	return nil
 }
