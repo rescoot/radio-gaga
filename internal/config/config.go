@@ -216,6 +216,28 @@ func ValidateConfig(config *models.Config) error {
 		config.Telemetry.TransmitPeriod = "5m"
 	}
 
+	// Initialize priority config with defaults
+	if config.Telemetry.Priorities.Immediate == "" {
+		config.Telemetry.Priorities.Immediate = "1s"
+	}
+	if config.Telemetry.Priorities.Quick == "" {
+		config.Telemetry.Priorities.Quick = "5s"
+	}
+	if config.Telemetry.Priorities.Medium == "" {
+		config.Telemetry.Priorities.Medium = "1m"
+	}
+	if config.Telemetry.Priorities.Slow == "" {
+		config.Telemetry.Priorities.Slow = "15m"
+	}
+
+	// Initialize events config with defaults
+	if config.Events.MaxRetries <= 0 {
+		config.Events.MaxRetries = 10
+	}
+	if config.Events.BufferPath == "" {
+		config.Events.BufferPath = "/var/lib/radio-gaga/events-buffer.json"
+	}
+
 	// Parse and validate durations
 	durations := map[string]string{
 		"mqtt.keep_alive":           config.MQTT.KeepAlive,
@@ -225,11 +247,20 @@ func ValidateConfig(config *models.Config) error {
 		"hibernate":                 config.Telemetry.Intervals.Hibernate,
 		"buffer.retry_interval":     config.Telemetry.Buffer.RetryInterval,
 		"telemetry.transmit_period": config.Telemetry.TransmitPeriod,
+		"priorities.immediate":      config.Telemetry.Priorities.Immediate,
+		"priorities.quick":          config.Telemetry.Priorities.Quick,
+		"priorities.medium":         config.Telemetry.Priorities.Medium,
+		"priorities.slow":           config.Telemetry.Priorities.Slow,
 	}
 	for name, value := range durations {
 		if _, err := time.ParseDuration(value); err != nil {
 			errors = append(errors, fmt.Sprintf("invalid %s: %v", name, err))
 		}
+	}
+
+	// Validate priority ordering: immediate <= quick <= medium <= slow
+	if err := validatePriorityOrdering(config); err != nil {
+		errors = append(errors, err.Error())
 	}
 
 	if len(errors) > 0 {
@@ -618,8 +649,19 @@ func convertYamlPathToStructPath(yamlPath string) string {
 
 		// Telemetry fields
 		"intervals":       "Intervals",
+		"priorities":      "Priorities",
 		"buffer":          "Buffer",
 		"transmit_period": "TransmitPeriod",
+
+		// Telemetry.Priorities fields
+		"immediate": "Immediate",
+		"quick":     "Quick",
+		"medium":    "Medium",
+		"slow":      "Slow",
+
+		// Events fields
+		"events":      "Events",
+		"buffer_path": "BufferPath",
 
 		// Telemetry.Intervals fields
 		"driving":            "Driving",
@@ -660,4 +702,40 @@ func convertYamlPathToStructPath(yamlPath string) string {
 	}
 
 	return strings.Join(structParts, ".")
+}
+
+// validatePriorityOrdering ensures priority durations are ordered correctly:
+// immediate <= quick <= medium <= slow
+func validatePriorityOrdering(config *models.Config) error {
+	immediate, err := time.ParseDuration(config.Telemetry.Priorities.Immediate)
+	if err != nil {
+		return nil // Already caught by duration validation
+	}
+	quick, err := time.ParseDuration(config.Telemetry.Priorities.Quick)
+	if err != nil {
+		return nil
+	}
+	medium, err := time.ParseDuration(config.Telemetry.Priorities.Medium)
+	if err != nil {
+		return nil
+	}
+	slow, err := time.ParseDuration(config.Telemetry.Priorities.Slow)
+	if err != nil {
+		return nil
+	}
+
+	if immediate > quick {
+		return fmt.Errorf("priorities.immediate (%s) must be <= priorities.quick (%s)",
+			config.Telemetry.Priorities.Immediate, config.Telemetry.Priorities.Quick)
+	}
+	if quick > medium {
+		return fmt.Errorf("priorities.quick (%s) must be <= priorities.medium (%s)",
+			config.Telemetry.Priorities.Quick, config.Telemetry.Priorities.Medium)
+	}
+	if medium > slow {
+		return fmt.Errorf("priorities.medium (%s) must be <= priorities.slow (%s)",
+			config.Telemetry.Priorities.Medium, config.Telemetry.Priorities.Slow)
+	}
+
+	return nil
 }

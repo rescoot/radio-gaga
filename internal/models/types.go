@@ -42,6 +42,7 @@ type Config struct {
 	NTP         NTPConfig          `yaml:"ntp"`
 	RedisURL    string             `yaml:"redis_url"`
 	Telemetry   TelemetryConfig    `yaml:"telemetry"`
+	Events      EventsConfig       `yaml:"events,omitempty"`
 	Commands    map[string]Command `yaml:"commands"`
 	UnuUplink   UnuUplinkConfig    `yaml:"unu_uplink,omitempty"`
 	ServiceName string             `yaml:"service_name,omitempty"`
@@ -76,8 +77,25 @@ type UnuUplinkConfig struct {
 // TelemetryConfig contains telemetry configuration
 type TelemetryConfig struct {
 	Intervals      TelemetryIntervals `yaml:"intervals"`
+	Priorities     PriorityConfig     `yaml:"priorities,omitempty"`
 	Buffer         BufferConfig       `yaml:"buffer,omitempty"`
 	TransmitPeriod string             `yaml:"transmit_period,omitempty"`
+}
+
+// PriorityConfig contains priority-based flush deadline configuration
+// Deadlines must be ordered: immediate <= quick <= medium <= slow
+type PriorityConfig struct {
+	Immediate string `yaml:"immediate"` // Vehicle state, lock status, blinkers (default: 1s)
+	Quick     string `yaml:"quick"`     // GPS, battery charge (default: 5s)
+	Medium    string `yaml:"medium"`    // Most other fields (default: 1m)
+	Slow      string `yaml:"slow"`      // Aux battery, CBB, BLE (default: 15m)
+}
+
+// EventsConfig contains event detection and buffering configuration
+type EventsConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	BufferPath string `yaml:"buffer_path,omitempty"`
+	MaxRetries int    `yaml:"max_retries,omitempty"`
 }
 
 // BufferConfig contains telemetry buffer configuration
