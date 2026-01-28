@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -16,6 +18,20 @@ import (
 var version string
 
 func main() {
+	showVersion := flag.Bool("version", false, "print version and exit")
+
+	// Parse command line flags (this calls flag.Parse())
+	flags := config.ParseFlags()
+
+	if *showVersion {
+		if version != "" {
+			fmt.Println(version)
+		} else {
+			fmt.Println("development")
+		}
+		os.Exit(0)
+	}
+
 	// Create logger
 	if os.Getenv("INVOCATION_ID") != "" {
 		log.SetOutput(os.Stdout)
@@ -32,9 +48,6 @@ func main() {
 	} else {
 		log.Print("Starting radio-gaga development version")
 	}
-
-	// Parse command line flags
-	flags := config.ParseFlags()
 
 	// Load configuration
 	cfg, configPath, err := config.LoadConfig(flags)
