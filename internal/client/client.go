@@ -666,8 +666,14 @@ func (s *ScooterMQTTClient) watchAlarmStatus() {
 		}
 
 		if msg.Channel == "alarm" {
-			log.Printf("Alarm status changed to: %s", msg.Payload)
-			s.publishAlarmEvent(msg.Payload)
+			// Pub/sub payload contains the field name that changed, not the value
+			status, err := s.redisClient.HGet(s.ctx, "alarm", "status").Result()
+			if err != nil {
+				log.Printf("Error reading alarm status from Redis: %v", err)
+				continue
+			}
+			log.Printf("Alarm status changed to: %s", status)
+			s.publishAlarmEvent(status)
 		}
 	}
 }
