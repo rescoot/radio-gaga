@@ -89,6 +89,25 @@ commands:
     disabled: false
   open_seatbox:
     disabled: false
+# Telegram notifications (optional)
+# Sends alerts directly to a Telegram chat via the Bot API
+# Create a bot via @BotFather, get chat_id by messaging the bot
+# and calling https://api.telegram.org/bot<token>/getUpdates
+# telegram:
+#   enabled: true
+#   bot_token: "YOUR_BOT_TOKEN"
+#   chat_id: "YOUR_CHAT_ID"
+#   rate_limit: 1s
+#   queue_size: 100
+#   events:
+#     alarm: true
+#     unauthorized_movement: true
+#     battery_warning: true
+#     temperature_warning: true
+#     state_change: false
+#     connectivity: false
+#     fault: false
+
 # unu-uplink reconfiguration (optional)
 # If enabled, radio-gaga will reconfigure mdb-uplink-service to use the same
 # MQTT broker and CA certificate as radio-gaga, then restart the service.

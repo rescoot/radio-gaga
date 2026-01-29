@@ -21,6 +21,7 @@ import (
 	"radio-gaga/internal/events"
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/telemetry"
+	"radio-gaga/internal/telegram"
 	"radio-gaga/internal/utils"
 )
 
@@ -45,6 +46,9 @@ type ScooterMQTTClient struct {
 
 	// Event detector
 	eventDetector *events.Detector
+
+	// Telegram notifier
+	telegramNotifier *telegram.Notifier
 
 	consecutivePublishFailures int32       // atomic counter for publish failure tracking
 	tlsConfig                  *tls.Config // reference to active TLS config (for insecure fallback)
@@ -359,6 +363,18 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	client.eventDetector.SetPublisher(client)
 	client.eventDetector.SetTelemetryFlusher(client.monitor)
 
+	// Initialize Telegram notifier if enabled
+	if config.Telegram.Enabled {
+		notifier, err := telegram.NewNotifier(&config.Telegram, &config.Scooter)
+		if err != nil {
+			log.Printf("Failed to initialize Telegram notifier: %v", err)
+		} else {
+			client.telegramNotifier = notifier
+			client.eventDetector.AddListener(notifier)
+			log.Println("Telegram notifier initialized")
+		}
+	}
+
 	return client, nil
 }
 
@@ -439,11 +455,10 @@ func (s *ScooterMQTTClient) Start() error {
 	s.eventDetector.InitializeBaseline(s.ctx)
 
 	// Start telemetry and dashboard watcher goroutines
-	s.wg.Add(4)
+	s.wg.Add(3)
 	go s.publishTelemetry()
 	go s.watchDashboardStatus()
 	go s.watchInternetStatus()
-	go s.watchAlarmStatus()
 
 	// Start monitor and event detector
 	s.wg.Add(2)
@@ -455,6 +470,11 @@ func (s *ScooterMQTTClient) Start() error {
 		defer s.wg.Done()
 		s.eventDetector.Start(s.ctx)
 	}()
+
+	// Start Telegram notifier if initialized
+	if s.telegramNotifier != nil {
+		s.telegramNotifier.Start(s.ctx)
+	}
 
 	// Flush any buffered events from previous session
 	go s.eventDetector.FlushBufferedEvents(s.ctx)
@@ -471,7 +491,13 @@ func (s *ScooterMQTTClient) registerPubSub(ps *redis.PubSub) {
 
 // Stop stops the MQTT client and closes connections
 func (s *ScooterMQTTClient) Stop() {
-	// Stop monitor and event detector first
+	// Stop Telegram notifier first
+	if s.telegramNotifier != nil {
+		log.Println("Stopping Telegram notifier...")
+		s.telegramNotifier.Stop()
+	}
+
+	// Stop monitor and event detector
 	log.Println("Stopping monitor and event detector...")
 	s.monitor.Stop()
 	s.eventDetector.Stop()
@@ -641,64 +667,6 @@ func (s *ScooterMQTTClient) watchDashboardStatus() {
 			log.Println("Dashboard reported ready, checking hostname...")
 			go s.checkAndStoreDBCFlavor()
 		}
-	}
-}
-
-// watchAlarmStatus monitors alarm status changes and publishes events to MQTT
-func (s *ScooterMQTTClient) watchAlarmStatus() {
-	defer s.wg.Done()
-	pubsub := s.redisClient.Subscribe(s.ctx, "alarm")
-	s.registerPubSub(pubsub)
-	defer pubsub.Close()
-
-	log.Println("Subscribed to alarm status channel")
-
-	for {
-		msg, err := pubsub.ReceiveMessage(s.ctx)
-		if err != nil {
-			// Check if the error is due to context cancellation (expected on shutdown)
-			if s.ctx.Err() != nil {
-				log.Println("Alarm status watcher stopping due to context cancellation.")
-				return
-			}
-			log.Printf("Error receiving alarm message: %v", err)
-			// Avoid busy-looping on persistent errors
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		if msg.Channel == "alarm" {
-			// Pub/sub payload contains the field name that changed, not the value
-			status, err := s.redisClient.HGet(s.ctx, "alarm", "status").Result()
-			if err != nil {
-				log.Printf("Error reading alarm status from Redis: %v", err)
-				continue
-			}
-			log.Printf("Alarm status changed to: %s", status)
-			s.publishAlarmEvent(status)
-		}
-	}
-}
-
-// publishAlarmEvent publishes an alarm event to MQTT
-func (s *ScooterMQTTClient) publishAlarmEvent(status string) {
-	event := map[string]interface{}{
-		"event_type": "alarm",
-		"status":     status,
-		"timestamp":  time.Now().Unix(),
-	}
-
-	eventJSON, err := json.Marshal(event)
-	if err != nil {
-		log.Printf("Failed to marshal alarm event: %v", err)
-		return
-	}
-
-	topic := fmt.Sprintf("scooters/%s/events", s.config.Scooter.Identifier)
-	if token := s.mqttClient.Publish(topic, 1, false, eventJSON); token.Wait() && token.Error() != nil {
-		log.Printf("Failed to publish alarm event: %v", token.Error())
-	} else {
-		log.Printf("Published alarm event to %s: %s", topic, string(eventJSON))
 	}
 }
 
