@@ -73,7 +73,8 @@ var HashPriorities = map[string]Priority{
 // NoisyFields contains fields that should be filtered out from change detection
 // These fields change too frequently or are not useful for telemetry
 var NoisyFields = map[string]bool{
-	"gps[timestamp]": true,
+	"gps[timestamp]":          true,
+	"internet[signal-quality]": true,
 }
 
 // GetFieldPriority returns the priority for a given hash and field
