@@ -38,6 +38,9 @@ func (m *MockCommandHandlerClient) GetConfigPath() string {
 	return "/tmp/test-config.yml"
 }
 
+func (m *MockCommandHandlerClient) RequestReconnect() {
+}
+
 func TestHandleSelfUpdateCommand(t *testing.T) {
 	// Create a temporary directory for test files
 	tempDir, err := os.MkdirTemp("", "radio-gaga-test-*")

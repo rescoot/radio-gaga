@@ -30,16 +30,18 @@ type CommandHandlerClient interface {
 	CleanRetainedMessage(topic string) error
 	PublishTelemetryData(current *models.TelemetryData) error
 	GetConfigPath() string
+	RequestReconnect()
 }
 
 // ClientImplementation implements CommandHandlerClient and provides access to client methods
 type ClientImplementation struct {
-	Config      *models.Config
-	ConfigPath  string
-	MQTTClient  mqtt.Client
-	RedisClient *redis.Client
-	Ctx         context.Context
-	Version     string
+	Config        *models.Config
+	ConfigPath    string
+	MQTTClient    mqtt.Client
+	RedisClient   *redis.Client
+	Ctx           context.Context
+	Version       string
+	ReconnectFunc func()
 }
 
 // SendCommandResponse sends a response to a command
@@ -127,6 +129,15 @@ func (c *ClientImplementation) PublishTelemetryData(current *models.TelemetryDat
 // GetConfigPath returns the configuration file path
 func (c *ClientImplementation) GetConfigPath() string {
 	return c.ConfigPath
+}
+
+// RequestReconnect signals that the MQTT client should reconnect.
+// The actual reconnection is handled by ScooterMQTTClient; this is a no-op
+// on the ClientImplementation since it delegates back to the real client.
+func (c *ClientImplementation) RequestReconnect() {
+	if c.ReconnectFunc != nil {
+		c.ReconnectFunc()
+	}
 }
 
 // HandleCommand processes incoming MQTT commands
@@ -221,6 +232,8 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		err = commands.HandleConfigDelCommand(client, mqttClient, config, command.Params, command.RequestID)
 	case "config:save":
 		err = commands.HandleConfigSaveCommand(client, mqttClient, config, command.RequestID)
+	case "update_ca_cert":
+		err = commands.HandleUpdateCACertCommand(client, config, command.Params, command.RequestID)
 	default:
 		err = fmt.Errorf("unknown command: %s", command.Command)
 	}

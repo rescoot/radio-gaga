@@ -36,12 +36,13 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 
 	// Create a client implementation that can be used by command handlers
 	clientImpl := &handlers.ClientImplementation{
-		Config:      s.config,
-		ConfigPath:  s.configPath,
-		MQTTClient:  s.mqttClient,
-		RedisClient: s.redisClient,
-		Ctx:         s.ctx,
-		Version:     s.version,
+		Config:        s.config,
+		ConfigPath:    s.configPath,
+		MQTTClient:    s.mqttClient,
+		RedisClient:   s.redisClient,
+		Ctx:           s.ctx,
+		Version:       s.version,
+		ReconnectFunc: s.RequestReconnect,
 	}
 
 	// Delegate to the common command handler

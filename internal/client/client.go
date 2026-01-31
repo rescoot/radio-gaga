@@ -384,8 +384,12 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 	token := client.Connect()
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		err := token.Error()
-		if strings.Contains(err.Error(), "certificate has expired or is not yet valid") {
-			log.Printf("Certificate validity period error, attempting NTP sync...")
+		isTLSError := strings.Contains(err.Error(), "certificate has expired or is not yet valid") ||
+			strings.Contains(err.Error(), "certificate signed by unknown authority") ||
+			strings.Contains(err.Error(), "failed to verify certificate")
+		if isTLSError {
+			log.Printf("TLS certificate error: %v", err)
+			log.Printf("Attempting NTP sync in case of clock skew...")
 
 			// Try NTP sync
 			ntpErr := utils.SyncTimeNTP(&config.NTP)
@@ -1118,4 +1122,123 @@ func (s *ScooterMQTTClient) PublishEvent(event events.Event) error {
 // "reconnecting" state, which masks stuck reconnection loops.
 func (s *ScooterMQTTClient) IsConnected() bool {
 	return s.mqttClient.IsConnectionOpen()
+}
+
+// RequestReconnect disconnects and reconnects the MQTT client after a short delay.
+// This is used after updating the CA certificate so the new cert is picked up.
+// The delay allows the command response to be sent on the current connection first.
+func (s *ScooterMQTTClient) RequestReconnect() {
+	go func() {
+		time.Sleep(2 * time.Second)
+		log.Println("Reconnecting MQTT client with updated configuration...")
+
+		if s.mqttClient.IsConnected() {
+			s.mqttClient.Disconnect(500)
+		}
+
+		newClient, err := createMQTTClient(s.config, s.buildMQTTOptions())
+		if err != nil {
+			log.Printf("Failed to reconnect MQTT client: %v", err)
+			return
+		}
+
+		s.mqttClient = newClient
+
+		// Re-subscribe to command topic
+		commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
+		token := s.mqttClient.Subscribe(commandTopic, 1, s.handleCommand)
+		if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
+			log.Printf("Failed to re-subscribe to commands after reconnect: %v", token.Error())
+			return
+		}
+
+		log.Println("MQTT client reconnected successfully with new CA certificate")
+	}()
+}
+
+// buildMQTTOptions constructs MQTT client options from current config.
+// Used for reconnection after config changes (e.g., CA cert update).
+func (s *ScooterMQTTClient) buildMQTTOptions() *mqtt.ClientOptions {
+	keepAlive, err := time.ParseDuration(s.config.MQTT.KeepAlive)
+	if err != nil {
+		keepAlive = 30 * time.Second
+	}
+
+	clientID := fmt.Sprintf("radio-gaga-%s", s.config.Scooter.Identifier)
+	willTopic := fmt.Sprintf("scooters/%s/status", s.config.Scooter.Identifier)
+	willMessage := `{"status": "disconnected"}`
+
+	opts := mqtt.NewClientOptions().
+		AddBroker(s.config.MQTT.BrokerURL).
+		SetClientID(clientID).
+		SetUsername(s.config.Scooter.Identifier).
+		SetPassword(s.config.Scooter.Token).
+		SetKeepAlive(keepAlive).
+		SetAutoReconnect(true).
+		SetMaxReconnectInterval(models.MQTTPublishTimeout).
+		SetConnectTimeout(models.MQTTPublishTimeout).
+		SetWriteTimeout(models.MQTTPublishTimeout).
+		SetPingTimeout(models.MQTTPublishTimeout).
+		SetCleanSession(false).
+		SetWill(willTopic, willMessage, 1, true).
+		SetConnectionLostHandler(func(c mqtt.Client, err error) {
+			log.Printf("Connection lost: %v", err)
+			if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
+				log.Printf("Failed to set unu-cloud status: %v", err)
+			}
+			if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
+				log.Printf("Failed to publish unu-cloud status: %v", err)
+			}
+		}).
+		SetOnConnectHandler(func(c mqtt.Client) {
+			log.Printf("Connected to MQTT broker at %s", s.config.MQTT.BrokerURL)
+
+			statusTopic := fmt.Sprintf("scooters/%s/status", s.config.Scooter.Identifier)
+			statusMessage := []byte(`{"status": "connected"}`)
+			token := c.Publish(statusTopic, 1, true, statusMessage)
+			if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
+				if !token.WaitTimeout(0) {
+					log.Printf("Failed to publish connection status: timeout")
+				} else {
+					log.Printf("Failed to publish connection status: %v", token.Error())
+				}
+			}
+
+			if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "connected").Err(); err != nil {
+				log.Printf("Failed to set unu-cloud status: %v", err)
+			}
+			if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
+				log.Printf("Failed to publish unu-cloud status: %v", err)
+			}
+		})
+
+	if utils.IsTLSURL(s.config.MQTT.BrokerURL) {
+		tlsConfig := new(tls.Config)
+
+		if s.config.MQTT.CACertEmbedded != "" {
+			log.Printf("Using embedded CA certificate")
+			caCertPool := x509.NewCertPool()
+			if ok := caCertPool.AppendCertsFromPEM([]byte(s.config.MQTT.CACertEmbedded)); ok {
+				tlsConfig.RootCAs = caCertPool
+			} else {
+				log.Printf("Warning: failed to parse embedded CA certificate for reconnection")
+			}
+		} else if s.config.MQTT.CACert != "" {
+			log.Printf("Using CA certificate from file: %s", s.config.MQTT.CACert)
+			caCert, err := os.ReadFile(s.config.MQTT.CACert)
+			if err == nil {
+				caCertPool := x509.NewCertPool()
+				if ok := caCertPool.AppendCertsFromPEM(caCert); ok {
+					tlsConfig.RootCAs = caCertPool
+				} else {
+					log.Printf("Warning: failed to parse CA certificate from file for reconnection")
+				}
+			} else {
+				log.Printf("Warning: failed to read CA certificate file for reconnection: %v", err)
+			}
+		}
+		opts.SetTLSConfig(tlsConfig)
+	}
+
+	return opts
 }
