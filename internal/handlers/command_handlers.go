@@ -132,8 +132,6 @@ func (c *ClientImplementation) GetConfigPath() string {
 }
 
 // RequestReconnect signals that the MQTT client should reconnect.
-// The actual reconnection is handled by ScooterMQTTClient; this is a no-op
-// on the ClientImplementation since it delegates back to the real client.
 func (c *ClientImplementation) RequestReconnect() {
 	if c.ReconnectFunc != nil {
 		c.ReconnectFunc()

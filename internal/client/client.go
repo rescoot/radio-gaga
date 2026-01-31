@@ -384,12 +384,8 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 	token := client.Connect()
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		err := token.Error()
-		isTLSError := strings.Contains(err.Error(), "certificate has expired or is not yet valid") ||
-			strings.Contains(err.Error(), "certificate signed by unknown authority") ||
-			strings.Contains(err.Error(), "failed to verify certificate")
-		if isTLSError {
-			log.Printf("TLS certificate error: %v", err)
-			log.Printf("Attempting NTP sync in case of clock skew...")
+		if strings.Contains(err.Error(), "certificate has expired or is not yet valid") {
+			log.Printf("Certificate validity period error, attempting NTP sync...")
 
 			// Try NTP sync
 			ntpErr := utils.SyncTimeNTP(&config.NTP)
@@ -789,18 +785,6 @@ func (s *ScooterMQTTClient) forceReconnect() {
 		errMsg = token.Error().Error()
 	}
 	log.Printf("Forced reconnect failed: %s", errMsg)
-
-	if s.tlsConfig != nil && !s.tlsConfig.InsecureSkipVerify {
-		log.Println("Retrying with insecure TLS (possible certificate issue)")
-		s.tlsConfig.InsecureSkipVerify = true
-		token = s.mqttClient.Connect()
-		if token.WaitTimeout(models.MQTTPublishTimeout) && token.Error() == nil {
-			log.Println("Forced reconnect succeeded with insecure TLS")
-			atomic.StoreInt32(&s.consecutivePublishFailures, 0)
-			return
-		}
-		log.Printf("Forced reconnect failed even with insecure TLS: %v", token.Error())
-	}
 }
 
 // publishTelemetryData publishes a telemetry payload to MQTT
@@ -1144,7 +1128,6 @@ func (s *ScooterMQTTClient) RequestReconnect() {
 
 		s.mqttClient = newClient
 
-		// Re-subscribe to command topic
 		commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
 		token := s.mqttClient.Subscribe(commandTopic, 1, s.handleCommand)
 		if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
@@ -1157,7 +1140,6 @@ func (s *ScooterMQTTClient) RequestReconnect() {
 }
 
 // buildMQTTOptions constructs MQTT client options from current config.
-// Used for reconnection after config changes (e.g., CA cert update).
 func (s *ScooterMQTTClient) buildMQTTOptions() *mqtt.ClientOptions {
 	keepAlive, err := time.ParseDuration(s.config.MQTT.KeepAlive)
 	if err != nil {
