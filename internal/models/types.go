@@ -6,6 +6,10 @@ import "time"
 // Matches the WriteTimeout configured in the MQTT client options
 const MQTTPublishTimeout = 30 * time.Second
 
+// MaxConsecutivePublishFailures is the threshold of consecutive publish failures
+// before forcing a reconnect (handles stuck reconnecting state)
+const MaxConsecutivePublishFailures = 3
+
 // CommandLineFlags contains all command-line options
 type CommandLineFlags struct {
 	ConfigPath    string

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -44,6 +45,9 @@ type ScooterMQTTClient struct {
 
 	// Event detector
 	eventDetector *events.Detector
+
+	consecutivePublishFailures int32       // atomic counter for publish failure tracking
+	tlsConfig                  *tls.Config // reference to active TLS config (for insecure fallback)
 }
 
 // parseOSRelease extracts ID and VERSION_ID from /etc/os-release content
@@ -291,21 +295,19 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 			}
 		})
 
+	var activeTLSConfig *tls.Config
 	if utils.IsTLSURL(config.MQTT.BrokerURL) {
-		tlsConfig := new(tls.Config)
+		activeTLSConfig = new(tls.Config)
 
-		// Check if we have a CA certificate to use
 		if config.MQTT.CACertEmbedded != "" {
-			// Use the embedded certificate
 			log.Printf("Using embedded CA certificate")
 			caCertPool := x509.NewCertPool()
 			if ok := caCertPool.AppendCertsFromPEM([]byte(config.MQTT.CACertEmbedded)); !ok {
 				cancel()
 				return nil, fmt.Errorf("failed to parse embedded CA certificate")
 			}
-			tlsConfig.RootCAs = caCertPool
+			activeTLSConfig.RootCAs = caCertPool
 		} else if config.MQTT.CACert != "" {
-			// Use the certificate from file
 			log.Printf("Using CA certificate from file: %s", config.MQTT.CACert)
 			caCert, err := os.ReadFile(config.MQTT.CACert)
 			if err != nil {
@@ -319,10 +321,14 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 				return nil, fmt.Errorf("failed to parse CA certificate")
 			}
 
-			tlsConfig.RootCAs = caCertPool
+			activeTLSConfig.RootCAs = caCertPool
 		}
-		opts.SetTLSConfig(tlsConfig)
+		opts.SetTLSConfig(activeTLSConfig)
 	}
+
+	opts.SetReconnectingHandler(func(c mqtt.Client, opts *mqtt.ClientOptions) {
+		log.Printf("MQTT auto-reconnect attempting...")
+	})
 
 	mqttClient, err := createMQTTClient(config, opts)
 	if err != nil {
@@ -341,6 +347,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		cancel:           cancel,
 		version:          version,
 		serviceStartTime: serviceStartTime,
+		tlsConfig:        activeTLSConfig,
 	}
 
 	// Initialize telemetry monitor
@@ -591,14 +598,9 @@ func (s *ScooterMQTTClient) watchInternetStatus() {
 					}
 				}
 			} else if internetStatus == "connected" {
-				// If internet reconnected but MQTT is disconnected, reconnect MQTT
-				if !s.mqttClient.IsConnected() {
-					log.Println("Internet reconnected but MQTT disconnected, attempting to reconnect MQTT")
-					if token := s.mqttClient.Connect(); token.WaitTimeout(models.MQTTPublishTimeout) && token.Error() != nil {
-						log.Printf("Failed to reconnect MQTT: %v", token.Error())
-					} else {
-						log.Println("MQTT reconnected successfully")
-					}
+				if !s.mqttClient.IsConnectionOpen() {
+					log.Println("Internet reconnected but MQTT not connected, forcing reconnect")
+					s.forceReconnect()
 				}
 			}
 		}
@@ -796,6 +798,39 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 	}
 }
 
+// forceReconnect forces a full MQTT disconnect/reconnect cycle.
+// This handles the case where paho's auto-reconnect is stuck (e.g., due to
+// an expired CA certificate causing repeated TLS handshake failures).
+func (s *ScooterMQTTClient) forceReconnect() {
+	log.Println("Forcing MQTT reconnect: disconnecting to reset connection state")
+	s.mqttClient.Disconnect(250)
+	time.Sleep(500 * time.Millisecond)
+
+	token := s.mqttClient.Connect()
+	if token.WaitTimeout(models.MQTTPublishTimeout) && token.Error() == nil {
+		log.Println("Forced reconnect succeeded")
+		atomic.StoreInt32(&s.consecutivePublishFailures, 0)
+		return
+	}
+	errMsg := "timeout"
+	if token.Error() != nil {
+		errMsg = token.Error().Error()
+	}
+	log.Printf("Forced reconnect failed: %s", errMsg)
+
+	if s.tlsConfig != nil && !s.tlsConfig.InsecureSkipVerify {
+		log.Println("Retrying with insecure TLS (possible certificate issue)")
+		s.tlsConfig.InsecureSkipVerify = true
+		token = s.mqttClient.Connect()
+		if token.WaitTimeout(models.MQTTPublishTimeout) && token.Error() == nil {
+			log.Println("Forced reconnect succeeded with insecure TLS")
+			atomic.StoreInt32(&s.consecutivePublishFailures, 0)
+			return
+		}
+		log.Printf("Forced reconnect failed even with insecure TLS: %v", token.Error())
+	}
+}
+
 // publishTelemetryData publishes a telemetry payload to MQTT
 func (s *ScooterMQTTClient) publishTelemetryData(current *models.TelemetryData) error {
 	telemetryJSON, err := json.Marshal(current)
@@ -832,12 +867,18 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *models.TelemetryData) 
 	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.Scooter.Identifier)
 	token := s.mqttClient.Publish(topic, 1, false, telemetryJSON)
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
+		failures := atomic.AddInt32(&s.consecutivePublishFailures, 1)
+		log.Printf("Publish failure #%d: %v", failures, token.Error())
+		if failures >= models.MaxConsecutivePublishFailures {
+			log.Printf("Reached %d consecutive publish failures, forcing reconnect", failures)
+			atomic.StoreInt32(&s.consecutivePublishFailures, 0)
+			go s.forceReconnect()
+		}
 		return fmt.Errorf("failed to publish telemetry: %v", token.Error())
 	}
 
+	atomic.StoreInt32(&s.consecutivePublishFailures, 0)
 	log.Printf("Published telemetry to %s", topic)
-
-	// Update cloud status since we successfully published to MQTT
 	s.updateCloudStatus()
 
 	return nil
@@ -906,14 +947,9 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 				switch powerState {
 				case "running":
-					if !s.mqttClient.IsConnected() {
-						log.Printf("Power state changed to running, reconnecting MQTT client")
-						token := s.mqttClient.Connect()
-						if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
-							log.Printf("Failed to reconnect MQTT client: %v", token.Error())
-						} else {
-							log.Printf("MQTT client reconnected successfully")
-						}
+					if !s.mqttClient.IsConnectionOpen() {
+						log.Printf("Power state changed to running, forcing MQTT reconnect")
+						s.forceReconnect()
 					}
 				case "suspending-imminent", "hibernating-imminent", "hibernating-manual-imminent", "hibernating-timer-imminent", "reboot-imminent":
 					log.Printf("Power manager entering critical state '%s', sending final telemetry", powerState)
@@ -1108,7 +1144,10 @@ func (s *ScooterMQTTClient) PublishEvent(event events.Event) error {
 	return nil
 }
 
-// IsConnected returns whether the MQTT client is connected (implements EventPublisher interface)
+// IsConnected returns whether the MQTT client has an active connection
+// (implements EventPublisher interface). Uses IsConnectionOpen() instead of
+// IsConnected() because paho's IsConnected() returns true during the
+// "reconnecting" state, which masks stuck reconnection loops.
 func (s *ScooterMQTTClient) IsConnected() bool {
-	return s.mqttClient.IsConnected()
+	return s.mqttClient.IsConnectionOpen()
 }
