@@ -238,6 +238,30 @@ func ValidateConfig(config *models.Config) error {
 		config.Events.BufferPath = "/var/lib/radio-gaga/events-buffer.json"
 	}
 
+	// Initialize Telegram config with defaults
+	if config.Telegram.Enabled {
+		if config.Telegram.RateLimit == "" {
+			config.Telegram.RateLimit = "1s"
+		}
+		if config.Telegram.QueueSize <= 0 {
+			config.Telegram.QueueSize = 100
+		}
+		if config.Telegram.Events == nil {
+			config.Telegram.Events = map[string]bool{
+				"alarm":                 true,
+				"unauthorized_movement": true,
+				"battery_warning":       true,
+				"temperature_warning":   true,
+			}
+		}
+		if config.Telegram.BotToken == "" {
+			errors = append(errors, "telegram.bot_token is required when telegram is enabled")
+		}
+		if config.Telegram.ChatID == "" {
+			errors = append(errors, "telegram.chat_id is required when telegram is enabled")
+		}
+	}
+
 	// Parse and validate durations
 	durations := map[string]string{
 		"mqtt.keep_alive":           config.MQTT.KeepAlive,
@@ -252,6 +276,10 @@ func ValidateConfig(config *models.Config) error {
 		"priorities.medium":         config.Telemetry.Priorities.Medium,
 		"priorities.slow":           config.Telemetry.Priorities.Slow,
 	}
+	if config.Telegram.Enabled && config.Telegram.RateLimit != "" {
+		durations["telegram.rate_limit"] = config.Telegram.RateLimit
+	}
+
 	for name, value := range durations {
 		if _, err := time.ParseDuration(value); err != nil {
 			errors = append(errors, fmt.Sprintf("invalid %s: %v", name, err))
@@ -635,6 +663,7 @@ func convertYamlPathToStructPath(yamlPath string) string {
 		// Scooter fields
 		"identifier": "Identifier",
 		"token":      "Token",
+		"name":       "Name",
 
 		// MQTT fields
 		"broker_url":       "BrokerURL",
@@ -674,6 +703,13 @@ func convertYamlPathToStructPath(yamlPath string) string {
 		"max_retries":    "MaxRetries",
 		"retry_interval": "RetryInterval",
 		"persist_path":   "PersistPath",
+
+		// Telegram fields
+		"telegram":   "Telegram",
+		"bot_token":  "BotToken",
+		"chat_id":    "ChatID",
+		"rate_limit": "RateLimit",
+		"queue_size": "QueueSize",
 
 		// Commands fields (command names)
 		"alarm":        "alarm",

@@ -23,6 +23,12 @@ type TelemetryFlusher interface {
 	FlushAllPending()
 }
 
+// EventListener receives event notifications
+type EventListener interface {
+	Notify(event Event)
+	ShouldNotify(eventType string) bool
+}
+
 // Detector monitors Redis for conditions that trigger events
 type Detector struct {
 	redisClient *redis.Client
@@ -30,6 +36,8 @@ type Detector struct {
 	publisher   EventPublisher
 	buffer      *Buffer
 	flusher     TelemetryFlusher
+
+	listeners []EventListener
 
 	mu        sync.Mutex
 	lastState map[string]string
@@ -53,6 +61,11 @@ func (d *Detector) SetPublisher(publisher EventPublisher) {
 	d.publisher = publisher
 }
 
+// AddListener registers an event listener for notifications
+func (d *Detector) AddListener(listener EventListener) {
+	d.listeners = append(d.listeners, listener)
+}
+
 // SetTelemetryFlusher sets the telemetry flusher for coordination
 func (d *Detector) SetTelemetryFlusher(flusher TelemetryFlusher) {
 	d.flusher = flusher
@@ -69,6 +82,7 @@ func (d *Detector) Start(ctx context.Context) {
 
 	// Subscribe to relevant Redis channels
 	channels := []string{
+		"alarm",
 		"battery:0",
 		"battery:1",
 		"cb-battery",
@@ -119,6 +133,8 @@ func (d *Detector) handleHashChange(ctx context.Context, hash string) {
 	}
 
 	switch hash {
+	case "alarm":
+		d.checkAlarmEvents(ctx, fields)
 	case "battery:0", "battery:1":
 		d.checkBatteryEvents(hash, fields)
 	case "cb-battery":
@@ -128,11 +144,32 @@ func (d *Detector) handleHashChange(ctx context.Context, hash string) {
 	case "internet":
 		d.checkConnectivityEvents(fields)
 	case "vehicle":
-		d.checkLockEvents(fields)
+		d.checkVehicleEvents(fields)
 	case "gps":
-		d.checkGPSEvents(fields)
+		d.checkGPSEvents(ctx, fields)
 	case "engine-ecu":
 		d.checkTemperatureEvents(hash, fields)
+	}
+}
+
+// checkAlarmEvents checks for alarm status changes
+func (d *Detector) checkAlarmEvents(ctx context.Context, _ map[string]string) {
+	stateKey := "alarm:status"
+
+	// The pub/sub payload is the field name, not the value; read from hash
+	status, err := d.redisClient.HGet(ctx, "alarm", "status").Result()
+	if err != nil {
+		log.Printf("[EventDetector] Failed to read alarm status: %v", err)
+		return
+	}
+
+	d.mu.Lock()
+	lastStatus := d.lastState[stateKey]
+	d.lastState[stateKey] = status
+	d.mu.Unlock()
+
+	if lastStatus != "" && lastStatus != status && status != "delay-armed" {
+		d.sendEvent(NewEvent(EventTypeAlarm, status, nil))
 	}
 }
 
@@ -245,8 +282,25 @@ func (d *Detector) checkConnectivityEvents(fields map[string]string) {
 	}
 }
 
-// checkLockEvents checks for lock state change events
-func (d *Detector) checkLockEvents(fields map[string]string) {
+// checkVehicleEvents checks for vehicle state and lock changes
+func (d *Detector) checkVehicleEvents(fields map[string]string) {
+	// Vehicle state changes
+	stateKey := "vehicle:state"
+	state := fields["state"]
+
+	d.mu.Lock()
+	lastState := d.lastState[stateKey]
+	d.lastState[stateKey] = state
+	d.mu.Unlock()
+
+	if lastState != "" && lastState != state {
+		d.sendEvent(NewEvent(EventTypeStateChange, "", map[string]interface{}{
+			"from": lastState,
+			"to":   state,
+		}))
+	}
+
+	// Lock changes
 	handlebarKey := "vehicle:handlebar"
 	seatboxKey := "vehicle:seatbox"
 
@@ -275,8 +329,8 @@ func (d *Detector) checkLockEvents(fields map[string]string) {
 	}
 }
 
-// checkGPSEvents checks for GPS fix events
-func (d *Detector) checkGPSEvents(fields map[string]string) {
+// checkGPSEvents checks for GPS fix events and unauthorized movement
+func (d *Detector) checkGPSEvents(ctx context.Context, fields map[string]string) {
 	stateKey := "gps:state"
 	state := fields["state"]
 
@@ -294,6 +348,30 @@ func (d *Detector) checkGPSEvents(fields map[string]string) {
 		d.sendEvent(NewEvent(EventTypeGPSEvent, eventStatus, map[string]interface{}{
 			"state": state,
 		}))
+	}
+
+	// Detect unauthorized movement: GPS speed > 0 while vehicle is locked
+	gpsSpeed := parseInt(fields["speed"])
+	if gpsSpeed > 0 {
+		vehicleState, err := d.redisClient.HGet(ctx, "vehicle", "state").Result()
+		if err == nil && (vehicleState == "standby" || vehicleState == "hibernating" || vehicleState == "locked") {
+			movementKey := "unauthorized_movement:active"
+			d.mu.Lock()
+			lastMovement := d.lastState[movementKey]
+			d.lastState[movementKey] = "true"
+			d.mu.Unlock()
+
+			if lastMovement != "true" {
+				d.sendEvent(NewEvent(EventTypeUnauthorizedMovement, StatusTriggered, map[string]interface{}{
+					"gps_speed":     gpsSpeed,
+					"vehicle_state": vehicleState,
+				}))
+			}
+		}
+	} else {
+		d.mu.Lock()
+		d.lastState["unauthorized_movement:active"] = ""
+		d.mu.Unlock()
 	}
 }
 
@@ -395,12 +473,18 @@ func (d *Detector) handleFaultMessage(values map[string]interface{}) {
 func (d *Detector) sendEvent(event Event) {
 	log.Printf("[EventDetector] Event: %s %s %v", event.EventType, event.Status, event.Data)
 
+	// Notify listeners asynchronously (e.g. Telegram)
+	for _, l := range d.listeners {
+		if l.ShouldNotify(event.EventType) {
+			l.Notify(event)
+		}
+	}
+
 	if d.publisher != nil && d.publisher.IsConnected() {
 		if err := d.publisher.PublishEvent(event); err != nil {
 			log.Printf("[EventDetector] Failed to publish event, buffering: %v", err)
 			d.buffer.Add(event)
 		} else {
-			// Successfully sent - flush any buffered events and pending telemetry
 			go d.FlushBufferedEvents(context.Background())
 			if d.flusher != nil {
 				go d.flusher.FlushAllPending()
@@ -426,12 +510,13 @@ func (d *Detector) FlushBufferedEvents(ctx context.Context) {
 // InitializeBaseline sets the initial state from current Redis values
 func (d *Detector) InitializeBaseline(ctx context.Context) {
 	hashes := map[string][]string{
+		"alarm":         {"status"},
 		"battery:0":     {"charge", "present", "temperature"},
 		"battery:1":     {"charge", "present", "temperature"},
 		"cb-battery":    {"charge"},
 		"power-manager": {"state", "nrf-reset-reason"},
 		"internet":      {"status"},
-		"vehicle":       {"handlebar:lock-sensor", "seatbox:lock"},
+		"vehicle":       {"state", "handlebar:lock-sensor", "seatbox:lock"},
 		"gps":           {"state"},
 		"engine-ecu":    {"temperature"},
 	}

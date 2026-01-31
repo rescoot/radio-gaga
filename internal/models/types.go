@@ -48,6 +48,7 @@ type Config struct {
 	Telemetry   TelemetryConfig    `yaml:"telemetry"`
 	Events      EventsConfig       `yaml:"events,omitempty"`
 	Commands    map[string]Command `yaml:"commands"`
+	Telegram    TelegramConfig     `yaml:"telegram,omitempty"`
 	UnuUplink   UnuUplinkConfig    `yaml:"unu_uplink,omitempty"`
 	ServiceName string             `yaml:"service_name,omitempty"`
 	Debug       bool               `yaml:"debug,omitempty"`
@@ -57,6 +58,7 @@ type Config struct {
 type ScooterConfig struct {
 	Identifier string `yaml:"identifier"`
 	Token      string `yaml:"token"`
+	Name       string `yaml:"name,omitempty"`
 }
 
 // MQTTConfig contains MQTT configuration
@@ -100,6 +102,16 @@ type EventsConfig struct {
 	Enabled    bool   `yaml:"enabled"`
 	BufferPath string `yaml:"buffer_path,omitempty"`
 	MaxRetries int    `yaml:"max_retries,omitempty"`
+}
+
+// TelegramConfig contains Telegram notification configuration
+type TelegramConfig struct {
+	Enabled   bool            `yaml:"enabled"`
+	BotToken  string          `yaml:"bot_token"`
+	ChatID    string          `yaml:"chat_id"`
+	Events    map[string]bool `yaml:"events,omitempty"`
+	RateLimit string          `yaml:"rate_limit,omitempty"`
+	QueueSize int             `yaml:"queue_size,omitempty"`
 }
 
 // BufferConfig contains telemetry buffer configuration
