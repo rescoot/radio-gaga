@@ -18,6 +18,7 @@ The system interfaces with Redis for local state management and uses MQTT for se
 - **Flexible Configuration**: YAML-based configuration with command-line overrides and Redis fallbacks
 - **Self-Update Mechanism**: OTA updates with checksum verification and automatic rollback
 - **Navigation Support**: Set destination coordinates for navigation (for LibreScoot DBC)
+- **Telegram Notifications**: Direct alerts to Telegram for alarm, movement, battery, temperature, and state events
 - **Environment-Aware Operation**: Different behavior for development vs. production environments
 - **System Integration**: Systemd service management and filesystem handling
 - **unu-uplink Reconfiguration**: Automatic reconfiguration of stock unu-uplink to use the Sunshine MQTT broker
@@ -391,6 +392,53 @@ For scooters running stock unu firmware alongside radio-gaga, the system can aut
 - **Safety Checks**: Only reconfigures if the current URL points to defunct unu servers, preserving custom configurations
 
 This allows both radio-gaga and the legacy unu-uplink service to coexist and communicate with the Sunshine MQTT broker.
+
+## Telegram Notifications
+
+Radio Gaga can send alerts directly to a Telegram chat when scooter events occur — alarm changes, unauthorized movement, battery/temperature warnings, state transitions, and more.
+
+### Setting Up a Telegram Bot
+
+1. Open Telegram and message [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` and follow the prompts to choose a name and username
+3. BotFather replies with your **bot token** (looks like `123456789:ABCdef...`)
+4. Send a message to your new bot (it won't reply, that's fine)
+5. Get your **chat ID** by opening `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser — look for `"chat":{"id":123456789}` in the response
+6. Add both values to your config:
+
+```yaml
+scooter:
+  name: Deep Blue           # optional, used in notification messages
+
+telegram:
+  enabled: true
+  bot_token: "123456789:ABCdef..."
+  chat_id: "123456789"
+  rate_limit: 1s            # minimum delay between messages (default: 1s)
+  queue_size: 100           # max queued messages (default: 100)
+  events:
+    alarm: true
+    unauthorized_movement: true
+    battery_warning: true
+    temperature_warning: true
+    state_change: false
+    connectivity: false
+    fault: false
+```
+
+You can use the same bot for multiple scooters — each scooter sends independently with its own name in the message.
+
+### Message Examples
+
+```
+🔒 Deep Blue alarm armed
+🚨 Deep Blue alarm triggered!
+⚠️ Deep Blue is moving while parked (12 km/h)
+🔋 Deep Blue Battery 1 at 5%
+🌡️ Deep Blue Engine at 85°C
+🔄 Deep Blue: standby → driving
+📡 Deep Blue lost internet
+```
 
 ## Self-Update System
 
