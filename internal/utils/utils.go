@@ -47,15 +47,13 @@ func IsTLSURL(url string) bool {
 	return strings.HasPrefix(url, "ssl://") || strings.HasPrefix(url, "tls://")
 }
 
-// SyncTimeNTP attempts to sync the system time using NTP
-func SyncTimeNTP(config *models.NTPConfig) error {
-	// If NTP sync is explicitly disabled, return immediately
+// QueryNTPTime queries NTP and returns the time without setting the system clock.
+// This allows using NTP as a clock reference even without root privileges.
+func QueryNTPTime(config *models.NTPConfig) (time.Time, error) {
 	if config != nil && config.Enabled == false {
-		log.Println("NTP time synchronization is disabled in configuration")
-		return nil
+		return time.Time{}, fmt.Errorf("NTP time synchronization is disabled in configuration")
 	}
 
-	// Use configured server if available, otherwise use default
 	ntpServers := []string{}
 	if config != nil && config.Server != "" {
 		ntpServers = append(ntpServers, config.Server)
@@ -71,24 +69,29 @@ func SyncTimeNTP(config *models.NTPConfig) error {
 			log.Printf("Failed to get time from %s: %v", server, err)
 			continue
 		}
+		log.Printf("Got NTP time from %s: %s", server, ntpTime.Format(time.RFC3339))
+		return ntpTime, nil
+	}
 
-		// Convert time to timeval
-		tv := syscall.NsecToTimeval(ntpTime.UnixNano())
+	return time.Time{}, fmt.Errorf("failed to query time from any NTP server: %v", lastErr)
+}
 
-		// Set system time (requires root privileges)
-		if err := syscall.Settimeofday(&tv); err != nil {
-			lastErr = fmt.Errorf("failed to set system time: %v", err)
-			log.Printf("Warning: %v", lastErr)
-			// Even if we can't set the system time, return success
-			// as we at least got a valid time from NTP
-			return nil
-		}
+// SyncTimeNTP attempts to sync the system time using NTP
+func SyncTimeNTP(config *models.NTPConfig) error {
+	ntpTime, err := QueryNTPTime(config)
+	if err != nil {
+		return err
+	}
 
-		log.Printf("Successfully synchronized time with %s", server)
+	tv := syscall.NsecToTimeval(ntpTime.UnixNano())
+
+	if err := syscall.Settimeofday(&tv); err != nil {
+		log.Printf("Warning: failed to set system time: %v (NTP time was valid)", err)
 		return nil
 	}
 
-	return fmt.Errorf("failed to sync time with any NTP server: %v", lastErr)
+	log.Printf("Successfully synchronized system time via NTP")
+	return nil
 }
 
 // CreateInsecureTLSConfig creates a TLS config that skips verification

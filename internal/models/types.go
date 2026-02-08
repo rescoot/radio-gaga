@@ -322,6 +322,7 @@ type BufferedTelemetryEvent struct {
 	Timestamp  time.Time      `json:"timestamp"`
 	Attempts   int            `json:"attempts"`
 	SequenceID uint64         `json:"sequence_id"`
+	SessionID  string         `json:"session_id,omitempty"`
 }
 
 // TelemetryBuffer represents a buffer of telemetry events
@@ -331,6 +332,7 @@ type TelemetryBuffer struct {
 	CreatedAt       time.Time                `json:"created_at"`
 	SequenceCounter uint64                   `json:"sequence_counter"`
 	LastSystemTime  time.Time                `json:"last_system_time"`
+	SessionID       string                   `json:"session_id,omitempty"`
 }
 
 // TelemetryBatch represents a batch of telemetry events to be sent

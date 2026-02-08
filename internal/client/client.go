@@ -35,6 +35,9 @@ type ScooterMQTTClient struct {
 	cancel           context.CancelFunc
 	version          string
 	serviceStartTime time.Time
+	monotonicRef     time.Time    // captured at process start, preserves monotonic reading
+	clockValid       atomic.Bool  // true once clock is validated via NTP or wall-clock check
+	sessionID        string       // unique per process lifecycle
 	wg               sync.WaitGroup
 	bufferMu         sync.Mutex
 	buffer           *models.TelemetryBuffer // In-memory buffer cache
@@ -334,13 +337,40 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		log.Printf("MQTT auto-reconnect attempting...")
 	})
 
+	// Capture monotonic reference BEFORE MQTT setup (which may trigger NTP)
+	monotonicRef := time.Now()
+
+	// Proactively query NTP for a valid clock reference
+	var clockIsValid bool
+	if _, ntpErr := utils.QueryNTPTime(&config.NTP); ntpErr == nil {
+		// NTP query succeeded — attempt to set system clock too
+		if syncErr := utils.SyncTimeNTP(&config.NTP); syncErr != nil {
+			log.Printf("NTP query succeeded but system clock sync failed: %v", syncErr)
+		}
+		clockIsValid = true
+		log.Printf("Clock validated via proactive NTP query")
+	} else {
+		// NTP failed — check if wall clock is already valid
+		if telemetry.ValidateTimestamp(time.Now()) {
+			clockIsValid = true
+			log.Printf("Clock appears valid based on wall-clock check")
+		} else {
+			log.Printf("Clock not yet valid, NTP query failed: %v", ntpErr)
+		}
+	}
+
 	mqttClient, err := createMQTTClient(config, opts)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("MQTT connection failed: %v", err)
 	}
 
-	serviceStartTime := time.Now().UTC()
+	// Generate unique session ID
+	sessionID, err := generateRandomID()
+	if err != nil {
+		log.Printf("Failed to generate session ID: %v", err)
+		sessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
+	}
 
 	client := &ScooterMQTTClient{
 		config:           config,
@@ -350,8 +380,13 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		ctx:              ctx,
 		cancel:           cancel,
 		version:          version,
-		serviceStartTime: serviceStartTime,
+		serviceStartTime: monotonicRef,
+		monotonicRef:     monotonicRef,
+		sessionID:        sessionID,
 		tlsConfig:        activeTLSConfig,
+	}
+	if clockIsValid {
+		client.clockValid.Store(true)
 	}
 
 	// Initialize telemetry monitor
@@ -910,7 +945,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				case "suspending-imminent", "hibernating-imminent", "hibernating-manual-imminent", "hibernating-timer-imminent", "reboot-imminent":
 					log.Printf("Power manager entering critical state '%s', sending final telemetry", powerState)
 
-					currentData, telErr := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime)
+					currentData, telErr := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.monotonicRef, s.clockValid.Load())
 					if telErr == nil {
 						if s.config.Telemetry.Buffer.Enabled {
 							if addErr := s.addTelemetryToBuffer(currentData); addErr == nil {
@@ -948,7 +983,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 	}()
 
 	// Publish initial telemetry immediately
-	if current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime); err == nil {
+	if current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.monotonicRef, s.clockValid.Load()); err == nil {
 		log.Println("Publishing initial telemetry...")
 		if err := s.collectAndPublishTelemetry(); err == nil {
 			lastState = current.VehicleState.State
@@ -965,7 +1000,16 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 			log.Println("Telemetry publisher stopping due to context cancellation.")
 			return
 		case <-ticker.C:
-			current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime)
+			// Check if clock has become valid since last tick
+			if !s.clockValid.Load() && telemetry.ValidateTimestamp(time.Now()) {
+				log.Printf("Clock is now valid, reprojecting buffered timestamps")
+				s.clockValid.Store(true)
+				if s.config.Telemetry.Buffer.Enabled {
+					s.reprojectBufferedTimestamps()
+				}
+			}
+
+			current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.monotonicRef, s.clockValid.Load())
 			if err != nil {
 				log.Printf("Failed to get telemetry on ticker: %v", err)
 				continue

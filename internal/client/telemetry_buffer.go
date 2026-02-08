@@ -70,7 +70,6 @@ func (s *ScooterMQTTClient) initTelemetryBuffer() {
 
 // createNewBuffer creates a new telemetry buffer
 func (s *ScooterMQTTClient) createNewBuffer() *models.TelemetryBuffer {
-	// Generate a random batch ID
 	batchID, err := generateRandomID()
 	if err != nil {
 		log.Printf("Failed to generate batch ID: %v", err)
@@ -84,6 +83,7 @@ func (s *ScooterMQTTClient) createNewBuffer() *models.TelemetryBuffer {
 		CreatedAt:       now,
 		SequenceCounter: 0,
 		LastSystemTime:  now,
+		SessionID:       s.sessionID,
 	}
 }
 
@@ -214,60 +214,18 @@ func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) err
 	}
 
 	now := time.Now()
-	
-	// Check for significant backward time jump or unreasonably large forward jump
-	// Backward jump: any negative time difference
-	// Large forward jump: more than 10 minutes since last update (suggesting NTP correction)
-	timeSinceLastUpdate := now.Sub(buffer.LastSystemTime)
-	isBackwardJump := timeSinceLastUpdate < 0
-	isLargeForwardJump := timeSinceLastUpdate > 10*time.Minute
-	
-	if (isBackwardJump || isLargeForwardJump) && len(buffer.Events) > 0 {
-		// Calculate the clock correction (how much the system clock jumped)
-		clockCorrection := now.Sub(buffer.LastSystemTime)
-		log.Printf("Detected time jump of %.1f seconds, recalibrating buffer timestamps", clockCorrection.Seconds())
 
-		// Update serviceStartTime to account for the clock correction
-		// This is critical: the relative offsets were calculated using the wrong clock,
-		// but they represent real elapsed time. By correcting serviceStartTime, we make
-		// serviceStartTime + offset give us the correct absolute time.
-		oldServiceStart := s.serviceStartTime
-		s.serviceStartTime = s.serviceStartTime.Add(clockCorrection)
-		log.Printf("Updated serviceStartTime from %s to %s (correction: %.1f seconds)",
-			oldServiceStart.Format(time.RFC3339),
-			s.serviceStartTime.Format(time.RFC3339),
-			clockCorrection.Seconds())
-
-		// Recalibrate all existing events in this buffer
-		for i := range buffer.Events {
-			event := &buffer.Events[i]
-
-			// Only recalibrate relative timestamps from this session
-			if strings.HasPrefix(event.Data.Timestamp, "INVALID_RELATIVE:") {
-				// Parse the relative offset
-				offsetStr := strings.TrimPrefix(event.Data.Timestamp, "INVALID_RELATIVE:")
-				offsetSeconds, parseErr := strconv.ParseFloat(offsetStr, 64)
-				if parseErr != nil {
-					log.Printf("Failed to parse offset for event %d: %v", i, parseErr)
-					continue
-				}
-
-				// Now that serviceStartTime is corrected, calculate absolute time
-				correctedTime := s.serviceStartTime.Add(time.Duration(offsetSeconds * float64(time.Second)))
-				event.Data.Timestamp = correctedTime.UTC().Format(time.RFC3339)
-				log.Printf("Recalibrated event %d: offset %.3fs -> %s", i, offsetSeconds, event.Data.Timestamp)
-			} else {
-				// For absolute timestamps, apply the clock correction directly
-				if eventTime, parseErr := time.Parse(time.RFC3339, event.Data.Timestamp); parseErr == nil {
-					adjustedTime := eventTime.Add(clockCorrection)
-					event.Data.Timestamp = adjustedTime.UTC().Format(time.RFC3339)
-					log.Printf("Adjusted event %d timestamp by %.1f seconds -> %s", i, clockCorrection.Seconds(), event.Data.Timestamp)
-				}
-			}
-		}
+	// Detect cross-session buffer: if the buffer has a session ID from a different session,
+	// handle events from the previous session before adding new ones
+	if buffer.SessionID != "" && buffer.SessionID != s.sessionID && len(buffer.Events) > 0 {
+		s.handleCrossSessionBuffer(buffer)
 	}
-	
-	// Update last system time
+
+	// Migrate buffer to current session if needed
+	if buffer.SessionID != s.sessionID {
+		buffer.SessionID = s.sessionID
+	}
+
 	buffer.LastSystemTime = now
 
 	// Increment sequence counter and add telemetry to buffer
@@ -277,6 +235,7 @@ func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) err
 		Timestamp:  now,
 		Attempts:   0,
 		SequenceID: buffer.SequenceCounter,
+		SessionID:  s.sessionID,
 	}
 	buffer.Events = append(buffer.Events, event)
 
@@ -334,6 +293,7 @@ func (s *ScooterMQTTClient) resetBuffer(buffer *models.TelemetryBuffer) {
 	buffer.CreatedAt = now
 	buffer.SequenceCounter = 0
 	buffer.LastSystemTime = now
+	buffer.SessionID = s.sessionID
 }
 
 // transmitBuffer transmits the telemetry buffer
@@ -359,6 +319,13 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 	}
 
 	// If buffer is empty, return
+	if len(buffer.Events) == 0 {
+		return nil
+	}
+
+	// Pre-transmit: resolve or drop INVALID_RELATIVE timestamps
+	s.resolveTimestampsBeforeTransmit(buffer)
+
 	if len(buffer.Events) == 0 {
 		return nil
 	}
@@ -549,9 +516,119 @@ func generateRandomID() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
+// handleCrossSessionBuffer processes a buffer from a previous session.
+// INVALID_RELATIVE events from previous sessions are unresolvable (we don't have
+// their monotonic ref), so they are dropped. Events with absolute timestamps are kept.
+func (s *ScooterMQTTClient) handleCrossSessionBuffer(buffer *models.TelemetryBuffer) {
+	var kept []models.BufferedTelemetryEvent
+	var dropped int
+
+	for _, event := range buffer.Events {
+		if strings.HasPrefix(event.Data.Timestamp, "INVALID_RELATIVE:") {
+			dropped++
+		} else {
+			kept = append(kept, event)
+		}
+	}
+
+	if dropped > 0 {
+		log.Printf("Cross-session buffer (session %s): dropped %d unresolvable INVALID_RELATIVE events, kept %d absolute-timestamped events",
+			buffer.SessionID, dropped, len(kept))
+	}
+
+	buffer.Events = kept
+}
+
+// reprojectBufferedTimestamps resolves INVALID_RELATIVE timestamps in the current
+// session's buffer using the monotonic clock reference. Called when the clock
+// transitions from invalid to valid.
+func (s *ScooterMQTTClient) reprojectBufferedTimestamps() {
+	s.bufferMu.Lock()
+	defer s.bufferMu.Unlock()
+
+	if s.buffer == nil || len(s.buffer.Events) == 0 {
+		return
+	}
+
+	// Calculate the corrected start time: current wall clock minus monotonic elapsed
+	correctedStart := time.Now().UTC().Add(-time.Since(s.monotonicRef))
+	resolved := 0
+
+	for i := range s.buffer.Events {
+		event := &s.buffer.Events[i]
+		if event.SessionID != s.sessionID {
+			continue
+		}
+		if !strings.HasPrefix(event.Data.Timestamp, "INVALID_RELATIVE:") {
+			continue
+		}
+
+		offsetStr := strings.TrimPrefix(event.Data.Timestamp, "INVALID_RELATIVE:")
+		offsetSeconds, err := strconv.ParseFloat(offsetStr, 64)
+		if err != nil {
+			log.Printf("Failed to parse offset for event %d: %v", i, err)
+			continue
+		}
+
+		correctedTime := correctedStart.Add(time.Duration(offsetSeconds * float64(time.Second)))
+		event.Data.Timestamp = correctedTime.UTC().Format(time.RFC3339)
+		resolved++
+	}
+
+	if resolved > 0 {
+		log.Printf("Reprojected %d INVALID_RELATIVE timestamps using corrected start %s", resolved, correctedStart.Format(time.RFC3339))
+		if err := s.saveBufferToRedis(s.buffer); err != nil {
+			log.Printf("Warning: failed to persist reprojected buffer: %v", err)
+		}
+	}
+}
+
+// resolveTimestampsBeforeTransmit ensures no INVALID_RELATIVE strings are sent to
+// the server. Current-session events are resolved if the clock is now valid;
+// all remaining INVALID_RELATIVE events are dropped.
+func (s *ScooterMQTTClient) resolveTimestampsBeforeTransmit(buffer *models.TelemetryBuffer) {
+	clockValid := s.clockValid.Load()
+	var correctedStart time.Time
+	if clockValid {
+		correctedStart = time.Now().UTC().Add(-time.Since(s.monotonicRef))
+	}
+
+	var kept []models.BufferedTelemetryEvent
+	var resolved, dropped int
+
+	for _, event := range buffer.Events {
+		if !strings.HasPrefix(event.Data.Timestamp, "INVALID_RELATIVE:") {
+			kept = append(kept, event)
+			continue
+		}
+
+		// Try to resolve current-session events if clock is valid
+		if clockValid && event.SessionID == s.sessionID {
+			offsetStr := strings.TrimPrefix(event.Data.Timestamp, "INVALID_RELATIVE:")
+			offsetSeconds, err := strconv.ParseFloat(offsetStr, 64)
+			if err != nil {
+				log.Printf("Dropping event with unparseable offset: %v", err)
+				dropped++
+				continue
+			}
+			correctedTime := correctedStart.Add(time.Duration(offsetSeconds * float64(time.Second)))
+			event.Data.Timestamp = correctedTime.UTC().Format(time.RFC3339)
+			kept = append(kept, event)
+			resolved++
+		} else {
+			dropped++
+		}
+	}
+
+	if resolved > 0 || dropped > 0 {
+		log.Printf("Pre-transmit: resolved %d, dropped %d INVALID_RELATIVE events", resolved, dropped)
+	}
+	buffer.Events = kept
+}
+
 // collectAndPublishTelemetry collects telemetry data and publishes it
 func (s *ScooterMQTTClient) collectAndPublishTelemetry() error {
-	current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.serviceStartTime)
+	current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.monotonicRef, s.clockValid.Load())
 	if err != nil {
 		return fmt.Errorf("failed to get telemetry: %v", err)
 	}
