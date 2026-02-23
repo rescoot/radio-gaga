@@ -46,9 +46,10 @@ type Config struct {
 	NTP         NTPConfig          `yaml:"ntp"`
 	RedisURL    string             `yaml:"redis_url"`
 	Telemetry   TelemetryConfig    `yaml:"telemetry"`
-	Events      EventsConfig       `yaml:"events,omitempty"`
-	Commands    map[string]Command `yaml:"commands"`
-	Telegram    TelegramConfig     `yaml:"telegram,omitempty"`
+	Events        EventsConfig        `yaml:"events,omitempty"`
+	Commands      map[string]Command  `yaml:"commands"`
+	Telegram      TelegramConfig      `yaml:"telegram,omitempty"`
+	Notifications NotificationsConfig `yaml:"notifications,omitempty"`
 	UnuUplink   UnuUplinkConfig    `yaml:"unu_uplink,omitempty"`
 	ServiceName string             `yaml:"service_name,omitempty"`
 	Debug       bool               `yaml:"debug,omitempty"`
@@ -106,12 +107,48 @@ type EventsConfig struct {
 
 // TelegramConfig contains Telegram notification configuration
 type TelegramConfig struct {
-	Enabled   bool            `yaml:"enabled"`
-	BotToken  string          `yaml:"bot_token"`
-	ChatID    string          `yaml:"chat_id"`
-	Events    map[string]bool `yaml:"events,omitempty"`
-	RateLimit string          `yaml:"rate_limit,omitempty"`
-	QueueSize int             `yaml:"queue_size,omitempty"`
+	Enabled    bool            `yaml:"enabled"`
+	BotToken   string          `yaml:"bot_token"`
+	ChatID     string          `yaml:"chat_id"`
+	Events     map[string]bool `yaml:"events,omitempty"`
+	RateLimit  string          `yaml:"rate_limit,omitempty"`
+	QueueSize  int             `yaml:"queue_size,omitempty"`
+	DailyLimit int             `yaml:"daily_limit,omitempty"`
+}
+
+// NotificationsConfig contains configurable notification rules and channel settings
+type NotificationsConfig struct {
+	Rules []NotificationRule `yaml:"rules,omitempty"`
+	SMS   SMSConfig          `yaml:"sms,omitempty"`
+}
+
+// NotificationRule defines a condition-based notification rule
+type NotificationRule struct {
+	Name       string          `yaml:"name"`
+	Conditions []RuleCondition `yaml:"conditions"`
+	Channels   []string        `yaml:"channels"`
+	Cooldown   string          `yaml:"cooldown,omitempty"`
+	Message    string          `yaml:"message,omitempty"`
+}
+
+// RuleCondition defines a single condition within a rule
+// For hash field conditions: set Source, Field, Operator, Value
+// For raw pub/sub message conditions: set Source, Message ("==" or "contains"), Value
+type RuleCondition struct {
+	Source   string `yaml:"source"`
+	Field    string `yaml:"field,omitempty"`
+	Operator string `yaml:"operator,omitempty"`
+	Message  string `yaml:"message,omitempty"`
+	Value    string `yaml:"value"`
+}
+
+// SMSConfig contains SMS notification configuration
+type SMSConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	PhoneNumber string `yaml:"phone_number,omitempty"`
+	RateLimit   string `yaml:"rate_limit,omitempty"`
+	DailyLimit  int    `yaml:"daily_limit,omitempty"`
+	QueueSize   int    `yaml:"queue_size,omitempty"`
 }
 
 // BufferConfig contains telemetry buffer configuration

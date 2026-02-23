@@ -99,6 +99,7 @@ commands:
 #   chat_id: "YOUR_CHAT_ID"
 #   rate_limit: 1s
 #   queue_size: 100
+#   daily_limit: 0          # 0 = unlimited
 #   events:
 #     alarm: true
 #     unauthorized_movement: true
@@ -107,6 +108,50 @@ commands:
 #     state_change: false
 #     connectivity: false
 #     fault: false
+
+# Configurable notification rules and channels (optional)
+# Rules are evaluated on every Redis pub/sub change and can route to telegram, sms, or both.
+# notifications:
+#   rules:
+#     # Alert when CB battery drops below 50% — sent to Telegram with 30-min cooldown
+#     - name: "cbb_low"
+#       conditions:
+#         - source: "cb-battery"    # Redis hash to watch
+#           field: "charge"         # hash field to check
+#           operator: "<"           # <, >, <=, >=, ==, !=
+#           value: "50"
+#       channels: [telegram]
+#       cooldown: "30m"
+#       message: "CB battery at {{cb-battery.charge}}%"  # optional, {{source.field}} placeholders
+#
+#     # Alert when alarm triggers while the scooter is parked (multi-condition AND logic)
+#     - name: "alarm_while_parked"
+#       conditions:
+#         - source: "alarm"
+#           field: "status"
+#           operator: "=="
+#           value: "triggered"
+#         - source: "vehicle"
+#           field: "state"
+#           operator: "=="
+#           value: "standby"
+#       channels: [telegram, sms]
+#
+#     # Match a raw pub/sub message payload directly
+#     - name: "some_pubsub_event"
+#       conditions:
+#         - source: "some-channel"
+#           message: "=="           # == (exact) or contains (substring)
+#           value: "triggered"
+#       channels: [telegram]
+#
+#   # SMS via ModemManager (mmcli) — requires a cellular modem
+#   sms:
+#     enabled: false
+#     phone_number: "+491234567890"
+#     rate_limit: "30s"    # minimum gap between SMS messages
+#     daily_limit: 20      # max messages per calendar day (0 = unlimited)
+#     queue_size: 20
 
 # unu-uplink reconfiguration (optional)
 # If enabled, radio-gaga will reconfigure mdb-uplink-service to use the same

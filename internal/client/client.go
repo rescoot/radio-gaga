@@ -20,6 +20,7 @@ import (
 
 	"radio-gaga/internal/events"
 	"radio-gaga/internal/models"
+	"radio-gaga/internal/sms"
 	"radio-gaga/internal/telemetry"
 	"radio-gaga/internal/telegram"
 	"radio-gaga/internal/utils"
@@ -52,6 +53,9 @@ type ScooterMQTTClient struct {
 
 	// Telegram notifier
 	telegramNotifier *telegram.Notifier
+
+	// SMS notifier
+	smsNotifier *sms.Notifier
 
 	consecutivePublishFailures int32       // atomic counter for publish failure tracking
 	tlsConfig                  *tls.Config // reference to active TLS config (for insecure fallback)
@@ -410,6 +414,18 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		}
 	}
 
+	// Initialize SMS notifier if enabled
+	if config.Notifications.SMS.Enabled {
+		smsNotifier, err := sms.NewNotifier(&config.Notifications.SMS, &config.Scooter)
+		if err != nil {
+			log.Printf("Failed to initialize SMS notifier: %v", err)
+		} else {
+			client.smsNotifier = smsNotifier
+			client.eventDetector.AddListener(smsNotifier)
+			log.Println("SMS notifier initialized")
+		}
+	}
+
 	return client, nil
 }
 
@@ -511,6 +527,11 @@ func (s *ScooterMQTTClient) Start() error {
 		s.telegramNotifier.Start(s.ctx)
 	}
 
+	// Start SMS notifier if initialized
+	if s.smsNotifier != nil {
+		s.smsNotifier.Start(s.ctx)
+	}
+
 	// Flush any buffered events from previous session
 	go s.eventDetector.FlushBufferedEvents(s.ctx)
 
@@ -530,6 +551,12 @@ func (s *ScooterMQTTClient) Stop() {
 	if s.telegramNotifier != nil {
 		log.Println("Stopping Telegram notifier...")
 		s.telegramNotifier.Stop()
+	}
+
+	// Stop SMS notifier
+	if s.smsNotifier != nil {
+		log.Println("Stopping SMS notifier...")
+		s.smsNotifier.Stop()
 	}
 
 	// Stop monitor and event detector

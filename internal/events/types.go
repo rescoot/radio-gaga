@@ -43,8 +43,9 @@ const (
 	EventTypeGPSEvent            = "gps_event"
 
 	// New event types (to be added to sunshine)
-	EventTypeConnectivity = "connectivity" // Scooter internet connectivity
-	EventTypeFault        = "fault"        // Hardware/software faults
+	EventTypeConnectivity       = "connectivity"        // Scooter internet connectivity
+	EventTypeFault              = "fault"               // Hardware/software faults
+	EventTypeNotificationRule   = "notification_rule"   // Configurable rule-based notification
 )
 
 // Status constants

@@ -260,6 +260,69 @@ func ValidateConfig(config *models.Config) error {
 		if config.Telegram.ChatID == "" {
 			errors = append(errors, "telegram.chat_id is required when telegram is enabled")
 		}
+		if config.Telegram.DailyLimit < 0 {
+			errors = append(errors, "telegram.daily_limit must be >= 0")
+		}
+	}
+
+	// Initialize SMS config with defaults
+	if config.Notifications.SMS.Enabled {
+		if config.Notifications.SMS.RateLimit == "" {
+			config.Notifications.SMS.RateLimit = "30s"
+		}
+		if config.Notifications.SMS.QueueSize <= 0 {
+			config.Notifications.SMS.QueueSize = 20
+		}
+		if config.Notifications.SMS.DailyLimit <= 0 {
+			config.Notifications.SMS.DailyLimit = 20
+		}
+		if config.Notifications.SMS.PhoneNumber == "" {
+			errors = append(errors, "notifications.sms.phone_number is required when SMS is enabled")
+		}
+	}
+
+	// Validate notification rules
+	validOperators := map[string]bool{"<": true, ">": true, "<=": true, ">=": true, "==": true, "!=": true}
+	validMsgOperators := map[string]bool{"==": true, "contains": true}
+	for i, rule := range config.Notifications.Rules {
+		if rule.Name == "" {
+			errors = append(errors, fmt.Sprintf("notifications.rules[%d]: name is required", i))
+		}
+		if len(rule.Conditions) == 0 {
+			errors = append(errors, fmt.Sprintf("notifications.rules[%d] (%s): at least one condition is required", i, rule.Name))
+		}
+		for j, cond := range rule.Conditions {
+			if cond.Source == "" {
+				errors = append(errors, fmt.Sprintf("notifications.rules[%d].conditions[%d]: source is required", i, j))
+			}
+			if cond.Field != "" && cond.Message != "" {
+				errors = append(errors, fmt.Sprintf("notifications.rules[%d].conditions[%d]: cannot specify both field and message", i, j))
+			}
+			if cond.Field == "" && cond.Message == "" {
+				errors = append(errors, fmt.Sprintf("notifications.rules[%d].conditions[%d]: must specify either field+operator or message", i, j))
+			}
+			if cond.Field != "" {
+				if !validOperators[cond.Operator] {
+					errors = append(errors, fmt.Sprintf("notifications.rules[%d].conditions[%d]: invalid operator %q (must be <, >, <=, >=, ==, !=)", i, j, cond.Operator))
+				}
+			}
+			if cond.Message != "" {
+				if !validMsgOperators[cond.Message] {
+					errors = append(errors, fmt.Sprintf("notifications.rules[%d].conditions[%d]: invalid message operator %q (must be == or contains)", i, j, cond.Message))
+				}
+			}
+		}
+		if rule.Cooldown != "" {
+			if _, err := time.ParseDuration(rule.Cooldown); err != nil {
+				errors = append(errors, fmt.Sprintf("notifications.rules[%d] (%s): invalid cooldown %q: %v", i, rule.Name, rule.Cooldown, err))
+			}
+		}
+	}
+	// Validate SMS rate_limit duration
+	if config.Notifications.SMS.Enabled && config.Notifications.SMS.RateLimit != "" {
+		if _, err := time.ParseDuration(config.Notifications.SMS.RateLimit); err != nil {
+			errors = append(errors, fmt.Sprintf("notifications.sms.rate_limit invalid: %v", err))
+		}
 	}
 
 	// Parse and validate durations
@@ -705,11 +768,18 @@ func convertYamlPathToStructPath(yamlPath string) string {
 		"persist_path":   "PersistPath",
 
 		// Telegram fields
-		"telegram":   "Telegram",
-		"bot_token":  "BotToken",
-		"chat_id":    "ChatID",
-		"rate_limit": "RateLimit",
-		"queue_size": "QueueSize",
+		"telegram":    "Telegram",
+		"bot_token":   "BotToken",
+		"chat_id":     "ChatID",
+		"rate_limit":  "RateLimit",
+		"queue_size":  "QueueSize",
+		"daily_limit": "DailyLimit",
+
+		// Notifications / SMS fields
+		"notifications": "Notifications",
+		"sms":           "SMS",
+		"rules":         "Rules",
+		"phone_number":  "PhoneNumber",
 
 		// Commands fields (command names)
 		"alarm":        "alarm",

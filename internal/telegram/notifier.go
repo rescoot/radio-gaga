@@ -23,6 +23,11 @@ type Notifier struct {
 	rateLimit  time.Duration
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
+
+	// Daily limit tracking (in-memory, resets on restart)
+	dailyMu    sync.Mutex
+	dailyCount int
+	dailyDate  string // "YYYY-MM-DD"
 }
 
 // NewNotifier creates a new Telegram notifier
@@ -68,12 +73,36 @@ func (n *Notifier) Notify(event events.Event) {
 	}
 }
 
+// ChannelName returns the channel identifier for this notifier
+func (n *Notifier) ChannelName() string {
+	return "telegram"
+}
+
 // ShouldNotify checks whether notifications are enabled for an event type
 func (n *Notifier) ShouldNotify(eventType string) bool {
 	if enabled, ok := n.config.Events[eventType]; ok {
 		return enabled
 	}
 	return false
+}
+
+// checkDailyLimit returns true if a message can be sent (under the daily limit)
+func (n *Notifier) checkDailyLimit() bool {
+	if n.config.DailyLimit <= 0 {
+		return true
+	}
+	today := time.Now().Format("2006-01-02")
+	n.dailyMu.Lock()
+	defer n.dailyMu.Unlock()
+	if n.dailyDate != today {
+		n.dailyDate = today
+		n.dailyCount = 0
+	}
+	if n.dailyCount >= n.config.DailyLimit {
+		return false
+	}
+	n.dailyCount++
+	return true
 }
 
 func (n *Notifier) processQueue(ctx context.Context) {
@@ -100,6 +129,10 @@ func (n *Notifier) processQueue(ctx context.Context) {
 }
 
 func (n *Notifier) sendToTelegram(event events.Event) error {
+	if !n.checkDailyLimit() {
+		log.Printf("[Telegram] Daily limit (%d) reached, dropping event: %s", n.config.DailyLimit, event.EventType)
+		return nil
+	}
 	text := n.FormatMessage(event)
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", n.config.BotToken)
 
@@ -184,6 +217,21 @@ func (n *Notifier) FormatMessage(event events.Event) string {
 			return fmt.Sprintf("⚙️ %s fault: %s", scooter, desc)
 		}
 		return fmt.Sprintf("⚙️ %s fault: group %s, code %s", scooter, str("group"), str("code"))
+
+	case events.EventTypeNotificationRule:
+		rule := str("rule")
+		if msg := str("message"); msg != "" {
+			return fmt.Sprintf("🔔 %s: %s", scooter, msg)
+		}
+		// Fallback: build summary from matched condition values
+		if condRaw, ok := d["conditions"]; ok && condRaw != nil {
+			if conds, ok := condRaw.(map[string]string); ok && len(conds) > 0 {
+				for k, v := range conds {
+					return fmt.Sprintf("🔔 %s: %s=%s (rule: %s)", scooter, k, v, rule)
+				}
+			}
+		}
+		return fmt.Sprintf("🔔 %s: rule %s triggered", scooter, rule)
 
 	default:
 		if event.Status != "" {

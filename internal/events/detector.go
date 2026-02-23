@@ -10,6 +10,7 @@ import (
 	"github.com/go-redis/redis/v8"
 
 	"radio-gaga/internal/models"
+	"radio-gaga/internal/notifications"
 )
 
 // EventPublisher is the interface for publishing events
@@ -27,15 +28,17 @@ type TelemetryFlusher interface {
 type EventListener interface {
 	Notify(event Event)
 	ShouldNotify(eventType string) bool
+	ChannelName() string
 }
 
 // Detector monitors Redis for conditions that trigger events
 type Detector struct {
-	redisClient *redis.Client
-	config      *models.Config
-	publisher   EventPublisher
-	buffer      *Buffer
-	flusher     TelemetryFlusher
+	redisClient   *redis.Client
+	config        *models.Config
+	publisher     EventPublisher
+	buffer        *Buffer
+	flusher       TelemetryFlusher
+	ruleEvaluator *notifications.RuleEvaluator
 
 	listeners []EventListener
 
@@ -48,11 +51,12 @@ type Detector struct {
 // NewDetector creates a new event detector
 func NewDetector(redisClient *redis.Client, config *models.Config) *Detector {
 	return &Detector{
-		redisClient: redisClient,
-		config:      config,
-		buffer:      NewBuffer(config.Events.BufferPath, config.Events.MaxRetries),
-		lastState:   make(map[string]string),
-		stopCh:      make(chan struct{}),
+		redisClient:   redisClient,
+		config:        config,
+		buffer:        NewBuffer(config.Events.BufferPath, config.Events.MaxRetries),
+		ruleEvaluator: notifications.NewRuleEvaluator(config.Notifications.Rules, redisClient),
+		lastState:     make(map[string]string),
+		stopCh:        make(chan struct{}),
 	}
 }
 
@@ -93,6 +97,18 @@ func (d *Detector) Start(ctx context.Context) {
 		"engine-ecu",
 	}
 
+	// Add any additional sources from notification rules (dedup)
+	existing := make(map[string]struct{}, len(channels))
+	for _, ch := range channels {
+		existing[ch] = struct{}{}
+	}
+	for _, src := range d.ruleEvaluator.Sources() {
+		if _, ok := existing[src]; !ok {
+			channels = append(channels, src)
+			existing[src] = struct{}{}
+		}
+	}
+
 	pubsub := d.redisClient.Subscribe(ctx, channels...)
 	defer pubsub.Close()
 
@@ -115,6 +131,10 @@ func (d *Detector) Start(ctx context.Context) {
 				continue
 			}
 			d.handleHashChange(ctx, msg.Channel)
+			// Evaluate raw message rules for this channel/payload
+			for _, match := range d.ruleEvaluator.EvaluateMessage(ctx, msg.Channel, msg.Payload) {
+				d.sendEvent(ruleMatchToEvent(match))
+			}
 		}
 	}
 }
@@ -150,6 +170,24 @@ func (d *Detector) handleHashChange(ctx context.Context, hash string) {
 	case "engine-ecu":
 		d.checkTemperatureEvents(hash, fields)
 	}
+
+	// Evaluate configurable notification rules for this hash
+	for _, match := range d.ruleEvaluator.EvaluateHash(ctx, hash, fields) {
+		d.sendEvent(ruleMatchToEvent(match))
+	}
+}
+
+// ruleMatchToEvent converts a notifications.RuleMatch to an Event
+func ruleMatchToEvent(match notifications.RuleMatch) Event {
+	data := map[string]interface{}{
+		"rule":       match.RuleName,
+		"conditions": match.CondValues,
+		"channels":   match.Channels,
+	}
+	if match.Message != "" {
+		data["message"] = match.Message
+	}
+	return NewEvent(EventTypeNotificationRule, "", data)
 }
 
 // checkAlarmEvents checks for alarm status changes
@@ -473,9 +511,27 @@ func (d *Detector) handleFaultMessage(values map[string]interface{}) {
 func (d *Detector) sendEvent(event Event) {
 	log.Printf("[EventDetector] Event: %s %s %v", event.EventType, event.Status, event.Data)
 
-	// Notify listeners asynchronously (e.g. Telegram)
+	// Notify listeners.
+	// If the event has an explicit "channels" list (rule-generated events), only notify
+	// listeners whose ChannelName() is in that list. Otherwise use ShouldNotify (built-in events).
+	var targetChannels map[string]struct{}
+	if event.Data != nil {
+		if chRaw, ok := event.Data["channels"]; ok {
+			if chList, ok := chRaw.([]string); ok && len(chList) > 0 {
+				targetChannels = make(map[string]struct{}, len(chList))
+				for _, ch := range chList {
+					targetChannels[ch] = struct{}{}
+				}
+			}
+		}
+	}
+
 	for _, l := range d.listeners {
-		if l.ShouldNotify(event.EventType) {
+		if targetChannels != nil {
+			if _, ok := targetChannels[l.ChannelName()]; ok {
+				l.Notify(event)
+			}
+		} else if l.ShouldNotify(event.EventType) {
 			l.Notify(event)
 		}
 	}
@@ -521,11 +577,26 @@ func (d *Detector) InitializeBaseline(ctx context.Context) {
 		"engine-ecu":    {"temperature"},
 	}
 
+	// Also include fields from notification rules
+	for _, rule := range d.config.Notifications.Rules {
+		for _, cond := range rule.Conditions {
+			if cond.Field != "" {
+				hashes[cond.Source] = append(hashes[cond.Source], cond.Field)
+			}
+		}
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	for hash, fields := range hashes {
+		// Deduplicate fields
+		seen := make(map[string]struct{})
 		for _, field := range fields {
+			if _, ok := seen[field]; ok {
+				continue
+			}
+			seen[field] = struct{}{}
 			value, err := d.redisClient.HGet(ctx, hash, field).Result()
 			if err != nil && err != redis.Nil {
 				continue
