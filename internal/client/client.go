@@ -938,9 +938,9 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 				}
 
 				if currentVehicleState != lastState {
-					log.Printf("Vehicle state changed from '%s' to '%s' (detected via pub/sub, payload: %s). Publishing telemetry.", lastState, currentVehicleState, msg.Payload)
-					if err := s.collectAndPublishTelemetry(); err != nil {
-						log.Printf("Failed to publish telemetry on vehicle state change (pub/sub): %v", err)
+					log.Printf("Vehicle state changed from '%s' to '%s' (detected via pub/sub, payload: %s). Flushing telemetry.", lastState, currentVehicleState, msg.Payload)
+					if err := s.collectAndFlushTelemetry(); err != nil {
+						log.Printf("Failed to flush telemetry on vehicle state change (pub/sub): %v", err)
 					}
 					lastState = currentVehicleState
 
@@ -1012,7 +1012,7 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 	// Publish initial telemetry immediately
 	if current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.monotonicRef, s.clockValid.Load()); err == nil {
 		log.Println("Publishing initial telemetry...")
-		if err := s.collectAndPublishTelemetry(); err == nil {
+		if err := s.collectAndFlushTelemetry(); err == nil {
 			lastState = current.VehicleState.State
 		} else {
 			log.Printf("Failed to publish initial telemetry: %v", err)
@@ -1048,10 +1048,10 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 			// Check if vehicle state changed (detected by polling)
 			if currentVehicleState != lastState {
-				log.Printf("Vehicle state changed from '%s' to '%s' (detected via ticker). Publishing telemetry.", lastState, currentVehicleState)
+				log.Printf("Vehicle state changed from '%s' to '%s' (detected via ticker). Flushing telemetry.", lastState, currentVehicleState)
 				// Publish telemetry due to state change FIRST
-				if err := s.collectAndPublishTelemetry(); err != nil {
-					log.Printf("Failed to publish telemetry on vehicle state change (ticker): %v", err)
+				if err := s.collectAndFlushTelemetry(); err != nil {
+					log.Printf("Failed to flush telemetry on vehicle state change (ticker): %v", err)
 					// Continue to update interval and lastState even if publish fails
 				}
 				lastState = currentVehicleState
@@ -1148,9 +1148,11 @@ func (s *ScooterMQTTClient) GetRedisClient() *redis.Client {
 	return s.redisClient
 }
 
-// FlushTelemetry implements the TelemetryFlusher interface for the monitor
+// FlushTelemetry implements the TelemetryFlusher interface for the monitor.
+// Collects a fresh snapshot and transmits the buffer immediately, ensuring
+// priority-triggered flushes (e.g. Immediate on state change) actually send.
 func (s *ScooterMQTTClient) FlushTelemetry() error {
-	return s.collectAndPublishTelemetry()
+	return s.collectAndFlushTelemetry()
 }
 
 // PublishEvent publishes an event to MQTT (implements EventPublisher interface)

@@ -626,7 +626,9 @@ func (s *ScooterMQTTClient) resolveTimestampsBeforeTransmit(buffer *models.Telem
 	buffer.Events = kept
 }
 
-// collectAndPublishTelemetry collects telemetry data and publishes it
+// collectAndPublishTelemetry collects telemetry data and adds it to the buffer
+// (or publishes directly if buffering is disabled). Does not flush the buffer;
+// use collectAndFlushTelemetry for state-change-triggered collections.
 func (s *ScooterMQTTClient) collectAndPublishTelemetry() error {
 	current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.monotonicRef, s.clockValid.Load())
 	if err != nil {
@@ -638,6 +640,25 @@ func (s *ScooterMQTTClient) collectAndPublishTelemetry() error {
 			log.Printf("Failed to add telemetry to buffer: %v", err)
 		}
 		return nil
+	}
+
+	return s.publishTelemetryData(current)
+}
+
+// collectAndFlushTelemetry collects a telemetry snapshot, adds it to the buffer,
+// and immediately transmits the entire buffer. Use this for state changes where
+// the server needs the data before the scooter potentially goes offline.
+func (s *ScooterMQTTClient) collectAndFlushTelemetry() error {
+	current, err := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.monotonicRef, s.clockValid.Load())
+	if err != nil {
+		return fmt.Errorf("failed to get telemetry: %v", err)
+	}
+
+	if s.config.Telemetry.Buffer.Enabled {
+		if err := s.addTelemetryToBuffer(current); err != nil {
+			log.Printf("Failed to add telemetry to buffer: %v", err)
+		}
+		return s.transmitBuffer()
 	}
 
 	return s.publishTelemetryData(current)
