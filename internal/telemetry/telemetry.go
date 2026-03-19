@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -242,8 +243,8 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		DBCFlavor:       system["dbc-flavor"],
 		MDBFlavor:       system["mdb-flavor"],
 		MdbSerialNumber: mdbSN,
-		// Dashboard serial number is already collected in the Dashboard struct
 		DbcSerialNumber: telemetry.Dashboard.SerialNumber,
+		Platform:        runtime.GOARCH,
 	}
 
 	// Get internet connectivity status

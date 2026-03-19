@@ -257,6 +257,7 @@ type SystemInfo struct {
 	MDBFlavor       string `json:"mdb_flavor,omitempty"`
 	MdbSerialNumber string `json:"mdb_sn,omitempty"`
 	DbcSerialNumber string `json:"dbc_sn,omitempty"`
+	Platform        string `json:"platform,omitempty"`
 }
 
 // ConnectivityStatus represents internet and modem connectivity
