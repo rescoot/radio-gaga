@@ -31,9 +31,15 @@ func TestReadLocalLocations(t *testing.T) {
 	mr, rc := newTestRedis(t)
 
 	mr.HSet("settings",
-		"dashboard.saved-locations.0", "52.520008,13.404954,Home,2025-01-01T00:00:00Z,2025-06-15T10:00:00Z",
-		"dashboard.saved-locations.1", "48.856613,2.352222,Paris,2025-02-01T00:00:00Z,",
-		"dashboard.saved-locations.2", "40.712776,-74.005974",
+		"dashboard.saved-locations.0.latitude", "52.520008",
+		"dashboard.saved-locations.0.longitude", "13.404954",
+		"dashboard.saved-locations.0.label", "Home",
+		"dashboard.saved-locations.0.created-at", "2025-01-01T00:00:00Z",
+		"dashboard.saved-locations.0.last-used-at", "2025-06-15T10:00:00Z",
+		"dashboard.saved-locations.1.latitude", "48.856613",
+		"dashboard.saved-locations.1.longitude", "2.352222",
+		"dashboard.saved-locations.1.label", "Paris",
+		"dashboard.saved-locations.1.created-at", "2025-02-01T00:00:00Z",
 		"unrelated-key", "should-be-ignored",
 	)
 
@@ -43,8 +49,8 @@ func TestReadLocalLocations(t *testing.T) {
 		t.Fatalf("ReadLocalLocations: %v", err)
 	}
 
-	if len(locs) != 3 {
-		t.Fatalf("expected 3 locations, got %d", len(locs))
+	if len(locs) != 2 {
+		t.Fatalf("expected 2 locations, got %d", len(locs))
 	}
 
 	bySlot := map[int]Location{}
@@ -55,11 +61,11 @@ func TestReadLocalLocations(t *testing.T) {
 	if loc := bySlot[0]; loc.Label != "Home" || loc.Latitude != 52.520008 || loc.Longitude != 13.404954 {
 		t.Errorf("slot 0 mismatch: %+v", loc)
 	}
-	if loc := bySlot[1]; loc.Label != "Paris" || loc.CreatedAt != "2025-02-01T00:00:00Z" {
-		t.Errorf("slot 1 mismatch: %+v", loc)
+	if loc := bySlot[0]; loc.CreatedAt != "2025-01-01T00:00:00Z" || loc.LastUsedAt != "2025-06-15T10:00:00Z" {
+		t.Errorf("slot 0 timestamps mismatch: %+v", loc)
 	}
-	if loc := bySlot[2]; loc.Latitude != 40.712776 || loc.Longitude != -74.005974 || loc.Label != "" {
-		t.Errorf("slot 2 mismatch: %+v", loc)
+	if loc := bySlot[1]; loc.Label != "Paris" || loc.Latitude != 48.856613 {
+		t.Errorf("slot 1 mismatch: %+v", loc)
 	}
 }
 
@@ -67,7 +73,11 @@ func TestPushLocations(t *testing.T) {
 	mr, rc := newTestRedis(t)
 
 	mr.HSet("settings",
-		"dashboard.saved-locations.0", "52.520008,13.404954,Home,2025-01-01T00:00:00Z,2025-06-15T10:00:00Z",
+		"dashboard.saved-locations.0.latitude", "52.520008",
+		"dashboard.saved-locations.0.longitude", "13.404954",
+		"dashboard.saved-locations.0.label", "Home",
+		"dashboard.saved-locations.0.created-at", "2025-01-01T00:00:00Z",
+		"dashboard.saved-locations.0.last-used-at", "2025-06-15T10:00:00Z",
 	)
 
 	var gotMethod, gotPath, gotAuth string
@@ -122,7 +132,6 @@ func TestPushSuppression(t *testing.T) {
 		t.Error("ShouldPush should be false right after markPushed")
 	}
 
-	// Force the suppression window to expire
 	pusher.mu.Lock()
 	pusher.suppressUntil = time.Now().Add(-1 * time.Second)
 	pusher.mu.Unlock()
@@ -136,7 +145,9 @@ func TestPushHTTPError(t *testing.T) {
 	mr, rc := newTestRedis(t)
 
 	mr.HSet("settings",
-		"dashboard.saved-locations.0", "52.520008,13.404954,Home,,",
+		"dashboard.saved-locations.0.latitude", "52.520008",
+		"dashboard.saved-locations.0.longitude", "13.404954",
+		"dashboard.saved-locations.0.label", "Home",
 	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
