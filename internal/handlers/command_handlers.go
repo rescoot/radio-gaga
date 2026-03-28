@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -210,6 +212,8 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		err = handleShellCommand(client, mqttClient, config, command.Params, command.RequestID, command.Stream)
 	case "navigate":
 		err = handleNavigateCommand(redisClient, ctx, command.Params, command.RequestID)
+	case "locations:merge":
+		err = handleLocationsMergeCommand(redisClient, ctx, command.Params)
 	case "hibernate":
 		err = handleHibernateCommand(redisClient, ctx)
 	case "keycards:list":
@@ -836,4 +840,144 @@ func handleNavigateCommand(redisClient *redis.Client, ctx context.Context, param
 // handleHibernateCommand handles the hibernate command
 func handleHibernateCommand(redisClient *redis.Client, ctx context.Context) error {
 	return redisClient.LPush(ctx, "scooter:power", "hibernate").Err()
+}
+
+// handleLocationsMergeCommand merges saved locations into the settings hash with 25m proximity dedup
+func handleLocationsMergeCommand(redisClient *redis.Client, ctx context.Context, params map[string]interface{}) error {
+	locationsRaw, ok := params["locations"]
+	if !ok {
+		return fmt.Errorf("missing locations parameter")
+	}
+
+	locationsSlice, ok := locationsRaw.([]interface{})
+	if !ok {
+		return fmt.Errorf("locations must be an array")
+	}
+
+	// Read all existing settings fields
+	allFields, err := redisClient.HGetAll(ctx, "settings").Result()
+	if err != nil {
+		return fmt.Errorf("failed to read settings: %v", err)
+	}
+
+	// Parse existing saved locations: find occupied slots and extract coordinates
+	type existingLoc struct {
+		lat float64
+		lng float64
+	}
+	existing := map[int]existingLoc{}
+	maxSlot := -1
+
+	for key, val := range allFields {
+		if !strings.HasPrefix(key, "dashboard.saved-locations.") {
+			continue
+		}
+		parts := strings.Split(key, ".")
+		if len(parts) != 4 {
+			continue
+		}
+		slotNum, err := strconv.Atoi(parts[2])
+		if err != nil {
+			continue
+		}
+		if slotNum > maxSlot {
+			maxSlot = slotNum
+		}
+		field := parts[3]
+		if field == "latitude" {
+			lat, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				continue
+			}
+			loc := existing[slotNum]
+			loc.lat = lat
+			existing[slotNum] = loc
+		} else if field == "longitude" {
+			lng, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				continue
+			}
+			loc := existing[slotNum]
+			loc.lng = lng
+			existing[slotNum] = loc
+		}
+	}
+
+	// Build list of existing coordinates for dedup checks
+	var existingCoords []existingLoc
+	for _, loc := range existing {
+		existingCoords = append(existingCoords, loc)
+	}
+
+	nextSlot := maxSlot + 1
+	added := 0
+	skipped := 0
+
+	for _, locRaw := range locationsSlice {
+		locMap, ok := locRaw.(map[string]interface{})
+		if !ok {
+			skipped++
+			continue
+		}
+
+		lat, latOK := locMap["latitude"].(float64)
+		lng, lngOK := locMap["longitude"].(float64)
+		if !latOK || !lngOK {
+			skipped++
+			continue
+		}
+
+		// Check proximity against all existing locations (25m = 0.025km)
+		duplicate := false
+		for _, ex := range existingCoords {
+			if haversineKm(lat, lng, ex.lat, ex.lng) < 0.025 {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			skipped++
+			continue
+		}
+
+		label, _ := locMap["label"].(string)
+		createdAt, _ := locMap["created_at"].(string)
+		lastUsedAt, _ := locMap["last_used_at"].(string)
+
+		prefix := fmt.Sprintf("dashboard.saved-locations.%d", nextSlot)
+		fields := map[string]interface{}{
+			prefix + ".latitude":     fmt.Sprintf("%f", lat),
+			prefix + ".longitude":    fmt.Sprintf("%f", lng),
+			prefix + ".label":        label,
+			prefix + ".created-at":   createdAt,
+			prefix + ".last-used-at": lastUsedAt,
+		}
+
+		if err := redisClient.HSet(ctx, "settings", fields).Err(); err != nil {
+			return fmt.Errorf("failed to write location slot %d: %v", nextSlot, err)
+		}
+
+		existingCoords = append(existingCoords, existingLoc{lat: lat, lng: lng})
+		nextSlot++
+		added++
+	}
+
+	// Notify the dashboard
+	if err := redisClient.Publish(ctx, "settings", "dashboard.saved-locations").Err(); err != nil {
+		log.Printf("Warning: failed to publish saved-locations update: %v", err)
+	}
+
+	log.Printf("locations:merge complete: %d added, %d skipped (duplicate or invalid)", added, skipped)
+	return nil
+}
+
+func haversineKm(lat1, lng1, lat2, lng2 float64) float64 {
+	const earthRadiusKm = 6371.0
+	dLat := (lat2 - lat1) * math.Pi / 180
+	dLng := (lng2 - lng1) * math.Pi / 180
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*math.Pi/180)*math.Cos(lat2*math.Pi/180)*
+			math.Sin(dLng/2)*math.Sin(dLng/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return earthRadiusKm * c
 }
