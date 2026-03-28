@@ -21,6 +21,7 @@ import (
 	"radio-gaga/internal/events"
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/sms"
+	locsync "radio-gaga/internal/sync"
 	"radio-gaga/internal/telemetry"
 	"radio-gaga/internal/telegram"
 	"radio-gaga/internal/utils"
@@ -56,6 +57,9 @@ type ScooterMQTTClient struct {
 
 	// SMS notifier
 	smsNotifier *sms.Notifier
+
+	// Location pusher
+	locationPusher *locsync.LocationPusher
 
 	consecutivePublishFailures int32       // atomic counter for publish failure tracking
 	tlsConfig                  *tls.Config // reference to active TLS config (for insecure fallback)
@@ -426,6 +430,20 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		}
 	}
 
+	// Initialize location pusher if API is configured
+	if config.API.BaseURL != "" && config.API.ScooterID != "" {
+		apiTimeout, err := time.ParseDuration(config.API.Timeout)
+		if err != nil {
+			log.Printf("Invalid API timeout %q, using 10s: %v", config.API.Timeout, err)
+			apiTimeout = 10 * time.Second
+		}
+		client.locationPusher = locsync.NewLocationPusher(
+			redisClient, config.API.BaseURL, config.API.ScooterID,
+			config.Scooter.Token, apiTimeout,
+		)
+		log.Printf("Location pusher initialized (API: %s, scooter: %s)", config.API.BaseURL, config.API.ScooterID)
+	}
+
 	return client, nil
 }
 
@@ -535,6 +553,12 @@ func (s *ScooterMQTTClient) Start() error {
 	// Flush any buffered events from previous session
 	go s.eventDetector.FlushBufferedEvents(s.ctx)
 
+	// Start location pusher watcher if configured
+	if s.locationPusher != nil {
+		s.wg.Add(1)
+		go s.watchSavedLocationChanges()
+	}
+
 	return nil
 }
 
@@ -543,6 +567,37 @@ func (s *ScooterMQTTClient) registerPubSub(ps *redis.PubSub) {
 	s.pubsubsMu.Lock()
 	defer s.pubsubsMu.Unlock()
 	s.pubsubs = append(s.pubsubs, ps)
+}
+
+// watchSavedLocationChanges subscribes to the Redis "settings" pub/sub
+// channel and pushes saved locations to the Sunshine API when they change.
+func (s *ScooterMQTTClient) watchSavedLocationChanges() {
+	defer s.wg.Done()
+	pubsub := s.redisClient.Subscribe(s.ctx, "settings")
+	s.registerPubSub(pubsub)
+	defer pubsub.Close()
+
+	log.Println("Watching for saved location changes...")
+
+	ch := pubsub.Channel()
+	for {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			if strings.HasPrefix(msg.Payload, "dashboard.saved-locations") && s.locationPusher.ShouldPush() {
+				log.Println("Local saved locations changed, pushing to server...")
+				pushCtx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
+				if err := s.locationPusher.Push(pushCtx); err != nil {
+					log.Printf("Location push failed: %v", err)
+				}
+				cancel()
+			}
+		case <-s.ctx.Done():
+			return
+		}
+	}
 }
 
 // Stop stops the MQTT client and closes connections

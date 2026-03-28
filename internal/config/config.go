@@ -48,6 +48,10 @@ func ParseFlags() *models.CommandLineFlags {
 	flag.StringVar(&flags.BufferPersistPath, "buffer-persist-path", "", "path to persist telemetry buffer (empty for no persistence)")
 	flag.StringVar(&flags.TransmitPeriod, "transmit-period", "5m", "period for transmitting buffered telemetry")
 
+	// API configuration
+	flag.StringVar(&flags.APIBaseURL, "api-base-url", "", "Sunshine API base URL")
+	flag.StringVar(&flags.APIScooterID, "api-scooter-id", "", "Sunshine API scooter ID")
+
 	flag.Parse()
 	return flags
 }
@@ -152,6 +156,10 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) 
 			config.NTP.Enabled = flags.NtpEnabled
 		case "ntp-server":
 			config.NTP.Server = flags.NtpServer
+		case "api-base-url":
+			config.API.BaseURL = flags.APIBaseURL
+		case "api-scooter-id":
+			config.API.ScooterID = flags.APIScooterID
 		}
 	})
 
@@ -228,6 +236,11 @@ func ValidateConfig(config *models.Config) error {
 	}
 	if config.Telemetry.Priorities.Slow == "" {
 		config.Telemetry.Priorities.Slow = "15m"
+	}
+
+	// Initialize API config with defaults
+	if config.API.Timeout == "" {
+		config.API.Timeout = "10s"
 	}
 
 	// Initialize events config with defaults
@@ -722,6 +735,12 @@ func convertYamlPathToStructPath(yamlPath string) string {
 		"commands":     "Commands",
 		"service_name": "ServiceName",
 		"debug":        "Debug",
+
+		// API fields
+		"api":        "API",
+		"base_url":   "BaseURL",
+		"scooter_id": "ScooterID",
+		"timeout":    "Timeout",
 
 		// Scooter fields
 		"identifier": "Identifier",

@@ -36,6 +36,9 @@ type CommandLineFlags struct {
 	BufferRetryInterval string
 	BufferPersistPath   string
 	TransmitPeriod      string
+	// API configuration
+	APIBaseURL   string
+	APIScooterID string
 }
 
 // Config represents the application configuration
@@ -50,6 +53,7 @@ type Config struct {
 	Commands      map[string]Command  `yaml:"commands"`
 	Telegram      TelegramConfig      `yaml:"telegram,omitempty"`
 	Notifications NotificationsConfig `yaml:"notifications,omitempty"`
+	API           APIConfig          `yaml:"api,omitempty"`
 	UnuUplink   UnuUplinkConfig    `yaml:"unu_uplink,omitempty"`
 	ServiceName string             `yaml:"service_name,omitempty"`
 	Debug       bool               `yaml:"debug,omitempty"`
@@ -74,6 +78,13 @@ type MQTTConfig struct {
 type NTPConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Server  string `yaml:"server"`
+}
+
+// APIConfig contains Sunshine HTTP API configuration
+type APIConfig struct {
+	BaseURL   string `yaml:"base_url"`
+	ScooterID string `yaml:"scooter_id"`
+	Timeout   string `yaml:"timeout"`
 }
 
 // UnuUplinkConfig contains unu-uplink reconfiguration settings
