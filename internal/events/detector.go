@@ -77,7 +77,7 @@ func (d *Detector) SetTelemetryFlusher(flusher TelemetryFlusher) {
 
 // Start begins monitoring Redis for event triggers
 func (d *Detector) Start(ctx context.Context) {
-	if !d.config.Events.Enabled {
+	if d.config.Events.Enabled != nil && !*d.config.Events.Enabled {
 		log.Println("[EventDetector] Events disabled in config, not starting")
 		return
 	}

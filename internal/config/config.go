@@ -244,6 +244,10 @@ func ValidateConfig(config *models.Config) error {
 	}
 
 	// Initialize events config with defaults
+	if config.Events.Enabled == nil {
+		defaultTrue := true
+		config.Events.Enabled = &defaultTrue
+	}
 	if config.Events.MaxRetries <= 0 {
 		config.Events.MaxRetries = 10
 	}

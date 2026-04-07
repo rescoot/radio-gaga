@@ -111,7 +111,7 @@ type PriorityConfig struct {
 
 // EventsConfig contains event detection and buffering configuration
 type EventsConfig struct {
-	Enabled    bool   `yaml:"enabled"`
+	Enabled    *bool  `yaml:"enabled,omitempty"`
 	BufferPath string `yaml:"buffer_path,omitempty"`
 	MaxRetries int    `yaml:"max_retries,omitempty"`
 }
