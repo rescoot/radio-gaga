@@ -228,23 +228,26 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		return nil, fmt.Errorf("failed to get system info: %v", err)
 	}
 
-	// Read MDB serial number
-	mdbSN, err := utils.ReadMdbSerialNumber()
+	// Read MDB serial numbers from hardware registers
+	mdbSN, mdbSNReal, err := utils.ReadMdbSerialNumbers()
 	if err != nil {
-		log.Printf("Warning: Failed to read MDB serial number: %v", err)
+		log.Printf("Warning: Failed to read MDB serial numbers: %v", err)
 		mdbSN = ""
+		mdbSNReal = ""
 	}
 
 	telemetry.System = models.SystemInfo{
-		Environment:     system["environment"],
-		DbcVersion:      system["dbc-version"],
-		MdbVersion:      system["mdb-version"],
-		NrfFWVersion:    system["nrf-fw-version"],
-		DBCFlavor:       system["dbc-flavor"],
-		MDBFlavor:       system["mdb-flavor"],
-		MdbSerialNumber: mdbSN,
-		DbcSerialNumber: telemetry.Dashboard.SerialNumber,
-		Platform:        runtime.GOARCH,
+		Environment:         system["environment"],
+		DbcVersion:          system["dbc-version"],
+		MdbVersion:          system["mdb-version"],
+		NrfFWVersion:        system["nrf-fw-version"],
+		DBCFlavor:           system["dbc-flavor"],
+		MDBFlavor:           system["mdb-flavor"],
+		MdbSerialNumber:     mdbSN,
+		MdbSerialNumberReal: mdbSNReal,
+		DbcSerialNumber:     telemetry.Dashboard.SerialNumber,
+		DbcSerialNumberReal: system["dbc-sn-real"],
+		Platform:            runtime.GOARCH,
 	}
 
 	// Get internet connectivity status

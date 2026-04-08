@@ -800,10 +800,14 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 	log.Println("Dashboard ready: Checking/Fetching DBC information...")
 	dbcVersionInfo, err := s.redisClient.HGetAll(ctx, "version:dbc").Result()
 
+	var dbcSN, dbcSNReal string
+
 	if err == nil && dbcVersionInfo["version_id"] != "" && dbcVersionInfo["id"] != "" {
 		log.Printf("Found complete DBC info in version:dbc Redis hash: %v", dbcVersionInfo)
 		dbcVersionID = dbcVersionInfo["version_id"]
 		dbcID = dbcVersionInfo["id"]
+		dbcSN = dbcVersionInfo["serial_number"]
+		dbcSNReal = dbcVersionInfo["serial_number_real"]
 	} else {
 		if err != redis.Nil && err != nil {
 			log.Printf("Error reading version:dbc from Redis: %v. Proceeding with SSH.", err)
@@ -814,7 +818,9 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 		sshCtx, sshCancel := context.WithTimeout(ctx, 10*time.Second)
 		defer sshCancel()
 
-		cmd := exec.CommandContext(sshCtx, "ssh", "-y", "root@192.168.7.2", "cat /etc/os-release")
+		// Read os-release and OTP register files in one SSH call
+		cmd := exec.CommandContext(sshCtx, "ssh", "-y", "root@192.168.7.2",
+			"cat /etc/os-release; cat /sys/fsl_otp/HW_OCOTP_CFG0 /sys/fsl_otp/HW_OCOTP_CFG1 2>/dev/null")
 		output, sshErr := cmd.Output()
 
 		if sshCtx.Err() == context.DeadlineExceeded {
@@ -827,7 +833,8 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 			dbcVersionID = "unknown_ssh_error"
 		} else {
 			fetchedViaSSH = true
-			dbcID, dbcVersionID = parseOSRelease(string(output))
+			outputStr := string(output)
+			dbcID, dbcVersionID = parseOSRelease(outputStr)
 
 			if dbcID == "" {
 				dbcID = "unknown_os_release_id"
@@ -838,11 +845,30 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 				log.Printf("Could not find VERSION_ID in DBC os-release")
 			}
 
-			if dbcID != "" && dbcVersionID != "" &&
-				!strings.HasPrefix(dbcID, "unknown_") && !strings.HasPrefix(dbcVersionID, "unknown_") {
+			// Extract OTP hex lines (format: "0x...") and compute DBC serial numbers
+			var otpLines []string
+			for _, line := range strings.Split(outputStr, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "0x") {
+					otpLines = append(otpLines, strings.TrimSpace(line))
+				}
+			}
+			if len(otpLines) >= 2 {
+				legacySN, realSN, snErr := utils.ParseOTPStrings(otpLines[0], otpLines[1])
+				if snErr != nil {
+					log.Printf("Failed to parse DBC serial numbers: %v", snErr)
+				} else {
+					dbcSN = legacySN
+					dbcSNReal = realSN
+					log.Printf("Read DBC serial numbers via SSH: legacy=%s real=%s", dbcSN, dbcSNReal)
+				}
+			}
+
+			if !strings.HasPrefix(dbcID, "unknown_") && !strings.HasPrefix(dbcVersionID, "unknown_") {
 				fieldsToSet := map[string]interface{}{
-					"id":         dbcID,
-					"version_id": dbcVersionID,
+					"id":                dbcID,
+					"version_id":        dbcVersionID,
+					"serial_number":     dbcSN,
+					"serial_number_real": dbcSNReal,
 				}
 				if pipeErr := s.redisClient.HSet(ctx, "version:dbc", fieldsToSet).Err(); pipeErr != nil {
 					log.Printf("Failed to populate version:dbc Redis hash after SSH: %v", pipeErr)
@@ -880,6 +906,17 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 		log.Printf("Failed to store DBC version '%s' in system hash: %v", dbcVersionID, storeErr)
 	} else {
 		log.Printf("Stored DBC version as '%s' in system hash (fetched via SSH: %t)", dbcVersionID, fetchedViaSSH)
+	}
+
+	if dbcSN != "" {
+		if storeErr := s.redisClient.HSet(ctx, "system", "dbc-sn", dbcSN).Err(); storeErr != nil {
+			log.Printf("Failed to store DBC serial number in system hash: %v", storeErr)
+		}
+	}
+	if dbcSNReal != "" {
+		if storeErr := s.redisClient.HSet(ctx, "system", "dbc-sn-real", dbcSNReal).Err(); storeErr != nil {
+			log.Printf("Failed to store DBC real serial number in system hash: %v", storeErr)
+		}
 	}
 }
 

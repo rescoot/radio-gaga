@@ -260,15 +260,17 @@ type CBBatteryData struct {
 
 // SystemInfo represents system information
 type SystemInfo struct {
-	MdbVersion      string `json:"mdb_version"`
-	Environment     string `json:"environment"`
-	NrfFWVersion    string `json:"nrf_fw_version"`
-	DbcVersion      string `json:"dbc_version"`
-	DBCFlavor       string `json:"dbc_flavor,omitempty"`
-	MDBFlavor       string `json:"mdb_flavor,omitempty"`
-	MdbSerialNumber string `json:"mdb_sn,omitempty"`
-	DbcSerialNumber string `json:"dbc_sn,omitempty"`
-	Platform        string `json:"platform,omitempty"`
+	MdbVersion          string `json:"mdb_version"`
+	Environment         string `json:"environment"`
+	NrfFWVersion        string `json:"nrf_fw_version"`
+	DbcVersion          string `json:"dbc_version"`
+	DBCFlavor           string `json:"dbc_flavor,omitempty"`
+	MDBFlavor           string `json:"mdb_flavor,omitempty"`
+	MdbSerialNumber     string `json:"mdb_sn,omitempty"`
+	MdbSerialNumberReal string `json:"mdb_sn_real,omitempty"`
+	DbcSerialNumber     string `json:"dbc_sn,omitempty"`
+	DbcSerialNumberReal string `json:"dbc_sn_real,omitempty"`
+	Platform            string `json:"platform,omitempty"`
 }
 
 // ConnectivityStatus represents internet and modem connectivity

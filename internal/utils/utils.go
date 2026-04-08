@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"hash"
+	"io"
 	"log"
 	"os"
 	"radio-gaga/internal/models"
@@ -190,39 +191,103 @@ func ConvertToStringKeyMap(m interface{}) interface{} {
 	}
 }
 
-// ReadMdbSerialNumber reads the MDB serial number from the system
-func ReadMdbSerialNumber() (string, error) {
-	// Read the first value
-	cfg0, err := readHexValueFromFile("/sys/fsl_otp/HW_OCOTP_CFG0")
+// ReadMdbSerialNumbers reads MDB serial numbers from hardware registers.
+// It tries the NVMEM device first, then falls back to the OTP sysfs files —
+// the same strategy used by version-service.
+// Returns the legacy decimal S/N (sum of CFG0+CFG1, unu-compatible) and
+// the real hex S/N (CFG1||CFG0, matching the hardware register layout).
+func ReadMdbSerialNumbers() (legacySN, realSN string, err error) {
+	cfg0, cfg1, err := readIdentifierValues()
 	if err != nil {
-		return "", fmt.Errorf("failed to read MDB serial number part 1: %v", err)
+		return "", "", err
 	}
-
-	// Read the second value
-	cfg1, err := readHexValueFromFile("/sys/fsl_otp/HW_OCOTP_CFG1")
-	if err != nil {
-		return "", fmt.Errorf("failed to read MDB serial number part 2: %v", err)
-	}
-
-	// Combine the values
-	sn := cfg0 + cfg1
-	return fmt.Sprintf("%d", sn), nil
+	legacySN = fmt.Sprintf("%d", cfg0+cfg1)
+	realSN = fmt.Sprintf("%08x%08x", cfg1, cfg0)
+	return legacySN, realSN, nil
 }
 
-// readHexValueFromFile reads a hexadecimal value from a file
-func readHexValueFromFile(path string) (uint64, error) {
-	// Read the file
+// readIdentifierValues reads CFG0 and CFG1 as uint64 values.
+// Tries NVMEM first (offset 4 for CFG0, offset 8 for CFG1), falls back to OTP sysfs.
+func readIdentifierValues() (cfg0, cfg1 uint64, err error) {
+	const nvmemPath = "/sys/bus/nvmem/devices/imx-ocotp0/nvmem"
+	if _, statErr := os.Stat(nvmemPath); statErr == nil {
+		c0, e0 := readUint32FromNvmem(nvmemPath, 4)
+		c1, e1 := readUint32FromNvmem(nvmemPath, 8)
+		if e0 == nil && e1 == nil {
+			return c0, c1, nil
+		}
+		log.Printf("NVMEM read failed (cfg0: %v, cfg1: %v), falling back to OTP sysfs", e0, e1)
+	}
+
+	cfg0, err = readOTPHexFile("/sys/fsl_otp/HW_OCOTP_CFG0")
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to read CFG0: %v", err)
+	}
+	cfg1, err = readOTPHexFile("/sys/fsl_otp/HW_OCOTP_CFG1")
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to read CFG1: %v", err)
+	}
+	return cfg0, cfg1, nil
+}
+
+// readUint32FromNvmem reads 4 bytes from the NVMEM device at the given byte offset
+// and returns them as a uint64 (little-endian, byte-reversed to match OTP sysfs convention).
+func readUint32FromNvmem(path string, offset int) (uint64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
+		return 0, err
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(f, buf); err != nil {
+		return 0, err
+	}
+	// byte-reverse: NVMEM is little-endian, OTP sysfs gives big-endian
+	v := uint64(buf[3])<<24 | uint64(buf[2])<<16 | uint64(buf[1])<<8 | uint64(buf[0])
+	return v, nil
+}
+
+// ReadMdbSerialNumber reads the legacy decimal MDB serial number (unu-compatible).
+func ReadMdbSerialNumber() (string, error) {
+	legacy, _, err := ReadMdbSerialNumbers()
+	return legacy, err
+}
+
+// ParseOTPStrings computes both serial numbers from raw OTP file values read externally
+// (e.g. via SSH). Both strings may include or omit the "0x" prefix.
+func ParseOTPStrings(cfg0Str, cfg1Str string) (legacySN, realSN string, err error) {
+	cfg0, err := parseOTPString(cfg0Str)
+	if err != nil {
+		return "", "", fmt.Errorf("CFG0: %v", err)
+	}
+	cfg1, err := parseOTPString(cfg1Str)
+	if err != nil {
+		return "", "", fmt.Errorf("CFG1: %v", err)
+	}
+	legacySN = fmt.Sprintf("%d", cfg0+cfg1)
+	realSN = fmt.Sprintf("%08x%08x", cfg1, cfg0)
+	return legacySN, realSN, nil
+}
+
+// readOTPHexFile reads a hex value from an OTP sysfs file (format: "0xABCDEF01").
+func readOTPHexFile(path string) (uint64, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, fmt.Errorf("cannot open %s: %v", path, err)
 	}
+	return parseOTPString(strings.TrimSpace(string(data)))
+}
 
-	// Parse the hexadecimal value
-	var value uint64
-	_, err = fmt.Sscanf(string(data), "0x%x", &value)
+// parseOTPString parses a hex string with optional "0x" prefix.
+func parseOTPString(s string) (uint64, error) {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(strings.ToLower(s), "0x")
+	v, err := strconv.ParseUint(s, 16, 64)
 	if err != nil {
-		return 0, fmt.Errorf("cannot read value from %s: %v", path, err)
+		return 0, fmt.Errorf("cannot parse %q as hex: %v", s, err)
 	}
-
-	return value, nil
+	return v, nil
 }
