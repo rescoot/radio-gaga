@@ -1,421 +1,160 @@
 # Radio Gaga
 
-[![Build and Release](https://github.com/rescoot/radio-gaga/actions/workflows/build-and-release.yml/badge.svg)](https://github.com/rescoot/radio-gaga/actions/workflows/build-and-release.yml)
+[![Build and Release](https://github.com/rescoot/radio-gaga/actions/workflows/release.yml/badge.svg)](https://github.com/rescoot/radio-gaga/actions/workflows/release.yml)
 
-## Overview
-
-Radio Gaga is a telemetry and remote control system designed for managing electric scooters. The application serves as the communication bridge between scooters and cloud services, enabling real-time monitoring and control capabilities.
-
-The system interfaces with Redis for local state management and uses MQTT for secure, efficient communication with cloud services. Radio Gaga intelligently adapts its reporting frequency based on the scooter's operational state, optimizing bandwidth usage while ensuring timely updates during critical operations.
-
-## Key Features
-
-- **Intelligent Telemetry**: Adaptive reporting intervals based on vehicle state (driving, standby, hibernating)
-- **Telemetry Buffering**: Optional buffering system for offline operation with Redis persistence and disk fallback
-- **Comprehensive State Monitoring**: Tracks vehicle state, engine data, battery information, location, and system status
-- **Remote Control Capabilities**: Execute commands remotely via MQTT
-- **Secure Communication**: TLS encryption with certificate validation for MQTT and publish timeout protection
-- **Flexible Configuration**: YAML-based configuration with command-line overrides and Redis fallbacks
-- **Self-Update Mechanism**: OTA updates with checksum verification and automatic rollback
-- **Navigation Support**: Set destination coordinates for navigation (for LibreScoot DBC)
-- **Telegram Notifications**: Direct alerts to Telegram for alarm, movement, battery, temperature, and state events
-- **Environment-Aware Operation**: Different behavior for development vs. production environments
-- **System Integration**: Systemd service management and filesystem handling
-- **unu-uplink Reconfiguration**: Automatic reconfiguration of stock unu-uplink to use the Sunshine MQTT broker
-- **Development Tools**: Shell and Redis command execution support (development environment only)
-
-## System Architecture
-
-### Components
-
-- **MQTT Client**: Manages secure communication with the MQTT broker, handles connection recovery and message delivery with publish timeout protection
-- **Redis Backend**: Stores and retrieves vehicle state information, provides pub/sub for internal events
-- **Telemetry Engine**: Collects and processes vehicle data with adaptive reporting intervals
-- **Telemetry Buffer**: Optional buffering system that stores telemetry when offline, persists to Redis (with disk fallback), and retransmits with exponential backoff
-- **Command Handler**: Processes incoming commands and executes appropriate actions
-- **Self-Update System**: Manages OTA updates with verification and rollback capabilities
-- **Configuration Management**: YAML-based configuration with fallback mechanisms and runtime modification support
-
-### Supported Commands
-
-#### Core Commands
-- `ping`: Health check command that verifies connectivity
-- `get_state`: Retrieve current comprehensive vehicle telemetry
-- `self_update`: Update the radio-gaga client with checksum verification
-- `lock`: Lock the scooter
-- `unlock`: Unlock the scooter
-- `blinkers`: Control turn signals (left/right/both/off)
-- `honk`: Activate horn with configurable duration
-- `open_seatbox`: Open the seat box
-- `locate`: Help locate scooter (flashes lights and honks in a pattern)
-- `alarm`: Trigger alarm system with configurable parameters (hazard lights, horn patterns)
-- `navigate`: Set destination coordinates for navigation
-- `config:get`: Retrieve current configuration values
-- `config:set`: Update runtime configuration values
-- `config:del`: Delete/clear configuration values (reset to zero value)
-- `config:save`: Persist current configuration to file
-
-#### Development Environment Only
-- `redis`: Execute Redis commands (get, set, hget, hset, hgetall, lpush, lpop, publish)
-- `shell`: Execute shell commands with output streaming capability
-
-### Configuration Management Commands
-
-Radio-gaga provides three commands for managing configuration at runtime:
-
-#### config:get - Retrieve Configuration Values
-
-Retrieves current configuration values. Can get a specific field or the entire configuration.
-
-**Usage**:
-```json
-{
-  "command": "config:get",
-  "params": {
-    "field": "Telemetry.Intervals.Driving"  // Optional: omit to get entire config
-  },
-  "request_id": "unique-request-id"
-}
-```
-
-**Response**:
-```json
-{
-  "status": "success",
-  "config": "5s",  // or entire config object if no field specified
-  "request_id": "unique-request-id"
-}
-```
-
-#### config:set - Update Configuration Values
-
-Updates a specific configuration field in runtime memory. Changes take effect immediately but are not persisted until `config:save` is called.
-
-**Usage**:
-```json
-{
-  "command": "config:set",
-  "params": {
-    "field": "telemetry.intervals.driving",
-    "value": "3s"
-  },
-  "request_id": "unique-request-id"
-}
-```
-
-**Response**:
-```json
-{
-  "status": "success",
-  "message": "Configuration field updated successfully",
-  "field": "telemetry.intervals.driving",
-  "value": "3s",
-  "request_id": "unique-request-id"
-}
-```
-
-#### config:del - Delete Configuration Values
-
-Deletes/clears a specific configuration field by setting it to its zero value. Changes take effect immediately but are not persisted until `config:save` is called.
-
-**Usage**:
-```json
-{
-  "command": "config:del",
-  "params": {
-    "field": "telemetry.intervals.driving"
-  },
-  "request_id": "unique-request-id"
-}
-```
-
-**Response**:
-```json
-{
-  "status": "success",
-  "message": "Configuration field deleted successfully",
-  "field": "telemetry.intervals.driving",
-  "previous_value": "5s",
-  "request_id": "unique-request-id"
-}
-```
-
-#### config:save - Persist Configuration
-
-Saves the current runtime configuration to the configuration file, creating a backup of the existing file.
-
-**Usage**:
-```json
-{
-  "command": "config:save",
-  "params": {},
-  "request_id": "unique-request-id"
-}
-```
-
-**Response**:
-```json
-{
-  "status": "success",
-  "message": "Configuration saved successfully",
-  "path": "/path/to/config.yml",
-  "request_id": "unique-request-id"
-}
-```
-
-**Configuration Fields**:
-Configuration fields use YAML dot notation for easy access. Common fields include:
-
-**Top-level fields:**
-- `debug` - Debug logging toggle (boolean)
-- `environment` - Environment setting (string)
-- `redis_url` - Redis connection URL (string)
-- `service_name` - Service name (string)
-
-**Scooter configuration:**
-- `scooter.identifier` - Vehicle identifier (string)
-- `scooter.token` - Authentication token (string)
-
-**MQTT configuration:**
-- `mqtt.broker_url` - MQTT broker URL (string)
-- `mqtt.ca_cert` - CA certificate path (string)
-- `mqtt.keep_alive` - Keep alive interval (duration string)
-
-**Telemetry configuration:**
-- `telemetry.intervals.driving` - Telemetry interval while driving (duration)
-- `telemetry.intervals.standby` - Telemetry interval in standby (duration)
-- `telemetry.intervals.standby_no_battery` - Telemetry interval without battery (duration)
-- `telemetry.intervals.hibernate` - Telemetry interval in hibernate (duration)
-- `telemetry.buffer.enabled` - Enable telemetry buffering (boolean)
-- `telemetry.buffer.max_size` - Maximum buffer size (integer)
-- `telemetry.buffer.max_retries` - Maximum retry attempts (integer)
-- `telemetry.buffer.retry_interval` - Retry interval (duration)
-- `telemetry.buffer.persist_path` - Disk path for buffer persistence (optional, fallback when Redis fails)
-- `telemetry.transmit_period` - Buffer transmission period (duration)
-
-**NTP configuration:**
-- `ntp.enabled` - Enable NTP synchronization (boolean)
-- `ntp.server` - NTP server address (string)
-
-**Command configuration:**
-- `commands.{command_name}.disabled` - Disable specific command (boolean)
-- `commands.{command_name}.params` - Command parameters (object)
-
-**unu-uplink configuration:**
-- `unu_uplink.enabled` - Enable automatic reconfiguration of unu-uplink to use the Sunshine MQTT broker (boolean)
-
-**Features**:
-- **Immediate Effect**: `config:set` changes take effect immediately
-- **Flexible Persistence**: Use `config:save` when you want to persist changes
-- **Backup Creation**: `config:save` automatically creates a backup file
-- **No Restrictions**: Any configuration field can be modified
-- **Atomic Operations**: Each command is atomic and independent
-
-## Configuration
-
-### Configuration Methods
-1. YAML Configuration File (`radio-gaga.yml`)
-2. Command Line Flags (override YAML settings)
-3. Redis Settings (fallback for MQTT broker URL and CA certificate)
-
-The system follows a hierarchical configuration approach, with command-line flags taking precedence over YAML configuration, which in turn takes precedence over Redis fallback values.
-
-### Configuration Options
-```yaml
-scooter:
-  identifier: "VEHICLE-ID"    # Vehicle identifier (MQTT username)
-  token: "auth_token"         # Authentication token (MQTT password)
-
-environment: "production"     # production or development
-
-mqtt:
-  broker_url: "ssl://mqtt.example.com:8883"  # Fallback to Redis `HGET settings cloud:mqtt-url` if not set
-  ca_cert: "/path/to/ca.crt"  # Optional CA certificate file path for TLS (fallback to Redis `HGET settings cloud:mqtt-ca` if not set)
-  # Alternatively, embed the certificate directly in the config file
-  # ca_cert_embedded: |
-  #   -----BEGIN CERTIFICATE-----
-  #   MIIFTTCCAzWgAwIBAgIBATANBgkqhkiG9w0BAQsFADBIMQswCQYDVQQGEwJERTEa
-  #   ... certificate content ...
-  #   -----END CERTIFICATE-----
-  keepalive: "30s"            # MQTT keepalive interval (default: 30s for faster disconnect detection)
-
-ntp:
-  enabled: true               # Enable/disable NTP time synchronization
-  server: "pool.ntp.rescoot.org"  # NTP server address
-
-redis_url: "redis://localhost:6379"
-
-telemetry:
-  intervals:
-    driving: "1s"            # Interval while driving
-    standby: "5m"            # Interval in standby with battery
-    standby_no_battery: "8h" # Interval in standby without battery
-    hibernate: "24h"         # Interval in hibernate mode
-  buffer:                    # Optional telemetry buffering
-    enabled: false           # Enable buffering for offline operation
-    max_size: 1000           # Maximum events to buffer
-    max_retries: 5           # Maximum transmission retry attempts
-    retry_interval: "1m"     # Retry interval
-    persist_path: "/var/lib/radio-gaga/buffer.json"  # Disk fallback (optional)
-  transmit_period: "5m"      # Buffer transmission period
-
-commands:                    # Optional command configuration
-  honk:
-    disabled: false          # Commands can be disabled by setting `disabled: true`
-    on_time: "100ms"
-  alarm:
-    hazards:
-      flash: true
-    horn:
-      honk: true
-      on_time: "400ms"
-      off_time: "400ms"
-
-unu_uplink:                  # Optional unu-uplink reconfiguration
-  enabled: false             # Automatically reconfigure unu-uplink to use the Sunshine MQTT broker
-```
-
-### Command Line Flags
 ```bash
-  -config string
-        Path to config file (defaults to radio-gaga.yml)
-  -environment string
-        Environment (production or development)
-  -identifier string
-        Vehicle identifier (MQTT username)
-  -token string
-        Authentication token (MQTT password)
-  -mqtt-broker string
-        MQTT broker URL
-  -mqtt-cacert string
-        Path to MQTT CA certificate
-  -mqtt-keepalive string
-        MQTT keepalive duration (default "30s")
-  -redis-url string
-        Redis URL (default "redis://localhost:6379")
-  -ntp-enabled
-        Enable NTP time synchronization (default true)
-  -ntp-server string
-        NTP server address (default "pool.ntp.rescoot.org")
-  -driving-interval string
-        Telemetry interval while driving (default "1s")
-  -standby-interval string
-        Telemetry interval in standby (default "5m")
-  -standby-no-battery-interval string
-        Telemetry interval in standby without battery (default "8h")
-  -hibernate-interval string
-        Telemetry interval in hibernate mode (default "24h")
+make dist   # optimized ARM build for deployment
 ```
 
-## Telemetry System
+Telemetry and remote control bridge for electric scooters (unu Scooter Pro / LibreScoot). Sits between the vehicle's Redis state bus and the Sunshine cloud platform via MQTT. Adapts its reporting frequency to what the scooter is actually doing: once per second while driving, once a day while hibernating.
 
-Radio Gaga features an intelligent telemetry system that adapts its reporting frequency based on the scooter's operational state:
+Part of the [Rescoot](https://github.com/rescoot) project.
 
-- **Driving Mode**: High-frequency updates (default: every 1 second)
-- **Standby Mode**: Moderate-frequency updates (default: every 5 minutes)
-- **Standby without Battery**: Low-frequency updates (default: every 8 hours)
-- **Hibernate Mode**: Minimal updates (default: every 24 hours)
+## How It Works
 
-The system automatically detects state changes and adjusts reporting intervals accordingly. It also sends a final telemetry update before power suspension to ensure the latest state is recorded.
+Radio Gaga reads vehicle state from Redis hashes populated by other on-board services (vehicle-service, battery-service, modem-service, etc.) and publishes structured telemetry to MQTT. It also listens for commands from the cloud and executes them locally.
 
-### Telemetry Data Structure
+```
+Redis (vehicle state) --> radio-gaga --> MQTT --> Sunshine cloud
+                              ^
+                              |
+                         MQTT commands
+```
 
-The system collects and reports comprehensive vehicle telemetry including:
+### MQTT Topics
 
-#### Vehicle State
-- Operating state (ready-to-drive, parked, locked, stand-by, hibernating)
-- Handlebar position and lock status
-- Kickstand position
-- Seatbox lock status
-- Blinker status
-- Brake status (left/right)
-- Horn and seatbox button states
+| Topic | Direction | Purpose |
+|-------|-----------|---------|
+| `scooters/{id}/telemetry` | out | Periodic telemetry data |
+| `scooters/{id}/commands` | in | Incoming commands (JSON) |
+| `scooters/{id}/acks` | out | Command responses |
+| `scooters/{id}/events` | out | Detected events (alarm, movement, etc.) |
+| `scooters/{id}/telemetry_batch` | out | Buffered telemetry batches (retransmitted after reconnect) |
 
-#### Engine Data
-- Current speed and motor RPM
-- Odometer reading
-- Motor voltage and current
-- Motor temperature
-- Engine state and firmware version
-- KERS (Kinetic Energy Recovery System) status
+### Adaptive Telemetry
 
-#### Battery Information
-- Main batteries (up to 2): presence, charge level (0-100%), voltage, current, temperature, health
-- Auxiliary battery (AUX): level, voltage, charge status
-- Connectivity Battery Box (CBB): detailed status including cycle count, capacity, charging time
+Reporting intervals adjust automatically based on vehicle state:
 
-#### System Information
-- MDB (Middle Driver Board) version and flavor
-- DBC (Dashboard Controller) version and flavor
-- Environment information
-- Firmware versions
+| State | Default Interval | Rationale |
+|-------|-----------------|-----------|
+| Driving | 1s | Real-time tracking |
+| Standby (with battery) | 5m | Periodic check-ins |
+| Standby (no battery) | 8h | Conserve cellular data |
+| Hibernate | 24h | Minimal keepalive |
 
-#### Connectivity Status
-- Modem state and health
-- Internet connection status
-- Cloud connection status
-- Signal quality and network information
-- SIM card details
+State changes trigger an immediate telemetry push regardless of the interval timer.
 
-#### Location Data
-- GPS coordinates (latitude/longitude)
-- Altitude, speed, and course
-- GPS state and timestamp
+### Priority-Based Flushing
 
-#### Additional Data
-- Power management status
-- Bluetooth status
-- Keycard reader status
-- Dashboard status
-- Navigation destination (if set)
+Not all telemetry fields change at the same rate. When a field changes between regular intervals, radio-gaga schedules an early flush based on the field's priority:
+
+| Priority | Default Deadline | Fields |
+|----------|-----------------|--------|
+| Immediate | 1s | Vehicle state, lock status, blinkers |
+| Quick | 5s | GPS, battery charge level |
+| Medium | 1m | Most other fields |
+| Slow | 15m | Aux battery, CBB, BLE status |
 
 ### Telemetry Buffering
 
-Radio Gaga includes an optional telemetry buffering system for reliable offline operation:
+When MQTT is unavailable (tunnel, dead spot, broker maintenance), telemetry events are buffered to Redis with disk fallback. On reconnect, buffered events are retransmitted in batches with their original timestamps recalibrated for clock drift. The buffer also flushes to disk before power suspension to avoid data loss.
 
-- **Persistence Strategy**: Buffer is primarily stored in Redis for fast access and sharing across service restarts. If Redis persistence fails, the system automatically falls back to disk-based persistence (if configured).
-- **Offline Buffering**: Telemetry events are collected and buffered when MQTT connection is unavailable
-- **Automatic Retransmission**: Buffered events are periodically transmitted with exponential backoff retry logic
-- **Configurable Limits**: Maximum buffer size, retry attempts, and retry intervals are all configurable
-- **Batch Transmission**: Events are transmitted in batches with unique batch IDs for tracking
-- **Graceful Degradation**: If both Redis and disk persistence fail, new events are still collected in memory
+### Event Detection
 
-The buffering system ensures that no telemetry data is lost during network outages or MQTT disconnections.
+Radio Gaga monitors telemetry for noteworthy state changes and publishes them as discrete events. Detected event types:
 
-## unu-uplink Integration
+- **Alarm**: arm/disarm/trigger
+- **Unauthorized movement**: speed while parked
+- **Battery warning**: charge level thresholds
+- **Temperature warning**: motor/battery overtemp
+- **State change**: vehicle state transitions
+- **Connectivity**: internet/cloud status changes
+- **Fault**: error conditions
 
-For scooters running stock unu firmware alongside radio-gaga, the system can automatically reconfigure the legacy unu-uplink service:
+Events are buffered to disk and retried independently of telemetry.
 
-- **Automatic Reconfiguration**: When enabled, radio-gaga updates the unu-uplink Redis configuration to point to the Sunshine MQTT broker instead of defunct unu servers
-- **Certificate Handling**: Automatically handles CA certificate setup (writes embedded certificates or reuses file paths)
-- **Service Management**: Restarts the unu-uplink service after reconfiguration
-- **Safety Checks**: Only reconfigures if the current URL points to defunct unu servers, preserving custom configurations
+## Commands
 
-This allows both radio-gaga and the legacy unu-uplink service to coexist and communicate with the Sunshine MQTT broker.
+Commands arrive as JSON on the MQTT commands topic:
 
-## Telegram Notifications
+```json
+{
+  "command": "lock",
+  "params": {},
+  "request_id": "abc-123"
+}
+```
 
-Radio Gaga can send alerts directly to a Telegram chat when scooter events occur — alarm changes, unauthorized movement, battery/temperature warnings, state transitions, and more.
+### Vehicle Control
 
-### Setting Up a Telegram Bot
+| Command | Description |
+|---------|-------------|
+| `lock` | Lock the scooter |
+| `unlock` | Unlock the scooter |
+| `open_seatbox` | Open the seat box |
+| `blinkers` | Control turn signals (left/right/both/off) |
+| `honk` | Sound the horn (configurable duration) |
+| `locate` | Flash lights and honk in a pattern |
+| `alarm` | Trigger alarm system (hazard lights, horn patterns) |
+| `navigate` | Set destination coordinates for DBC navigation |
+| `hibernate` | Force hibernate mode |
 
-1. Open Telegram and message [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` and follow the prompts to choose a name and username
-3. BotFather replies with your **bot token** (looks like `123456789:ABCdef...`)
-4. Send a message to your new bot (it won't reply, that's fine)
-5. Get your **chat ID** by opening `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser — look for `"chat":{"id":123456789}` in the response
-6. Add both values to your config:
+### System
+
+| Command | Description |
+|---------|-------------|
+| `ping` | Health check |
+| `get_state` | Return full current telemetry |
+| `self_update` | OTA update with checksum verification and rollback |
+| `update_ca_cert` | Replace MQTT CA certificate (validates PEM, checks CA flag) |
+| `fetch_logs` | Collect and upload system logs to Sunshine |
+
+### Keycard Management
+
+| Command | Description |
+|---------|-------------|
+| `keycards:list` | List authorized keycard UIDs |
+| `keycards:add` | Authorize a keycard UID |
+| `keycards:delete` | Remove a keycard UID |
+| `keycards:master_key:get` | Get the current master keycard |
+| `keycards:master_key:set` | Set the master keycard |
+
+### Configuration
+
+Runtime config changes via `config:get`, `config:set`, `config:del`, `config:save`. Changes from `config:set` take effect immediately; call `config:save` to persist them to disk. Fields use dot notation (`telemetry.intervals.driving`). Save creates a backup of the previous config file.
+
+### Location Sync
+
+`locations:merge` receives saved locations from the server and merges them into Redis with 25m deduplication. Used for the saved-locations feature on LibreScoot DBC dashboards.
+
+### Development-Only
+
+Available when `environment: development`:
+
+| Command | Description |
+|---------|-------------|
+| `shell` | Execute shell commands with streaming output |
+| `redis` | Execute Redis operations (get, set, hget, hset, hgetall, lpush, lpop, publish) |
+
+These are disabled in production.
+
+## Notifications
+
+### Telegram
+
+Direct alerts to a Telegram chat when events fire. Create a bot via [@BotFather](https://t.me/BotFather), get your chat ID from the `/getUpdates` endpoint.
 
 ```yaml
 scooter:
-  name: Deep Blue           # optional, used in notification messages
+  name: Deep Blue           # used in notification messages
 
 telegram:
   enabled: true
   bot_token: "123456789:ABCdef..."
   chat_id: "123456789"
-  rate_limit: 1s            # minimum delay between messages (default: 1s)
-  queue_size: 100           # max queued messages (default: 100)
+  rate_limit: 1s
+  queue_size: 100
+  daily_limit: 0            # 0 = unlimited
   events:
     alarm: true
     unauthorized_movement: true
@@ -426,140 +165,203 @@ telegram:
     fault: false
 ```
 
-You can use the same bot for multiple scooters — each scooter sends independently with its own name in the message.
+### Notification Rules
 
-### Message Examples
+For more complex alerting, define rules with conditions evaluated against Redis state. Multiple conditions per rule use AND logic. Rules can route to Telegram, SMS, or both.
+
+```yaml
+notifications:
+  rules:
+    - name: "cbb_low"
+      conditions:
+        - source: "cb-battery"
+          field: "charge"
+          operator: "<"
+          value: "50"
+      channels: [telegram]
+      cooldown: "30m"
+      message: "CB battery at {{cb-battery.charge}}%"
+
+    - name: "alarm_while_parked"
+      conditions:
+        - source: "alarm"
+          field: "status"
+          operator: "=="
+          value: "triggered"
+        - source: "vehicle"
+          field: "state"
+          operator: "=="
+          value: "standby"
+      channels: [telegram, sms]
+```
+
+Supported condition operators: `<`, `>`, `<=`, `>=`, `==`, `!=`. Raw pub/sub message matching is also supported with `==` (exact) or `contains` (substring).
+
+### SMS
+
+SMS notifications go through ModemManager (`mmcli`), so they work directly over the scooter's cellular modem. No external SMS gateway needed.
+
+```yaml
+notifications:
+  sms:
+    enabled: true
+    phone_number: "+491234567890"
+    rate_limit: "30s"
+    daily_limit: 20
+    queue_size: 20
+```
+
+## Self-Update
+
+OTA updates via the `self_update` command:
+
+1. Download binary from provided URL
+2. Verify checksum (SHA-256 or SHA-1)
+3. Remount filesystem read-write if needed
+4. Back up the current binary
+5. Replace and restart the systemd service
+6. Automatic rollback if the new binary fails to start
+
+## unu-uplink Integration
+
+For scooters still running stock unu firmware: radio-gaga can reconfigure the legacy unu-uplink service to point at the Sunshine broker instead of the defunct unu servers. Handles CA certificate setup and service restart. Only touches the config if it still points to unu infrastructure.
+
+```yaml
+unu_uplink:
+  enabled: true
+```
+
+## Configuration
+
+Configuration priority: command-line flags > YAML file > Redis fallback values.
+
+See [`radio-gaga.example.yml`](radio-gaga.example.yml) for a complete annotated example.
+
+### Command-Line Flags
 
 ```
-🔒 Deep Blue alarm armed
-🚨 Deep Blue alarm triggered!
-⚠️ Deep Blue is moving while parked (12 km/h)
-🔋 Deep Blue Battery 1 at 5%
-🌡️ Deep Blue Engine at 85°C
-🔄 Deep Blue: standby → driving
-📡 Deep Blue lost internet
+-version              Print version and exit
+-config string        Path to config file (default: radio-gaga.yml)
+-identifier string    Vehicle identifier (MQTT username)
+-token string         Authentication token (MQTT password)
+-mqtt-broker string   MQTT broker URL
+-mqtt-cacert string   Path to MQTT CA certificate
+-mqtt-keepalive string  MQTT keepalive duration (default: 30s)
+-redis-url string     Redis URL (default: redis://localhost:6379)
+-environment string   production or development
+-debug                Enable debug logging
+-ntp-enabled          Enable NTP sync (default: true)
+-ntp-server string    NTP server (default: pool.ntp.rescoot.org)
+-driving-interval string    Telemetry interval while driving (default: 1s)
+-standby-interval string    Telemetry interval in standby (default: 5m)
+-standby-no-battery-interval string  Without battery (default: 8h)
+-hibernate-interval string  In hibernate (default: 24h)
+-buffer-enabled       Enable telemetry buffering
+-buffer-max-size int  Maximum buffered events (default: 1000)
+-buffer-max-retries int  Maximum send retries (default: 5)
+-buffer-retry-interval string  Retry interval (default: 1m)
+-buffer-persist-path string  Disk persistence path (empty = no persistence)
+-transmit-period string  Buffer transmission period (default: 5m)
+-api-base-url string  Sunshine API base URL
+-api-scooter-id string  Sunshine API scooter ID
 ```
 
-## Self-Update System
+### Redis Schema
 
-Radio Gaga includes a self-update mechanism that allows for Over-The-Air (OTA) updates with several safety features:
+Radio Gaga reads from these Redis hashes (populated by other on-board services):
 
-- **Secure Download**: Downloads new binary from specified URL
-- **Integrity Verification**: Validates downloaded binary using checksum (SHA-256, SHA-1)
-- **Filesystem Handling**: Automatically handles read-only filesystems by remounting when necessary
-- **Backup Creation**: Creates backup of current binary before replacement
-- **Service Management**: Restarts systemd service after update
-- **Automatic Rollback**: Reverts to previous version if update fails or service doesn't start properly
-- **Logging**: Comprehensive logging of the update process
+| Key | Contents |
+|-----|----------|
+| `vehicle` | State, handlebar lock, kickstand, blinkers, brakes, seatbox |
+| `battery:0`, `battery:1` | Main battery data (charge, voltage, current, temp, health) |
+| `aux-battery` | Auxiliary battery level, voltage, charge status |
+| `cb-battery` | Connectivity Battery Box (cycle count, capacity, serial, etc.) |
+| `engine-ecu` | Speed, RPM, odometer, voltage, current, temperature |
+| `gps` | Latitude, longitude, altitude, speed, course |
+| `internet` | Internet/cloud connection status, signal quality, SIM info |
+| `modem` | Modem power state, SIM state, operator, roaming |
+| `power-manager` | Power state, wakeup source, hibernate level |
+| `power-mux` | Power mux input source |
+| `ble` | Bluetooth MAC address and status |
+| `keycard` | Keycard reader authentication, UID, type |
+| `dashboard` | Dashboard mode, ready state, serial number |
+| `navigation` | Destination coordinates |
+| `system` | MDB/DBC version and flavor, firmware, serial numbers |
+| `settings` | Fallback config values (`cloud:mqtt-url`, `cloud:mqtt-ca`) |
 
-The system supports both in-band updates (via MQTT command) and out-of-band updates (via direct script execution).
+### MDB Flavor Detection
 
-## Prerequisites
+Detected from the hostname prefix and stored in Redis as `system.mdb-flavor`:
 
-- Go 1.20 or higher
-- Redis server (for state management)
-- MQTT broker (for cloud communication)
+- `librescoot-*` -> librescoot
+- `mdb-*` -> stock
+- anything else -> unknown
 
 ## Building
 
 ```bash
-# Standard development build
-make
-
-# Cross-platform builds
-make amd64  # Linux AMD64 build
-make arm    # Linux ARM build (ARMv7)
-
-# Distribution build for deployment (optimized ARM build)
-make dist
-
-# Debug build with symbols for ARM
-make arm-debug
+make            # development build (current platform)
+make amd64      # Linux AMD64
+make arm        # Linux ARM (ARMv7)
+make arm-debug  # ARM with debug symbols
+make dist       # optimized ARM build, stripped
+make clean
 ```
 
-The build process automatically embeds version information derived from git tags and commits, making each build uniquely identifiable.
+Version is embedded at build time from `git describe`.
 
-### Automated Builds
+### CI/CD
 
-Radio Gaga uses GitHub Actions for continuous integration and deployment:
-
-- Every push to the `main` branch and pull requests trigger an ARM build
-- When a tag (starting with 'v', e.g., v1.0.0) is pushed, a GitHub Release is automatically created
-- Release artifacts include an optimized ARM build named `radio-gaga-[version]-arm`
-
-To create a new release, simply push a tag:
+GitHub Actions builds an ARM distribution on every push to `main` (and on manual dispatch). Pushing a version tag (`v1.0.0`) creates a GitHub Release with the packaged binary, example config, systemd unit, and CA certificate.
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
 ## Installation
 
-### Standard Installation
+### From Source
 
 ```bash
-# Clone the repository
 git clone https://github.com/rescoot/radio-gaga.git
 cd radio-gaga
-
-# Build the application
 make
-
-# Create configuration file (copy and edit example)
 cp radio-gaga.example.yml radio-gaga.yml
-nano radio-gaga.yml
-
-# Run the application
+# edit radio-gaga.yml
 ./radio-gaga
 ```
 
-### Automated Installation (for unu Scooters)
+### On a Scooter
 
-:warning: This is work in progress.
+The repository includes an installer script (`install.sh`) that handles setup on unu Scooter Pro hardware: validates the environment, fetches scooter-specific config from the Sunshine API, downloads the binary, creates a systemd service, and starts it.
 
-The repository includes an installation script that automates the setup process for Rescoot scooters. The installer will:
-1. Verify the environment is a valid scooter
-2. Prompt for authentication token
-3. Fetch scooter-specific configuration
-4. Download the latest binary
-5. Create and enable a systemd service
-6. Start the service
+Target platform is Linux ARM (ARMv7). The binary runs as a systemd service (`rescoot-radio-gaga.service` on stock, `radio-gaga` on LibreScoot).
 
-## Running
+## Dependencies
 
-```bash
-# Using default config file (radio-gaga.yml)
-./radio-gaga
+| Module | Purpose |
+|--------|---------|
+| `github.com/eclipse/paho.mqtt.golang` | MQTT client |
+| `github.com/go-redis/redis/v8` | Redis client |
+| `gopkg.in/yaml.v2` | YAML config parsing |
+| `github.com/beevik/ntp` | NTP time synchronization |
 
-# Using custom config file
-./radio-gaga -config /path/to/config.yml
+Requires Go 1.24+. Runtime dependencies: Redis, an MQTT broker (Sunshine).
 
-# Override config with flags
-./radio-gaga -identifier SCOOTER1 -mqtt-broker ssl://mqtt.example.com:8883 -environment development
+## Security
 
-# View all available flags
-./radio-gaga -help
-```
-
-## Security Features
-
-Radio Gaga implements multiple security measures to ensure safe and secure operation:
-
-- **TLS Encryption**: Secure MQTT communication with certificate validation
-- **NTP Time Synchronization**: Ensures valid certificate verification by keeping system time accurate
-- **Custom CA Certificate Support**: Allows for organization-specific certificate authorities
-- **Vehicle-specific Authentication**: Each scooter has unique identifier/token credentials
-- **Environment-based Command Restrictions**: Certain commands (shell, redis) are restricted to development environments
-- **Command Validation and Sanitization**: All incoming commands are validated before execution
-- **Retained Message Cleanup**: Automatically cleans up retained MQTT messages to prevent stale commands
-- **Secure Update Process**: Checksum verification for all updates with automatic rollback
-- **Filesystem Protection**: Handles read-only filesystems appropriately during updates
-- **Secure Defaults**: Conservative default settings prioritize security
+- TLS for MQTT with custom CA certificate support
+- NTP sync on startup (required for TLS certificate validation)
+- Per-vehicle authentication (identifier + token)
+- Environment-based command restrictions (shell/redis disabled in production)
+- Checksum verification for OTA updates with automatic rollback
+- Read-only filesystem handling during updates
+- Retained MQTT message cleanup to prevent stale command replay
 
 ## License
 
-[GNU Affero Public License 3.0](LICENSE)
+[GNU Affero General Public License 3.0](LICENSE)
 
 ## Authors
 
