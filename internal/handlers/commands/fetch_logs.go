@@ -1,38 +1,55 @@
 package commands
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
-	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/go-redis/redis/v8"
+
+	"radio-gaga/internal/logcollect"
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/sync"
 )
 
-func HandleFetchLogsCommand(client CommandHandlerClient, config *models.Config, params map[string]interface{}, requestID string) error {
+// HandleFetchLogsCommand collects a log bundle from this scooter (MDB plus
+// DBC if reachable) and uploads the resulting tarball to sunshine. The bundle
+// layout is defined in the logcollect package.
+func HandleFetchLogsCommand(client CommandHandlerClient, redisClient *redis.Client, ctx context.Context, config *models.Config, params map[string]interface{}, requestID string) error {
 	since := "24h"
 	if s, ok := params["since"].(string); ok && s != "" {
 		since = s
 	}
 
-	outputDir := fmt.Sprintf("/tmp/scooter-logs-%s", requestID)
-	defer os.RemoveAll(outputDir)
-	defer os.Remove(outputDir + ".tar.gz")
-
-	log.Printf("Collecting logs (since=%s) to %s", since, outputDir)
-
-	cmd := exec.Command("lsc", "logs", "--since", since, "--output", outputDir, "--json")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("lsc logs failed: %w (output: %s)", err, string(output))
-	}
-
+	bundleName := fmt.Sprintf("scooter-logs-%s", requestID)
+	outputDir := filepath.Join("/tmp", bundleName)
 	archivePath := outputDir + ".tar.gz"
-	if _, err := os.Stat(archivePath); os.IsNotExist(err) {
-		return fmt.Errorf("archive not found at %s after lsc logs", archivePath)
+	defer os.RemoveAll(outputDir)
+	defer os.Remove(archivePath)
+
+	log.Printf("fetch_logs: collecting bundle %s (since=%s)", bundleName, since)
+
+	collectCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+	defer cancel()
+
+	bundleMeta, err := logcollect.Collect(collectCtx, redisClient, outputDir, logcollect.Options{
+		Since:     since,
+		RequestID: requestID,
+	})
+	if err != nil {
+		return fmt.Errorf("collecting logs: %w", err)
+	}
+	log.Printf("fetch_logs: collected hosts=%v", bundleMeta.Hosts)
+
+	if err := createTarball(outputDir, archivePath, bundleName); err != nil {
+		return fmt.Errorf("packing archive: %w", err)
 	}
 
 	timeout := 60 * time.Second
@@ -43,17 +60,65 @@ func HandleFetchLogsCommand(client CommandHandlerClient, config *models.Config, 
 	}
 
 	uploader := sync.NewLogUploader(config.API.BaseURL, config.API.ScooterID, config.Scooter.Token, timeout)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	uploadCtx, uploadCancel := context.WithTimeout(context.Background(), timeout)
+	defer uploadCancel()
 
-	if err := uploader.Upload(ctx, archivePath, requestID); err != nil {
-		log.Printf("Log upload failed, retrying: %v", err)
+	if err := uploader.Upload(uploadCtx, archivePath, requestID); err != nil {
+		log.Printf("fetch_logs: upload failed, retrying: %v", err)
 		time.Sleep(2 * time.Second)
-		if err := uploader.Upload(ctx, archivePath, requestID); err != nil {
+		if err := uploader.Upload(uploadCtx, archivePath, requestID); err != nil {
 			return fmt.Errorf("log upload failed after retry: %w", err)
 		}
 	}
-
-	client.SendCommandResponse(requestID, "success", "")
 	return nil
+}
+
+// createTarball writes a gzip-compressed tar of sourceDir to tarPath. The
+// archive entries are prefixed with rootName so the extracted tree has a
+// single predictable top-level directory, which is what sunshine's find_root
+// relies on.
+func createTarball(sourceDir, tarPath, rootName string) error {
+	f, err := os.Create(tarPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gz := gzip.NewWriter(f)
+	defer gz.Close()
+	tw := tar.NewWriter(gz)
+	defer tw.Close()
+
+	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = strings.TrimPrefix(filepath.ToSlash(filepath.Join(rootName, rel)), "./")
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		src, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+		_, err = io.Copy(tw, src)
+		return err
+	})
 }
