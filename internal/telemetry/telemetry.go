@@ -347,6 +347,15 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		}
 	}
 
+	// Get scooter temperature (LibreScoot firmware)
+	scooterTempStr, err := redisClient.HGet(ctx, "scooter", "temperature").Result()
+	if err != nil && err != redis.Nil {
+		log.Printf("Warning: Failed to get scooter temperature: %v", err)
+	} else if err == nil {
+		t := utils.ParseFloat(scooterTempStr)
+		telemetry.ScooterTemperature = &t
+	}
+
 	// Preserve monotonic reading for offset calculation
 	now := time.Now()
 	if clockValid && ValidateTimestamp(now) {

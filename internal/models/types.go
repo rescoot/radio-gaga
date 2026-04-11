@@ -363,8 +363,9 @@ type TelemetryData struct {
 	BLE          BLEStatus              `json:"ble"`
 	Keycard      KeycardStatus          `json:"keycard"`
 	Dashboard    DashboardStatus        `json:"dashboard"`
-	Navigation   NavigationData         `json:"navigation,omitempty"`
-	Timestamp    string                 `json:"timestamp"`
+	Navigation          NavigationData         `json:"navigation,omitempty"`
+	ScooterTemperature  *float64               `json:"scooter_temperature,omitempty"`
+	Timestamp           string                 `json:"timestamp"`
 }
 
 // BufferedTelemetryEvent represents a telemetry event in the buffer
