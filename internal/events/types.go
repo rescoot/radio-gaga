@@ -51,6 +51,8 @@ const (
 // Status constants
 const (
 	StatusTriggered = "triggered"
+	StatusConfirmed = "confirmed"
+	StatusRejected  = "rejected"
 	StatusCleared   = "cleared"
 	StatusLost      = "lost"
 	StatusRegained  = "regained"

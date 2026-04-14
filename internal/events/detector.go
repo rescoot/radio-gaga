@@ -40,6 +40,7 @@ type Detector struct {
 	buffer        *Buffer
 	flusher       TelemetryFlusher
 	ruleEvaluator *notifications.RuleEvaluator
+	movement      *MovementMonitor
 
 	listeners []EventListener
 
@@ -56,6 +57,7 @@ func NewDetector(redisClient *redis.Client, config *models.Config) *Detector {
 		config:        config,
 		buffer:        NewBuffer(config.Events.BufferPath, config.Events.MaxRetries),
 		ruleEvaluator: notifications.NewRuleEvaluator(config.Notifications.Rules, redisClient),
+		movement:      NewMovementMonitor(redisClient),
 		lastState:     make(map[string]string),
 		stopCh:        make(chan struct{}),
 	}
@@ -64,6 +66,7 @@ func NewDetector(redisClient *redis.Client, config *models.Config) *Detector {
 // SetPublisher sets the event publisher
 func (d *Detector) SetPublisher(publisher EventPublisher) {
 	d.publisher = publisher
+	d.movement.SetPublisher(publisher)
 }
 
 // AddListener registers an event listener for notifications
@@ -338,6 +341,10 @@ func (d *Detector) checkVehicleEvents(fields map[string]string) {
 		}))
 	}
 
+	if state != "" && lastState != state {
+		d.movement.OnVehicleStateChange(state)
+	}
+
 	// Lock changes
 	handlebarKey := "vehicle:handlebar"
 	seatboxKey := "vehicle:seatbox"
@@ -388,29 +395,9 @@ func (d *Detector) checkGPSEvents(ctx context.Context, fields map[string]string)
 		}))
 	}
 
-	// Detect unauthorized movement: GPS speed > 0 while vehicle is locked
-	gpsSpeed := parseInt(fields["speed"])
-	if gpsSpeed > 0 {
-		vehicleState, err := d.redisClient.HGet(ctx, "vehicle", "state").Result()
-		if err == nil && (vehicleState == "standby" || vehicleState == "hibernating" || vehicleState == "locked") {
-			movementKey := "unauthorized_movement:active"
-			d.mu.Lock()
-			lastMovement := d.lastState[movementKey]
-			d.lastState[movementKey] = "true"
-			d.mu.Unlock()
-
-			if lastMovement != "true" {
-				d.sendEvent(NewEvent(EventTypeUnauthorizedMovement, StatusTriggered, map[string]interface{}{
-					"gps_speed":     gpsSpeed,
-					"vehicle_state": vehicleState,
-				}))
-			}
-		}
-	} else {
-		d.mu.Lock()
-		d.lastState["unauthorized_movement:active"] = ""
-		d.mu.Unlock()
-	}
+	// Unauthorized movement: position-anchor based, with multi-sample local
+	// confirmation in MovementMonitor before any cloud event is published.
+	d.movement.OnGPSUpdate(ctx, fields)
 }
 
 // checkTemperatureEvents checks for temperature warning events
