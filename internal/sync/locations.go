@@ -62,10 +62,11 @@ func NewLocationPusher(redisClient *redis.Client, apiBaseURL, scooterID, token s
 // ReadLocalLocations reads all dashboard.saved-locations.* fields from
 // the Redis "settings" hash and parses them into Location structs.
 // Fields are stored as individual hash entries:
-//   dashboard.saved-locations.0.latitude  → "52.476382"
-//   dashboard.saved-locations.0.longitude → "13.367518"
-//   dashboard.saved-locations.0.label     → "Home"
-//   etc.
+//
+//	dashboard.saved-locations.0.latitude  → "52.476382"
+//	dashboard.saved-locations.0.longitude → "13.367518"
+//	dashboard.saved-locations.0.label     → "Home"
+//	etc.
 func (p *LocationPusher) ReadLocalLocations(ctx context.Context) ([]Location, error) {
 	all, err := p.redisClient.HGetAll(ctx, "settings").Result()
 	if err != nil {
@@ -174,4 +175,3 @@ func (p *LocationPusher) markPushed() {
 	defer p.mu.Unlock()
 	p.suppressUntil = time.Now().Add(suppressionWindow)
 }
-

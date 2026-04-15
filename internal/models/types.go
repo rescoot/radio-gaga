@@ -43,20 +43,20 @@ type CommandLineFlags struct {
 
 // Config represents the application configuration
 type Config struct {
-	Scooter     ScooterConfig      `yaml:"scooter"`
-	Environment string             `yaml:"environment"`
-	MQTT        MQTTConfig         `yaml:"mqtt"`
-	NTP         NTPConfig          `yaml:"ntp"`
-	RedisURL    string             `yaml:"redis_url"`
-	Telemetry   TelemetryConfig    `yaml:"telemetry"`
+	Scooter       ScooterConfig       `yaml:"scooter"`
+	Environment   string              `yaml:"environment"`
+	MQTT          MQTTConfig          `yaml:"mqtt"`
+	NTP           NTPConfig           `yaml:"ntp"`
+	RedisURL      string              `yaml:"redis_url"`
+	Telemetry     TelemetryConfig     `yaml:"telemetry"`
 	Events        EventsConfig        `yaml:"events,omitempty"`
 	Commands      map[string]Command  `yaml:"commands"`
 	Telegram      TelegramConfig      `yaml:"telegram,omitempty"`
 	Notifications NotificationsConfig `yaml:"notifications,omitempty"`
-	API           APIConfig          `yaml:"api,omitempty"`
-	UnuUplink   UnuUplinkConfig    `yaml:"unu_uplink,omitempty"`
-	ServiceName string             `yaml:"service_name,omitempty"`
-	Debug       bool               `yaml:"debug,omitempty"`
+	API           APIConfig           `yaml:"api,omitempty"`
+	UnuUplink     UnuUplinkConfig     `yaml:"unu_uplink,omitempty"`
+	ServiceName   string              `yaml:"service_name,omitempty"`
+	Debug         bool                `yaml:"debug,omitempty"`
 }
 
 // ScooterConfig contains scooter-specific configuration
@@ -311,12 +311,12 @@ type GPSData struct {
 
 // PowerStatus represents power subsystem status
 type PowerStatus struct {
-	PowerState      string `json:"power_state"`
-	PowerMuxInput   string `json:"power_mux_input"`
-	WakeupSource    string `json:"wakeup_source"`
-	NrfResetCount   int    `json:"nrf_reset_count,omitempty"`
-	NrfResetReason  string `json:"nrf_reset_reason,omitempty"`
-	HibernateLevel  string `json:"hibernate_level,omitempty"`
+	PowerState     string `json:"power_state"`
+	PowerMuxInput  string `json:"power_mux_input"`
+	WakeupSource   string `json:"wakeup_source"`
+	NrfResetCount  int    `json:"nrf_reset_count,omitempty"`
+	NrfResetReason string `json:"nrf_reset_reason,omitempty"`
+	HibernateLevel string `json:"hibernate_level,omitempty"`
 }
 
 // BLEStatus represents Bluetooth status
@@ -346,26 +346,26 @@ type NavigationData struct {
 
 // TelemetryData represents the main telemetry data structure
 type TelemetryData struct {
-	Version      int                    `json:"version"`
-	BuildVersion string                 `json:"build_version,omitempty"`
-	Config       map[string]interface{} `json:"config,omitempty"`
-	VehicleState VehicleState           `json:"vehicle_state"`
-	Engine       EngineData             `json:"engine"`
-	Battery0     BatteryData            `json:"battery0"`
-	Battery1     BatteryData            `json:"battery1"`
-	AuxBattery   AuxBatteryData         `json:"aux_battery"`
-	CBBattery    CBBatteryData          `json:"cbb_battery"`
-	System       SystemInfo             `json:"system"`
-	Connectivity ConnectivityStatus     `json:"connectivity"`
-	Modem        ModemData              `json:"modem,omitempty"`
-	GPS          GPSData                `json:"gps"`
-	Power        PowerStatus            `json:"power"`
-	BLE          BLEStatus              `json:"ble"`
-	Keycard      KeycardStatus          `json:"keycard"`
-	Dashboard    DashboardStatus        `json:"dashboard"`
-	Navigation          NavigationData         `json:"navigation,omitempty"`
-	ScooterTemperature  *float64               `json:"scooter_temperature,omitempty"`
-	Timestamp           string                 `json:"timestamp"`
+	Version            int                    `json:"version"`
+	BuildVersion       string                 `json:"build_version,omitempty"`
+	Config             map[string]interface{} `json:"config,omitempty"`
+	VehicleState       VehicleState           `json:"vehicle_state"`
+	Engine             EngineData             `json:"engine"`
+	Battery0           BatteryData            `json:"battery0"`
+	Battery1           BatteryData            `json:"battery1"`
+	AuxBattery         AuxBatteryData         `json:"aux_battery"`
+	CBBattery          CBBatteryData          `json:"cbb_battery"`
+	System             SystemInfo             `json:"system"`
+	Connectivity       ConnectivityStatus     `json:"connectivity"`
+	Modem              ModemData              `json:"modem,omitempty"`
+	GPS                GPSData                `json:"gps"`
+	Power              PowerStatus            `json:"power"`
+	BLE                BLEStatus              `json:"ble"`
+	Keycard            KeycardStatus          `json:"keycard"`
+	Dashboard          DashboardStatus        `json:"dashboard"`
+	Navigation         NavigationData         `json:"navigation,omitempty"`
+	ScooterTemperature *float64               `json:"scooter_temperature,omitempty"`
+	Timestamp          string                 `json:"timestamp"`
 }
 
 // BufferedTelemetryEvent represents a telemetry event in the buffer

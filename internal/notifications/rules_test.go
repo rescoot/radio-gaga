@@ -134,8 +134,8 @@ func TestRuleEvaluator_Cooldown(t *testing.T) {
 			Conditions: []models.RuleCondition{
 				{Source: "cb-battery", Field: "charge", Operator: "<", Value: "50"},
 			},
-			Channels:  []string{"telegram"},
-			Cooldown:  "1h",
+			Channels: []string{"telegram"},
+			Cooldown: "1h",
 		},
 	}
 

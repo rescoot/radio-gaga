@@ -39,8 +39,8 @@ func ReconfigureUnuUplink(ctx context.Context, redisClient *redis.Client, config
 
 	// Check if current URL points to defunct unu servers
 	isDefunct := strings.Contains(currentURL, "unumotors.com") ||
-	             strings.Contains(currentURL, "zeus-iot") ||
-	             strings.Contains(currentURL, "cloud-iot")
+		strings.Contains(currentURL, "zeus-iot") ||
+		strings.Contains(currentURL, "cloud-iot")
 
 	if !isDefunct && currentURL != "" {
 		log.Printf("unu-uplink is configured to custom server (%s), skipping automatic reconfiguration", currentURL)

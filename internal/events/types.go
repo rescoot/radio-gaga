@@ -29,23 +29,23 @@ func NewEvent(eventType string, status string, data map[string]interface{}) Even
 // Event type constants matching sunshine's ScooterEvent types
 const (
 	// Existing sunshine event types
-	EventTypeConnect             = "connect"
-	EventTypeDisconnect          = "disconnect"
-	EventTypeStateChange         = "state_change"
-	EventTypeCommand             = "command"
-	EventTypeTripStart           = "trip_start"
-	EventTypeTripEnd             = "trip_end"
+	EventTypeConnect              = "connect"
+	EventTypeDisconnect           = "disconnect"
+	EventTypeStateChange          = "state_change"
+	EventTypeCommand              = "command"
+	EventTypeTripStart            = "trip_start"
+	EventTypeTripEnd              = "trip_end"
 	EventTypeUnauthorizedMovement = "unauthorized_movement"
-	EventTypeAlarm               = "alarm"
-	EventTypeHardwareChange      = "hardware_change"
-	EventTypeBatteryWarning      = "battery_warning"
-	EventTypeTemperatureWarning  = "temperature_warning"
-	EventTypeGPSEvent            = "gps_event"
+	EventTypeAlarm                = "alarm"
+	EventTypeHardwareChange       = "hardware_change"
+	EventTypeBatteryWarning       = "battery_warning"
+	EventTypeTemperatureWarning   = "temperature_warning"
+	EventTypeGPSEvent             = "gps_event"
 
 	// New event types (to be added to sunshine)
-	EventTypeConnectivity       = "connectivity"        // Scooter internet connectivity
-	EventTypeFault              = "fault"               // Hardware/software faults
-	EventTypeNotificationRule   = "notification_rule"   // Configurable rule-based notification
+	EventTypeConnectivity     = "connectivity"      // Scooter internet connectivity
+	EventTypeFault            = "fault"             // Hardware/software faults
+	EventTypeNotificationRule = "notification_rule" // Configurable rule-based notification
 )
 
 // Status constants

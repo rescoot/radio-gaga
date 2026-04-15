@@ -22,8 +22,8 @@ import (
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/sms"
 	locsync "radio-gaga/internal/sync"
-	"radio-gaga/internal/telemetry"
 	"radio-gaga/internal/telegram"
+	"radio-gaga/internal/telemetry"
 	"radio-gaga/internal/utils"
 )
 
@@ -37,9 +37,9 @@ type ScooterMQTTClient struct {
 	cancel           context.CancelFunc
 	version          string
 	serviceStartTime time.Time
-	monotonicRef     time.Time    // captured at process start, preserves monotonic reading
-	clockValid       atomic.Bool  // true once clock is validated via NTP or wall-clock check
-	sessionID        string       // unique per process lifecycle
+	monotonicRef     time.Time   // captured at process start, preserves monotonic reading
+	clockValid       atomic.Bool // true once clock is validated via NTP or wall-clock check
+	sessionID        string      // unique per process lifecycle
 	wg               sync.WaitGroup
 	bufferMu         sync.Mutex
 	buffer           *models.TelemetryBuffer // In-memory buffer cache
@@ -865,9 +865,9 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 
 			if !strings.HasPrefix(dbcID, "unknown_") && !strings.HasPrefix(dbcVersionID, "unknown_") {
 				fieldsToSet := map[string]interface{}{
-					"id":                dbcID,
-					"version_id":        dbcVersionID,
-					"serial_number":     dbcSN,
+					"id":                 dbcID,
+					"version_id":         dbcVersionID,
+					"serial_number":      dbcSN,
 					"serial_number_real": dbcSNReal,
 				}
 				if pipeErr := s.redisClient.HSet(ctx, "version:dbc", fieldsToSet).Err(); pipeErr != nil {

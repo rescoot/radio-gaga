@@ -58,7 +58,7 @@ func (c *ClientImplementation) SendCommandResponseWithPID(requestID, status, err
 		Error:     errorMsg,
 		RequestID: requestID,
 	}
-	
+
 	if pid > 0 {
 		response.PID = pid
 	}

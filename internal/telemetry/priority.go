@@ -28,11 +28,11 @@ var PriorityNames = map[Priority]string{
 // Format: "hash[field]" -> Priority
 var FieldPriorities = map[string]Priority{
 	// Immediate priority - critical state changes
-	"vehicle[state]":              Immediate,
-	"vehicle[seatbox:lock]":       Immediate,
+	"vehicle[state]":                 Immediate,
+	"vehicle[seatbox:lock]":          Immediate,
 	"vehicle[handlebar:lock-sensor]": Immediate,
-	"vehicle[blinker:state]":      Immediate,
-	"power-manager[state]":        Immediate,
+	"vehicle[blinker:state]":         Immediate,
+	"power-manager[state]":           Immediate,
 
 	// Quick priority - frequently changing important data
 	"gps[latitude]":      Quick,
@@ -49,17 +49,17 @@ var FieldPriorities = map[string]Priority{
 	"battery:1[present]": Quick,
 
 	// Slow priority - infrequently changing data
-	"aux-battery[charge]":           Slow,
-	"aux-battery[voltage]":          Slow,
-	"aux-battery[charge-status]":    Slow,
-	"cb-battery[charge]":            Slow,
-	"cb-battery[cell-voltage]":      Slow,
-	"cb-battery[current]":           Slow,
+	"aux-battery[charge]":            Slow,
+	"aux-battery[voltage]":           Slow,
+	"aux-battery[charge-status]":     Slow,
+	"cb-battery[charge]":             Slow,
+	"cb-battery[cell-voltage]":       Slow,
+	"cb-battery[current]":            Slow,
 	"cb-battery[remaining-capacity]": Slow,
-	"cb-battery[time-to-full]":      Slow,
-	"cb-battery[time-to-empty]":     Slow,
-	"ble[mac-address]":              Slow,
-	"ble[status]":                   Slow,
+	"cb-battery[time-to-full]":       Slow,
+	"cb-battery[time-to-empty]":      Slow,
+	"ble[mac-address]":               Slow,
+	"ble[status]":                    Slow,
 }
 
 // HashPriorities maps Redis hash names to their default priority
@@ -73,7 +73,7 @@ var HashPriorities = map[string]Priority{
 // NoisyFields contains fields that should be filtered out from change detection
 // These fields change too frequently or are not useful for telemetry
 var NoisyFields = map[string]bool{
-	"gps[timestamp]":          true,
+	"gps[timestamp]":           true,
 	"internet[signal-quality]": true,
 }
 

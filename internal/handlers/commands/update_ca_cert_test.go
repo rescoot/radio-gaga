@@ -17,8 +17,8 @@ import (
 )
 
 type mockUpdateCACertClient struct {
-	configPath       string
-	reconnectCalled  bool
+	configPath      string
+	reconnectCalled bool
 }
 
 func (m *mockUpdateCACertClient) SendCommandResponse(requestID, status, errorMsg string) {}
@@ -96,8 +96,8 @@ func TestHandleUpdateCACertCommand(t *testing.T) {
 			MQTT:        models.MQTTConfig{BrokerURL: "ssl://test:8883", KeepAlive: "30s", CACert: "/old/path.crt"},
 			RedisURL:    "redis://localhost:6379",
 			Telemetry: models.TelemetryConfig{
-				Intervals: models.TelemetryIntervals{Driving: "1s", Standby: "5m", StandbyNoBattery: "8h", Hibernate: "24h"},
-				Buffer:    models.BufferConfig{MaxSize: 1000, MaxRetries: 5, RetryInterval: "1m"},
+				Intervals:      models.TelemetryIntervals{Driving: "1s", Standby: "5m", StandbyNoBattery: "8h", Hibernate: "24h"},
+				Buffer:         models.BufferConfig{MaxSize: 1000, MaxRetries: 5, RetryInterval: "1m"},
 				TransmitPeriod: "5m",
 			},
 		}
