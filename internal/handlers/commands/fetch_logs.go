@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,10 +20,24 @@ import (
 	"radio-gaga/internal/sync"
 )
 
+// Upload tuning for fetch_logs. Sized for degraded cellular links: EDGE tops
+// out around 150 kbit/s (~18 KB/s), so a 30 MB bundle needs ~27 min to push.
+// The retry schedule gives ~3 min of backoff across 5 attempts before giving
+// up, which covers transient signal drops without hammering a failing server.
+var (
+	uploadAttemptTimeout = 30 * time.Minute
+	uploadBackoff        = []time.Duration{5 * time.Second, 15 * time.Second, 45 * time.Second, 2 * time.Minute}
+)
+
 // HandleFetchLogsCommand collects a log bundle from this scooter (MDB plus
 // DBC if reachable) and uploads the resulting tarball to sunshine. The bundle
 // layout is defined in the logcollect package.
-func HandleFetchLogsCommand(client CommandHandlerClient, redisClient *redis.Client, ctx context.Context, config *models.Config, params map[string]interface{}, requestID string) error {
+//
+// Collection and upload run in a background goroutine so the MQTT ack returns
+// immediately — fetch_logs can take several minutes, and blocking the command
+// handler would stall every other command behind it and exceed the server's
+// ack TTL. Sunshine observes success via the arriving upload, not the ack.
+func HandleFetchLogsCommand(client CommandHandlerClient, redisClient *redis.Client, ctx context.Context, config *models.Config, params map[string]any, requestID string) error {
 	since := "24h"
 	if s, ok := params["since"].(string); ok && s != "" {
 		since = s
@@ -31,45 +46,65 @@ func HandleFetchLogsCommand(client CommandHandlerClient, redisClient *redis.Clie
 	bundleName := fmt.Sprintf("scooter-logs-%s", requestID)
 	outputDir := filepath.Join("/tmp", bundleName)
 	archivePath := outputDir + ".tar.gz"
-	defer os.RemoveAll(outputDir)
-	defer os.Remove(archivePath)
 
-	log.Printf("fetch_logs: collecting bundle %s (since=%s)", bundleName, since)
+	log.Printf("fetch_logs: accepted %s (since=%s), running in background", bundleName, since)
 
-	collectCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
-	defer cancel()
+	go func() {
+		defer os.RemoveAll(outputDir)
+		defer os.Remove(archivePath)
 
-	bundleMeta, err := logcollect.Collect(collectCtx, redisClient, outputDir, logcollect.Options{
-		Since:     since,
-		RequestID: requestID,
-	})
-	if err != nil {
-		return fmt.Errorf("collecting logs: %w", err)
-	}
-	log.Printf("fetch_logs: collected hosts=%v", bundleMeta.Hosts)
+		collectCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+		defer cancel()
 
-	if err := createTarball(outputDir, archivePath, bundleName); err != nil {
-		return fmt.Errorf("packing archive: %w", err)
-	}
-
-	timeout := 60 * time.Second
-	if config.API.Timeout != "" {
-		if d, err := time.ParseDuration(config.API.Timeout); err == nil {
-			timeout = d
+		bundleMeta, err := logcollect.Collect(collectCtx, redisClient, outputDir, logcollect.Options{
+			Since:     since,
+			RequestID: requestID,
+		})
+		if err != nil {
+			log.Printf("fetch_logs: collecting logs failed: %v", err)
+			return
 		}
-	}
+		log.Printf("fetch_logs: collected hosts=%v", bundleMeta.Hosts)
 
-	uploader := sync.NewLogUploader(config.API.BaseURL, config.API.ScooterID, config.Scooter.Token, timeout)
-	uploadCtx, uploadCancel := context.WithTimeout(context.Background(), timeout)
-	defer uploadCancel()
-
-	if err := uploader.Upload(uploadCtx, archivePath, requestID); err != nil {
-		log.Printf("fetch_logs: upload failed, retrying: %v", err)
-		time.Sleep(2 * time.Second)
-		if err := uploader.Upload(uploadCtx, archivePath, requestID); err != nil {
-			return fmt.Errorf("log upload failed after retry: %w", err)
+		if err := createTarball(outputDir, archivePath, bundleName); err != nil {
+			log.Printf("fetch_logs: packing archive failed: %v", err)
+			return
 		}
-	}
+
+		uploader := sync.NewLogUploader(config.API.BaseURL, config.API.ScooterID, config.Scooter.Token, uploadAttemptTimeout)
+
+		var uploadErr error
+		for attempt := 1; attempt <= len(uploadBackoff)+1; attempt++ {
+			uploadCtx, uploadCancel := context.WithTimeout(ctx, uploadAttemptTimeout)
+			uploadErr = uploader.Upload(uploadCtx, archivePath, requestID)
+			uploadCancel()
+			if uploadErr == nil {
+				break
+			}
+			var rejected *sync.UploadRejectedError
+			if errors.As(uploadErr, &rejected) {
+				log.Printf("fetch_logs: upload rejected, not retrying: %v", uploadErr)
+				return
+			}
+			if attempt > len(uploadBackoff) {
+				break
+			}
+			backoff := uploadBackoff[attempt-1]
+			log.Printf("fetch_logs: upload attempt %d failed, retrying in %s: %v", attempt, backoff, uploadErr)
+			select {
+			case <-ctx.Done():
+				log.Printf("fetch_logs: upload aborted: %v", ctx.Err())
+				return
+			case <-time.After(backoff):
+			}
+		}
+		if uploadErr != nil {
+			log.Printf("fetch_logs: upload failed after %d attempts: %v", len(uploadBackoff)+1, uploadErr)
+			return
+		}
+		log.Printf("fetch_logs: upload complete for %s", requestID)
+	}()
+
 	return nil
 }
 
