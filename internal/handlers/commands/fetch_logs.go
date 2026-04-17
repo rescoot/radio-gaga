@@ -71,7 +71,7 @@ func HandleFetchLogsCommand(client CommandHandlerClient, redisClient *redis.Clie
 			return
 		}
 
-		uploader := sync.NewLogUploader(config.API.BaseURL, config.API.ScooterID, config.Scooter.Token, uploadAttemptTimeout)
+		uploader := sync.NewLogUploader(config.API.BaseURL, config.Scooter.Token, uploadAttemptTimeout)
 
 		var uploadErr error
 		for attempt := 1; attempt <= len(uploadBackoff)+1; attempt++ {

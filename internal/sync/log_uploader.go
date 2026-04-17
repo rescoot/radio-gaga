@@ -15,7 +15,6 @@ import (
 
 type LogUploader struct {
 	apiBaseURL string
-	scooterID  string
 	token      string
 	httpClient *http.Client
 }
@@ -32,10 +31,9 @@ func (e *UploadRejectedError) Error() string {
 	return fmt.Sprintf("upload rejected with status %d: %s", e.StatusCode, e.Body)
 }
 
-func NewLogUploader(apiBaseURL, scooterID, token string, timeout time.Duration) *LogUploader {
+func NewLogUploader(apiBaseURL, token string, timeout time.Duration) *LogUploader {
 	return &LogUploader{
 		apiBaseURL: strings.TrimRight(apiBaseURL, "/"),
-		scooterID:  scooterID,
 		token:      token,
 		httpClient: &http.Client{Timeout: timeout},
 	}
@@ -73,7 +71,7 @@ func (u *LogUploader) Upload(ctx context.Context, archivePath, requestID string)
 		}
 	}()
 
-	url := fmt.Sprintf("%s/api/v1/scooters/%s/log_bundles", u.apiBaseURL, u.scooterID)
+	url := fmt.Sprintf("%s/api/v1/scooter/log_bundles", u.apiBaseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, pr)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)

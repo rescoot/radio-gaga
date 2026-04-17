@@ -245,6 +245,11 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		}
 	}
 
+	if config.API.BaseURL == "" {
+		config.API.BaseURL = "https://sunshine.rescoot.org"
+		log.Printf("Using default API base URL: %s", config.API.BaseURL)
+	}
+
 	keepAlive, err := time.ParseDuration(config.MQTT.KeepAlive)
 	if err != nil {
 		cancel()
