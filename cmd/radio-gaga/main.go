@@ -12,6 +12,8 @@ import (
 	"radio-gaga/internal/client"
 	"radio-gaga/internal/config"
 	"radio-gaga/internal/handlers"
+	"radio-gaga/internal/handlers/commands"
+	"radio-gaga/internal/journalupload"
 )
 
 // Version is set during the build process
@@ -72,6 +74,17 @@ func main() {
 	if err := mqttClient.Start(); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
+
+	// Re-arm journal streaming if a session file is present from a prior run
+	// (e.g. after a reboot). Idempotent: if no session, this is a no-op.
+	go func() {
+		state := &journalupload.State{Dir: commands.JournalUploadStateDir}
+		if _, ok, _ := state.ReadSession(); !ok {
+			return
+		}
+		log.Printf("journalupload: re-arming streaming from persisted session")
+		commands.StartManager(state)
+	}()
 
 	// Handle interrupts for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
