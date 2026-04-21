@@ -238,6 +238,10 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		err = commands.HandleUpdateCACertCommand(client, config, command.Params, command.RequestID)
 	case "fetch_logs":
 		err = commands.HandleFetchLogsCommand(client, redisClient, ctx, config, command.Params, command.RequestID)
+	case "start_log_upload":
+		err = commands.HandleStartLogUploadCommand(client, redisClient, ctx, config, command.Params, command.RequestID)
+	case "stop_log_upload":
+		err = commands.HandleStopLogUploadCommand(client, redisClient, ctx, config, command.Params, command.RequestID)
 	default:
 		err = fmt.Errorf("unknown command: %s", command.Command)
 	}
