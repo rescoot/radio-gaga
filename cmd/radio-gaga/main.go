@@ -9,8 +9,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	_ "github.com/coreos/go-systemd/v22/util"
-
 	"radio-gaga/internal/client"
 	"radio-gaga/internal/config"
 	"radio-gaga/internal/handlers"
