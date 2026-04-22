@@ -1028,10 +1028,20 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 			switch msg.Channel {
 			case "vehicle":
-				currentVehicleState, err := s.redisClient.HGet(s.ctx, "vehicle", "state").Result()
+				// Read both state and hop-on-active so we can detect the
+				// effective (cloud-facing) state: while hop-on-active=true
+				// vehicle-service publishes state="parked", but we report
+				// "stand-by" to match GetTelemetryFromRedis.
+				vehicleFields, err := s.redisClient.HMGet(s.ctx, "vehicle", "state", "hop-on-active").Result()
 				if err != nil {
 					log.Printf("Error getting vehicle state from Redis: %v", err)
 					continue
+				}
+				rawState, _ := vehicleFields[0].(string)
+				hopOnActive, _ := vehicleFields[1].(string)
+				currentVehicleState := rawState
+				if hopOnActive == "true" {
+					currentVehicleState = "stand-by"
 				}
 
 				if currentVehicleState != lastState {

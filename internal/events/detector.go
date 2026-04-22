@@ -324,7 +324,13 @@ func (d *Detector) checkConnectivityEvents(fields map[string]string) {
 func (d *Detector) checkVehicleEvents(fields map[string]string) {
 	// Vehicle state changes
 	stateKey := "vehicle:state"
+	// Apply the hop-on-active override so the cloud-facing state change
+	// event matches what telemetry reports: "parked" is externally
+	// represented as "stand-by" while hop-on is engaged.
 	state := fields["state"]
+	if fields["hop-on-active"] == "true" {
+		state = "stand-by"
+	}
 
 	d.mu.Lock()
 	lastState := d.lastState[stateKey]
