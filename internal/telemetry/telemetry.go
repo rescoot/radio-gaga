@@ -132,8 +132,16 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 	if err != nil {
 		return nil, fmt.Errorf("failed to get vehicle state: %v", err)
 	}
+	// While vehicle[hop-on-active]=true, vehicle-service publishes state as
+	// "parked" so the dashboard's isParked() keeps working. Externally the
+	// scooter is effectively locked — report it as "stand-by" to the cloud
+	// so the mobile app offers an unlock affordance.
+	state := vehicle["state"]
+	if vehicle["hop-on-active"] == "true" {
+		state = "stand-by"
+	}
 	telemetry.VehicleState = models.VehicleState{
-		State:         vehicle["state"],
+		State:         state,
 		Kickstand:     vehicle["kickstand"],
 		SeatboxLock:   vehicle["seatbox:lock"],
 		BlinkerSwitch: vehicle["blinker:switch"],

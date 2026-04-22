@@ -29,6 +29,7 @@ var PriorityNames = map[Priority]string{
 var FieldPriorities = map[string]Priority{
 	// Immediate priority - critical state changes
 	"vehicle[state]":                 Immediate,
+	"vehicle[hop-on-active]":         Immediate,
 	"vehicle[seatbox:lock]":          Immediate,
 	"vehicle[handlebar:lock-sensor]": Immediate,
 	"vehicle[blinker:state]":         Immediate,
