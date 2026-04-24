@@ -4,6 +4,13 @@ BUILDFLAGS := -tags netgo,osusergo
 MAIN_PATH := ./cmd/radio-gaga
 OUTPUT_NAME := radio-gaga
 
+# ARM cross-compile (armhf / ARMv7 hard-float). cgo is required for
+# github.com/coreos/go-systemd/v22/sdjournal — libsystemd is dlopen'd at
+# runtime, so the binary only NEEDs libc.so.6.
+ARM_CC := arm-linux-gnueabihf-gcc
+ARM_PKG_CONFIG_PATH := /usr/lib/arm-linux-gnueabihf/pkgconfig
+ARM_ENV := GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=$(ARM_CC) PKG_CONFIG_PATH=$(ARM_PKG_CONFIG_PATH)
+
 .PHONY: build amd64 arm arm-debug dist clean install
 
 dev: build
@@ -14,13 +21,13 @@ amd64:
 	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" $(BUILDFLAGS) -o $(OUTPUT_NAME)-amd64 $(MAIN_PATH)
 
 arm:
-	GOOS=linux GOARCH=arm GOARM=7 go build -ldflags "$(LDFLAGS)" $(BUILDFLAGS) -o $(OUTPUT_NAME)-arm $(MAIN_PATH)
+	$(ARM_ENV) go build -ldflags "$(LDFLAGS)" $(BUILDFLAGS) -o $(OUTPUT_NAME)-arm $(MAIN_PATH)
 
 dist:
-	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS) -s -w" $(BUILDFLAGS) -o $(OUTPUT_NAME)-arm-dist $(MAIN_PATH)
+	$(ARM_ENV) go build -ldflags "$(LDFLAGS) -s -w" $(BUILDFLAGS) -o $(OUTPUT_NAME)-arm-dist $(MAIN_PATH)
 
 arm-debug:
-	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -gcflags="all=-N -l" $(BUILDFLAGS) -o $(OUTPUT_NAME)-arm-debug $(MAIN_PATH)
+	$(ARM_ENV) go build -ldflags "$(LDFLAGS)" -gcflags="all=-N -l" $(BUILDFLAGS) -o $(OUTPUT_NAME)-arm-debug $(MAIN_PATH)
 
 clean:
 	rm -f $(OUTPUT_NAME) $(OUTPUT_NAME)-amd64 $(OUTPUT_NAME)-arm $(OUTPUT_NAME)-arm-dist $(OUTPUT_NAME)-arm-debug

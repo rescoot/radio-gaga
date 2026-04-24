@@ -26,6 +26,12 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Install armhf cross toolchain
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf libsystemd-dev:armhf
+
       - name: Determine Version
         id: get_version
         run: |
