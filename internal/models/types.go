@@ -296,6 +296,19 @@ type ModemData struct {
 	OperatorCode     string `json:"operator_code,omitempty"`
 	IsRoaming        bool   `json:"is_roaming,omitempty"`
 	RegistrationFail string `json:"registration_fail,omitempty"`
+
+	// Static identity fetched once via mmcli / AT+SIMCOMATI. Empty until the
+	// modem USB device has enumerated and modeminfo.StartPoller has succeeded.
+	Manufacturer           string `json:"manufacturer,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	HardwareRevision       string `json:"hardware_revision,omitempty"`
+	FirmwareRevision       string `json:"firmware_revision,omitempty"`
+	VendorFirmwareRevision string `json:"vendor_firmware_revision,omitempty"`
+	DeviceID               string `json:"device_id,omitempty"`
+	EquipmentID            string `json:"equipment_id,omitempty"`
+	OwnNumber              string `json:"own_number,omitempty"`
+	SupportedModes         string `json:"supported_modes,omitempty"`
+	CurrentModes           string `json:"current_modes,omitempty"`
 }
 
 // GPSData represents GPS position data

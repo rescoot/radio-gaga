@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v2"
 
 	"radio-gaga/internal/models"
+	"radio-gaga/internal/modeminfo"
 	"radio-gaga/internal/utils"
 )
 
@@ -289,6 +290,19 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 			IsRoaming:        modem["is-roaming"] == "true",
 			RegistrationFail: modem["registration-fail"],
 		}
+	}
+
+	if hw := modeminfo.Get(); hw != nil {
+		telemetry.Modem.Manufacturer = hw.Manufacturer
+		telemetry.Modem.Model = hw.Model
+		telemetry.Modem.HardwareRevision = hw.HardwareRevision
+		telemetry.Modem.FirmwareRevision = hw.FirmwareRevision
+		telemetry.Modem.VendorFirmwareRevision = hw.VendorFirmwareRevision
+		telemetry.Modem.DeviceID = hw.DeviceID
+		telemetry.Modem.EquipmentID = hw.EquipmentID
+		telemetry.Modem.OwnNumber = hw.OwnNumber
+		telemetry.Modem.SupportedModes = hw.SupportedModes
+		telemetry.Modem.CurrentModes = hw.CurrentModes
 	}
 
 	// Get GPS data

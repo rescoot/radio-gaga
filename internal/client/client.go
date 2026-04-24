@@ -20,6 +20,7 @@ import (
 
 	"radio-gaga/internal/events"
 	"radio-gaga/internal/models"
+	"radio-gaga/internal/modeminfo"
 	"radio-gaga/internal/sms"
 	locsync "radio-gaga/internal/sync"
 	"radio-gaga/internal/telegram"
@@ -517,6 +518,10 @@ func (s *ScooterMQTTClient) Start() error {
 	}
 
 	log.Printf("Subscribed to commands channel %s", commandTopic)
+
+	// Fetch static modem identity in the background — the USB modem may not
+	// have enumerated yet at this point.
+	modeminfo.StartPoller(s.ctx)
 
 	// Initialize telemetry buffer if enabled
 	if s.config.Telemetry.Buffer.Enabled {
