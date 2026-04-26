@@ -11,7 +11,25 @@ import (
 	"github.com/go-redis/redis/v8"
 
 	"radio-gaga/internal/models"
+	"radio-gaga/internal/redisbus"
 )
+
+var watchedHashes = []string{
+	"vehicle",
+	"battery:0",
+	"battery:1",
+	"aux-battery",
+	"cb-battery",
+	"engine-ecu",
+	"gps",
+	"internet",
+	"modem",
+	"power-manager",
+	"power-mux",
+	"ble",
+	"dashboard",
+	"system",
+}
 
 // TelemetryFlusher is the interface for sending telemetry
 type TelemetryFlusher interface {
@@ -42,7 +60,7 @@ type Monitor struct {
 
 // NewMonitor creates a new telemetry monitor
 func NewMonitor(redisClient *redis.Client, config *models.Config) *Monitor {
-	return &Monitor{
+	m := &Monitor{
 		redisClient:       redisClient,
 		config:            config,
 		priorityDeadlines: GetPriorityDeadlines(config),
@@ -51,6 +69,22 @@ func NewMonitor(redisClient *redis.Client, config *models.Config) *Monitor {
 		lastValues:        make(map[string]string),
 		stopCh:            make(chan struct{}),
 	}
+	for p := Immediate; p <= Slow; p++ {
+		m.priorityPending[p] = make(map[string]map[string]string)
+	}
+	return m
+}
+
+// Register hooks the monitor into a redisbus to receive change notifications.
+// Must be called before bus.Start.
+func (m *Monitor) Register(bus *redisbus.Bus) {
+	for _, hash := range watchedHashes {
+		bus.OnHash(hash, func(_ context.Context, fields map[string]string) {
+			for field, value := range fields {
+				m.handleFieldChange(hash, field, value)
+			}
+		})
+	}
 }
 
 // SetFlusher sets the callback for flushing telemetry
@@ -58,82 +92,22 @@ func (m *Monitor) SetFlusher(flusher TelemetryFlusher) {
 	m.flusher = flusher
 }
 
-// Start begins monitoring Redis for changes
+// Start blocks until ctx is cancelled or Stop is called, then drains pending
+// timers. Field changes arrive via the redisbus, not from this goroutine.
 func (m *Monitor) Start(ctx context.Context) {
 	log.Println("[Monitor] Starting priority-based telemetry monitor...")
-
-	// Initialize priority pending maps
-	for p := Immediate; p <= Slow; p++ {
-		m.priorityPending[p] = make(map[string]map[string]string)
+	select {
+	case <-ctx.Done():
+		log.Println("[Monitor] Context cancelled, stopping monitor")
+	case <-m.stopCh:
+		log.Println("[Monitor] Stop signal received, stopping monitor")
 	}
-
-	// Subscribe to Redis keyspace notifications for hash changes
-	// We monitor the hashes that contain telemetry data
-	hashesToWatch := []string{
-		"vehicle",
-		"battery:0",
-		"battery:1",
-		"aux-battery",
-		"cb-battery",
-		"engine-ecu",
-		"gps",
-		"internet",
-		"modem",
-		"power-manager",
-		"power-mux",
-		"ble",
-		"dashboard",
-		"system",
-	}
-
-	// Create pub/sub subscriber
-	pubsub := m.redisClient.Subscribe(ctx, hashesToWatch...)
-	defer pubsub.Close()
-
-	log.Printf("[Monitor] Subscribed to %d Redis channels for change notifications", len(hashesToWatch))
-
-	// Message processing loop
-	ch := pubsub.Channel()
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("[Monitor] Context cancelled, stopping monitor")
-			m.stopAllTimers()
-			return
-		case <-m.stopCh:
-			log.Println("[Monitor] Stop signal received, stopping monitor")
-			m.stopAllTimers()
-			return
-		case msg := <-ch:
-			if msg == nil {
-				continue
-			}
-			// Handle pub/sub message - the channel name is the hash that changed
-			m.handleHashChange(ctx, msg.Channel, msg.Payload)
-		}
-	}
+	m.stopAllTimers()
 }
 
 // Stop stops the monitor
 func (m *Monitor) Stop() {
 	close(m.stopCh)
-}
-
-// handleHashChange processes a change notification for a hash
-func (m *Monitor) handleHashChange(ctx context.Context, hash, payload string) {
-	// The payload from Redis pub/sub on a hash channel is typically the field that changed
-	// But we need to re-read the entire hash to get the current values
-	// For simplicity, we'll read all fields and compare with last known values
-
-	fields, err := m.redisClient.HGetAll(ctx, hash).Result()
-	if err != nil {
-		log.Printf("[Monitor] Failed to read hash %s: %v", hash, err)
-		return
-	}
-
-	for field, value := range fields {
-		m.handleFieldChange(hash, field, value)
-	}
 }
 
 // handleFieldChange processes a single field change
@@ -267,16 +241,10 @@ func (m *Monitor) FlushAllPending() {
 // InitializeBaseline sets the initial state from current Redis values
 // This prevents a flood of change notifications on first connection
 func (m *Monitor) InitializeBaseline(ctx context.Context) {
-	hashes := []string{
-		"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
-		"engine-ecu", "gps", "internet", "modem", "power-manager",
-		"power-mux", "ble", "dashboard", "system",
-	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, hash := range hashes {
+	for _, hash := range watchedHashes {
 		fields, err := m.redisClient.HGetAll(ctx, hash).Result()
 		if err != nil {
 			log.Printf("[Monitor] Failed to read baseline for %s: %v", hash, err)

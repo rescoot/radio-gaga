@@ -11,6 +11,7 @@ import (
 
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/notifications"
+	"radio-gaga/internal/redisbus"
 )
 
 // EventPublisher is the interface for publishing events
@@ -75,16 +76,13 @@ func (d *Detector) SetTelemetryFlusher(flusher TelemetryFlusher) {
 	d.flusher = flusher
 }
 
-// Start begins monitoring Redis for event triggers
-func (d *Detector) Start(ctx context.Context) {
+// Register hooks the detector into a redisbus to receive change notifications.
+// Must be called before bus.Start. No-op if events are disabled.
+func (d *Detector) Register(bus *redisbus.Bus) {
 	if d.config.Events.Enabled != nil && !*d.config.Events.Enabled {
-		log.Println("[EventDetector] Events disabled in config, not starting")
 		return
 	}
 
-	log.Println("[EventDetector] Starting event detection...")
-
-	// Subscribe to relevant Redis channels
 	channels := []string{
 		"alarm",
 		"battery:0",
@@ -96,8 +94,6 @@ func (d *Detector) Start(ctx context.Context) {
 		"gps",
 		"engine-ecu",
 	}
-
-	// Add any additional sources from notification rules (dedup)
 	existing := make(map[string]struct{}, len(channels))
 	for _, ch := range channels {
 		existing[ch] = struct{}{}
@@ -109,33 +105,36 @@ func (d *Detector) Start(ctx context.Context) {
 		}
 	}
 
-	pubsub := d.redisClient.Subscribe(ctx, channels...)
-	defer pubsub.Close()
-
-	log.Printf("[EventDetector] Subscribed to %d Redis channels", len(channels))
-
-	// Also try to subscribe to fault stream if available
-	go d.watchFaultStream(ctx)
-
-	ch := pubsub.Channel()
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("[EventDetector] Context cancelled, stopping")
-			return
-		case <-d.stopCh:
-			log.Println("[EventDetector] Stop signal received, stopping")
-			return
-		case msg := <-ch:
-			if msg == nil {
-				continue
-			}
-			d.handleHashChange(ctx, msg.Channel)
-			// Evaluate raw message rules for this channel/payload
-			for _, match := range d.ruleEvaluator.EvaluateMessage(ctx, msg.Channel, msg.Payload) {
+	for _, ch := range channels {
+		bus.OnHash(ch, func(ctx context.Context, fields map[string]string) {
+			d.dispatchHash(ctx, ch, fields)
+		})
+		bus.OnPayload(ch, func(ctx context.Context, payload string) {
+			for _, match := range d.ruleEvaluator.EvaluateMessage(ctx, ch, payload) {
 				d.sendEvent(ruleMatchToEvent(match))
 			}
-		}
+		})
+	}
+}
+
+// Start blocks until ctx is cancelled or Stop is called. Hash/payload events
+// arrive via the redisbus; this goroutine just owns the fault-stream watcher
+// and the lifecycle.
+func (d *Detector) Start(ctx context.Context) {
+	if d.config.Events.Enabled != nil && !*d.config.Events.Enabled {
+		log.Println("[EventDetector] Events disabled in config, not starting")
+		return
+	}
+
+	log.Println("[EventDetector] Starting event detection...")
+
+	go d.watchFaultStream(ctx)
+
+	select {
+	case <-ctx.Done():
+		log.Println("[EventDetector] Context cancelled, stopping")
+	case <-d.stopCh:
+		log.Println("[EventDetector] Stop signal received, stopping")
 	}
 }
 
@@ -144,14 +143,9 @@ func (d *Detector) Stop() {
 	close(d.stopCh)
 }
 
-// handleHashChange checks for event-triggering conditions when a hash changes
-func (d *Detector) handleHashChange(ctx context.Context, hash string) {
-	fields, err := d.redisClient.HGetAll(ctx, hash).Result()
-	if err != nil {
-		log.Printf("[EventDetector] Failed to read hash %s: %v", hash, err)
-		return
-	}
-
+// dispatchHash checks for event-triggering conditions when a hash changes.
+// Called from the redisbus with the already-fetched hash contents.
+func (d *Detector) dispatchHash(ctx context.Context, hash string, fields map[string]string) {
 	switch hash {
 	case "alarm":
 		d.checkAlarmEvents(ctx, fields)

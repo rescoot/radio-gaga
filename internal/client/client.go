@@ -21,12 +21,18 @@ import (
 	"radio-gaga/internal/events"
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/modeminfo"
+	"radio-gaga/internal/redisbus"
 	"radio-gaga/internal/sms"
 	locsync "radio-gaga/internal/sync"
 	"radio-gaga/internal/telegram"
 	"radio-gaga/internal/telemetry"
 	"radio-gaga/internal/utils"
 )
+
+// redisBusDebounce coalesces bursts of pub/sub notifications on the same hash
+// into a single HGETALL fan-out. 10ms is well below all telemetry/event
+// deadlines and cuts redundant Redis traffic on chatty hashes like cb-battery.
+const redisBusDebounce = 10 * time.Millisecond
 
 // ScooterMQTTClient manages the MQTT and Redis connections
 type ScooterMQTTClient struct {
@@ -52,6 +58,9 @@ type ScooterMQTTClient struct {
 
 	// Event detector
 	eventDetector *events.Detector
+
+	// Single pub/sub fan-out for monitor + detector
+	bus *redisbus.Bus
 
 	// Telegram notifier
 	telegramNotifier *telegram.Notifier
@@ -403,14 +412,19 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		client.clockValid.Store(true)
 	}
 
+	// Single Redis pub/sub fan-out shared by monitor and event detector
+	client.bus = redisbus.New(redisClient, redisBusDebounce)
+
 	// Initialize telemetry monitor
 	client.monitor = telemetry.NewMonitor(redisClient, config)
 	client.monitor.SetFlusher(client)
+	client.monitor.Register(client.bus)
 
 	// Initialize event detector
 	client.eventDetector = events.NewDetector(redisClient, config)
 	client.eventDetector.SetPublisher(client)
 	client.eventDetector.SetTelemetryFlusher(client.monitor)
+	client.eventDetector.Register(client.bus)
 
 	// Initialize Telegram notifier if enabled
 	if config.Telegram.Enabled {
@@ -539,8 +553,8 @@ func (s *ScooterMQTTClient) Start() error {
 	go s.watchDashboardStatus()
 	go s.watchInternetStatus()
 
-	// Start monitor and event detector
-	s.wg.Add(2)
+	// Start monitor, event detector, and the shared pub/sub bus
+	s.wg.Add(3)
 	go func() {
 		defer s.wg.Done()
 		s.monitor.Start(s.ctx)
@@ -548,6 +562,10 @@ func (s *ScooterMQTTClient) Start() error {
 	go func() {
 		defer s.wg.Done()
 		s.eventDetector.Start(s.ctx)
+	}()
+	go func() {
+		defer s.wg.Done()
+		s.bus.Start(s.ctx)
 	}()
 
 	// Start Telegram notifier if initialized
