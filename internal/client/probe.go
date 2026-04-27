@@ -23,20 +23,18 @@ import (
 // is validated by spawning a child radio-gaga process with -probe, and the
 // orchestrator commits or rolls back based on the child's exit code.
 //
-// The probe uses the **same** MQTT client-id as production. Sunshine's broker
-// (mosquitto with the dynamic-security plugin) pins each per-scooter username
-// to exactly one client-id; a probe-suffixed id gets rejected at CONNACK with
-// "not Authorized". This means the orchestrator MUST ensure the live MQTT
-// client is disconnected before spawning the probe — otherwise the probe and
-// the live parent would fight over the broker session.
+// The probe uses a probe-suffixed client-id (with PID) so it can run alongside
+// the live parent without fighting over the broker session. The Sunshine
+// broker accepts any client-id for an authenticated user as long as username
+// + password match (the previous strict client-id pin in the dynamic-security
+// state was removed for this reason).
 //
-// The probe deliberately differs from a normal client startup:
+// Side effects deliberately avoided:
 //
-//   - No will message, no retained-status publish, no Redis side effects, no
+//   - No will message, no retained-status publish, no Redis writes, no
 //     reconnect handler. The probe is read-only on the system.
 //   - CleanSession=true so the broker doesn't accumulate session state for the
-//     probe; the live parent's next reconnect (CleanSession=false) starts
-//     fresh on its own terms.
+//     probe's transient client-id.
 //
 // SUBACK on scooters/{vin}/commands proves TLS handshake, mosquitto auth, and
 // per-scooter ACL all stack up correctly with the new config.
@@ -58,7 +56,7 @@ func RunProbe(cfg *models.Config, probeTimeout, stickinessWait time.Duration) er
 		}
 	}
 
-	probeID := fmt.Sprintf("radio-gaga-%s", cfg.Scooter.Identifier)
+	probeID := fmt.Sprintf("radio-gaga-%s-probe-%d", cfg.Scooter.Identifier, os.Getpid())
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(cfg.MQTT.BrokerURL).
