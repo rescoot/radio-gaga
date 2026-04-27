@@ -57,13 +57,9 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Route journal-upload session/cursor files through the same state dir the
-	// config layer resolved (explicit -state-dir, config value, or auto-detect).
-	// The package-level default in commands/log_upload.go is only the import-time
-	// fallback; we always set it here.
-	if cfg.StateDir != "" {
-		commands.JournalUploadStateDir = cfg.StateDir
-	}
+	// Route journal-upload session/cursor files through the auto-detected
+	// state directory. cfg.StateDir is always populated by config.LoadConfig.
+	commands.JournalUploadStateDir = cfg.StateDir
 
 	// Create and start MQTT client
 	mqttClient, err := client.NewScooterMQTTClient(cfg, configPath, version)

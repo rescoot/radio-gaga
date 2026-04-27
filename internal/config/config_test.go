@@ -28,42 +28,22 @@ func writeMinimalConfig(t *testing.T) string {
 	return path
 }
 
-func TestLoadConfig_StateDirDerivesBufferPaths(t *testing.T) {
-	stateDir := t.TempDir()
-	configPath := writeMinimalConfig(t)
-
-	flags := &models.CommandLineFlags{ConfigPath: configPath, StateDir: stateDir}
-	cfg, _, err := LoadConfig(flags)
-	if err != nil {
-		t.Fatalf("LoadConfig failed: %v", err)
-	}
-
-	wantTelemetry := filepath.Join(stateDir, "telemetry-buffer.json")
-	wantEvents := filepath.Join(stateDir, "events-buffer.json")
-
-	if cfg.Telemetry.Buffer.PersistPath != wantTelemetry {
-		t.Errorf("telemetry persist path = %q, want %q", cfg.Telemetry.Buffer.PersistPath, wantTelemetry)
-	}
-	if cfg.Events.BufferPath != wantEvents {
-		t.Errorf("events buffer path = %q, want %q", cfg.Events.BufferPath, wantEvents)
-	}
-
-	// MkdirAll should have ensured the dir exists.
-	if info, err := os.Stat(stateDir); err != nil || !info.IsDir() {
-		t.Errorf("state dir %s missing or not a directory: %v", stateDir, err)
-	}
+// withFakeStateDir overrides the auto-detect candidate list to a deterministic
+// temp directory and restores it on test cleanup.
+func withFakeStateDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "auto")
+	prev := stateDirCandidates
+	stateDirCandidates = []string{dir}
+	t.Cleanup(func() { stateDirCandidates = prev })
+	return dir
 }
 
-func TestLoadConfig_NoStateDirAutoDetects(t *testing.T) {
-	// Override the candidate list so the test doesn't depend on host filesystem.
-	autoDir := filepath.Join(t.TempDir(), "auto")
-	prev := stateDirCandidates
-	stateDirCandidates = []string{autoDir}
-	t.Cleanup(func() { stateDirCandidates = prev })
-
+func TestLoadConfig_AutoDetectFillsBufferPaths(t *testing.T) {
+	autoDir := withFakeStateDir(t)
 	configPath := writeMinimalConfig(t)
-	flags := &models.CommandLineFlags{ConfigPath: configPath}
-	cfg, _, err := LoadConfig(flags)
+
+	cfg, _, err := LoadConfig(&models.CommandLineFlags{ConfigPath: configPath})
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -71,23 +51,18 @@ func TestLoadConfig_NoStateDirAutoDetects(t *testing.T) {
 	if cfg.StateDir != autoDir {
 		t.Errorf("cfg.StateDir = %q, want %q", cfg.StateDir, autoDir)
 	}
-	wantTelemetry := filepath.Join(autoDir, "telemetry-buffer.json")
-	wantEvents := filepath.Join(autoDir, "events-buffer.json")
-	if cfg.Telemetry.Buffer.PersistPath != wantTelemetry {
-		t.Errorf("telemetry persist path = %q, want %q", cfg.Telemetry.Buffer.PersistPath, wantTelemetry)
+	if got, want := cfg.Telemetry.Buffer.PersistPath, filepath.Join(autoDir, "telemetry-buffer.json"); got != want {
+		t.Errorf("telemetry persist path = %q, want %q", got, want)
 	}
-	if cfg.Events.BufferPath != wantEvents {
-		t.Errorf("events buffer path = %q, want %q", cfg.Events.BufferPath, wantEvents)
+	if got, want := cfg.Events.BufferPath, filepath.Join(autoDir, "events-buffer.json"); got != want {
+		t.Errorf("events buffer path = %q, want %q", got, want)
 	}
 }
 
-func TestLoadConfig_ConfigValuesWinOverAutoDetect(t *testing.T) {
-	// When the YAML config sets explicit paths and the operator passes no flags,
-	// the config values should be respected (auto-detect only fills empties).
-	autoDir := filepath.Join(t.TempDir(), "auto")
-	prev := stateDirCandidates
-	stateDirCandidates = []string{autoDir}
-	t.Cleanup(func() { stateDirCandidates = prev })
+func TestLoadConfig_DeprecatedConfigPathsIgnored(t *testing.T) {
+	// Stale configs in the field have hardcoded distro-specific paths. Auto-detect
+	// must override them — operators can no longer pin paths via config.
+	autoDir := withFakeStateDir(t)
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "radio-gaga.yml")
@@ -102,50 +77,81 @@ events:
 		t.Fatalf("write config: %v", err)
 	}
 
-	flags := &models.CommandLineFlags{ConfigPath: path}
-	cfg, _, err := LoadConfig(flags)
+	cfg, _, err := LoadConfig(&models.CommandLineFlags{ConfigPath: path})
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 
-	if cfg.Telemetry.Buffer.PersistPath != "/custom/telemetry.json" {
-		t.Errorf("telemetry persist path = %q, want /custom/telemetry.json", cfg.Telemetry.Buffer.PersistPath)
+	if got, want := cfg.Telemetry.Buffer.PersistPath, filepath.Join(autoDir, "telemetry-buffer.json"); got != want {
+		t.Errorf("telemetry persist path = %q, want %q (config value should be ignored)", got, want)
 	}
-	if cfg.Events.BufferPath != "/custom/events.json" {
-		t.Errorf("events buffer path = %q, want /custom/events.json", cfg.Events.BufferPath)
+	if got, want := cfg.Events.BufferPath, filepath.Join(autoDir, "events-buffer.json"); got != want {
+		t.Errorf("events buffer path = %q, want %q (config value should be ignored)", got, want)
 	}
 }
 
-func TestLoadConfig_StateDirFlagOverridesConfigValues(t *testing.T) {
-	// -state-dir is recent operator intent and overrides whatever the config says.
-	stateDir := t.TempDir()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "radio-gaga.yml")
-	yaml := minimalConfigYAML + `
-telemetry:
-  buffer:
-    persist_path: /old/telemetry.json
-events:
-  buffer_path: /old/events.json
-`
-	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+func TestLoadConfig_DeprecatedFlagsIgnored(t *testing.T) {
+	// -state-dir and -buffer-persist-path are kept parseable for backward
+	// compatibility with deployed systemd units, but their values are ignored.
+	autoDir := withFakeStateDir(t)
+	configPath := writeMinimalConfig(t)
 
-	flags := &models.CommandLineFlags{ConfigPath: path, StateDir: stateDir}
+	flags := &models.CommandLineFlags{
+		ConfigPath:        configPath,
+		StateDir:          "/should/be/ignored",
+		BufferPersistPath: "/also/ignored.json",
+	}
 	cfg, _, err := LoadConfig(flags)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 
-	wantTelemetry := filepath.Join(stateDir, "telemetry-buffer.json")
-	wantEvents := filepath.Join(stateDir, "events-buffer.json")
-	if cfg.Telemetry.Buffer.PersistPath != wantTelemetry {
-		t.Errorf("telemetry persist path = %q, want %q", cfg.Telemetry.Buffer.PersistPath, wantTelemetry)
+	if cfg.StateDir != autoDir {
+		t.Errorf("cfg.StateDir = %q, want %q (deprecated -state-dir should be ignored)", cfg.StateDir, autoDir)
 	}
-	if cfg.Events.BufferPath != wantEvents {
-		t.Errorf("events buffer path = %q, want %q", cfg.Events.BufferPath, wantEvents)
+	if got, want := cfg.Telemetry.Buffer.PersistPath, filepath.Join(autoDir, "telemetry-buffer.json"); got != want {
+		t.Errorf("telemetry persist path = %q, want %q (deprecated -buffer-persist-path should be ignored)", got, want)
 	}
+}
+
+func TestSaveConfig_StripsDeprecatedPaths(t *testing.T) {
+	autoDir := withFakeStateDir(t)
+
+	cfg := &models.Config{
+		Scooter:  models.ScooterConfig{Identifier: "VIN", Token: "tok"},
+		MQTT:     models.MQTTConfig{BrokerURL: "ssl://x:8883", KeepAlive: "30s"},
+		RedisURL: "redis://localhost:6379",
+	}
+	cfg.Telemetry.Buffer.PersistPath = filepath.Join(autoDir, "telemetry-buffer.json")
+	cfg.Events.BufferPath = filepath.Join(autoDir, "events-buffer.json")
+
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.yml")
+	if err := SaveConfig(cfg, out); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	got := string(data)
+	if filepathContainsAny(got, "persist_path", "buffer_path") {
+		t.Errorf("saved config still contains deprecated path keys:\n%s", got)
+	}
+}
+
+// filepathContainsAny is a tiny substring helper for the assertion above —
+// avoids pulling in strings just for one test.
+func filepathContainsAny(haystack string, needles ...string) bool {
+	for _, n := range needles {
+		for i := 0; i+len(n) <= len(haystack); i++ {
+			if haystack[i:i+len(n)] == n {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestValidatePriorityOrdering_ValidOrder(t *testing.T) {

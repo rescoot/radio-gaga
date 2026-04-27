@@ -46,12 +46,12 @@ func ParseFlags() *models.CommandLineFlags {
 	flag.IntVar(&flags.BufferMaxSize, "buffer-max-size", 1000, "maximum number of telemetry events to buffer")
 	flag.IntVar(&flags.BufferMaxRetries, "buffer-max-retries", 5, "maximum number of retries for sending buffered telemetry")
 	flag.StringVar(&flags.BufferRetryInterval, "buffer-retry-interval", "1m", "interval between retries for sending buffered telemetry")
-	flag.StringVar(&flags.BufferPersistPath, "buffer-persist-path", "", "path to persist telemetry buffer (empty for no persistence)")
+	flag.StringVar(&flags.BufferPersistPath, "buffer-persist-path", "", "DEPRECATED: state directory is auto-detected; this flag is ignored")
 	flag.StringVar(&flags.TransmitPeriod, "transmit-period", "5m", "period for transmitting buffered telemetry")
 
-	// State directory: base for on-disk state (telemetry buffer, events buffer, journal-upload session).
-	// When set, individual paths default to <state-dir>/<file>.json; specific flags still override.
-	flag.StringVar(&flags.StateDir, "state-dir", "", "base directory for on-disk state files (telemetry/events buffers, journal-upload session)")
+	// -state-dir was briefly the explicit knob; superseded by auto-detect.
+	// Kept parsed so units that pass it don't error out on flag.Parse.
+	flag.StringVar(&flags.StateDir, "state-dir", "", "DEPRECATED: state directory is auto-detected; this flag is ignored")
 
 	// API configuration
 	flag.StringVar(&flags.APIBaseURL, "api-base-url", "", "Sunshine API base URL")
@@ -112,31 +112,27 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) 
 		}
 	}
 
-	// Resolve the on-disk state directory once. Precedence:
-	//   1. -state-dir flag (explicit operator intent at run time) wins over config file paths
-	//   2. Otherwise, auto-detect — used to fill any path the config didn't set
-	// Per-path flags like -buffer-persist-path still override below, in the visit loop.
-	resolvedStateDir := flags.StateDir
-	if resolvedStateDir == "" {
-		resolvedStateDir = defaultStateDir()
-	} else if err := os.MkdirAll(resolvedStateDir, 0o755); err != nil {
-		log.Printf("Warning: failed to ensure state directory %s: %v", resolvedStateDir, err)
-	}
-	config.StateDir = resolvedStateDir
-
+	// State directory is always auto-detected. The previous configurability
+	// (flags + config keys) only existed because LibreScoot and stock ScooterOS
+	// disagreed on writable paths; auto-detect handles both. Warn loudly if any
+	// deprecated input is supplied so operators know it's being ignored.
 	if flags.StateDir != "" {
-		// Explicit -state-dir overrides any paths the config file might have set.
-		config.Telemetry.Buffer.PersistPath = filepath.Join(resolvedStateDir, "telemetry-buffer.json")
-		config.Events.BufferPath = filepath.Join(resolvedStateDir, "events-buffer.json")
-	} else {
-		// Auto-detect: fill empty fields, but respect explicit config values.
-		if config.Telemetry.Buffer.PersistPath == "" {
-			config.Telemetry.Buffer.PersistPath = filepath.Join(resolvedStateDir, "telemetry-buffer.json")
-		}
-		if config.Events.BufferPath == "" {
-			config.Events.BufferPath = filepath.Join(resolvedStateDir, "events-buffer.json")
-		}
+		log.Printf("Warning: -state-dir is deprecated and ignored (auto-detected: was %q)", flags.StateDir)
 	}
+	if flags.BufferPersistPath != "" {
+		log.Printf("Warning: -buffer-persist-path is deprecated and ignored (auto-detected: was %q)", flags.BufferPersistPath)
+	}
+	if config.Telemetry.Buffer.PersistPath != "" {
+		log.Printf("Warning: telemetry.buffer.persist_path in config is deprecated and ignored (was %q)", config.Telemetry.Buffer.PersistPath)
+	}
+	if config.Events.BufferPath != "" {
+		log.Printf("Warning: events.buffer_path in config is deprecated and ignored (was %q)", config.Events.BufferPath)
+	}
+
+	resolvedStateDir := defaultStateDir()
+	config.StateDir = resolvedStateDir
+	config.Telemetry.Buffer.PersistPath = filepath.Join(resolvedStateDir, "telemetry-buffer.json")
+	config.Events.BufferPath = filepath.Join(resolvedStateDir, "events-buffer.json")
 
 	// Override with command line flags
 	flag.Visit(func(f *flag.Flag) {
@@ -177,8 +173,6 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) 
 			}
 		case "buffer-retry-interval":
 			config.Telemetry.Buffer.RetryInterval = flags.BufferRetryInterval
-		case "buffer-persist-path":
-			config.Telemetry.Buffer.PersistPath = flags.BufferPersistPath
 		case "transmit-period":
 			config.Telemetry.TransmitPeriod = flags.TransmitPeriod
 		case "debug":
@@ -461,8 +455,16 @@ func DetectServiceName() string {
 
 // SaveConfig saves the configuration to a YAML file
 func SaveConfig(config *models.Config, configPath string) error {
-	// Marshal the config to YAML
-	data, err := yaml.Marshal(config)
+	// Don't persist deprecated state-path fields back into the config file —
+	// they're auto-detected at runtime and writing them back would defeat
+	// deprecation. Shallow copy + zero is enough since the relevant struct
+	// fields are values, not pointers.
+	sanitized := *config
+	sanitized.Telemetry.Buffer.PersistPath = ""
+	sanitized.Events.BufferPath = ""
+
+	// Marshal the (sanitized) config to YAML
+	data, err := yaml.Marshal(&sanitized)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config to YAML: %v", err)
 	}
