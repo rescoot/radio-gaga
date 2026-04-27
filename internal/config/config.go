@@ -112,14 +112,30 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) 
 		}
 	}
 
-	// Apply -state-dir derivations before the per-flag visit loop so that
-	// specific flags like -buffer-persist-path can still override.
+	// Resolve the on-disk state directory once. Precedence:
+	//   1. -state-dir flag (explicit operator intent at run time) wins over config file paths
+	//   2. Otherwise, auto-detect — used to fill any path the config didn't set
+	// Per-path flags like -buffer-persist-path still override below, in the visit loop.
+	resolvedStateDir := flags.StateDir
+	if resolvedStateDir == "" {
+		resolvedStateDir = defaultStateDir()
+	} else if err := os.MkdirAll(resolvedStateDir, 0o755); err != nil {
+		log.Printf("Warning: failed to ensure state directory %s: %v", resolvedStateDir, err)
+	}
+	config.StateDir = resolvedStateDir
+
 	if flags.StateDir != "" {
-		if err := os.MkdirAll(flags.StateDir, 0o755); err != nil {
-			log.Printf("Warning: failed to ensure state directory %s: %v", flags.StateDir, err)
+		// Explicit -state-dir overrides any paths the config file might have set.
+		config.Telemetry.Buffer.PersistPath = filepath.Join(resolvedStateDir, "telemetry-buffer.json")
+		config.Events.BufferPath = filepath.Join(resolvedStateDir, "events-buffer.json")
+	} else {
+		// Auto-detect: fill empty fields, but respect explicit config values.
+		if config.Telemetry.Buffer.PersistPath == "" {
+			config.Telemetry.Buffer.PersistPath = filepath.Join(resolvedStateDir, "telemetry-buffer.json")
 		}
-		config.Telemetry.Buffer.PersistPath = filepath.Join(flags.StateDir, "telemetry-buffer.json")
-		config.Events.BufferPath = filepath.Join(flags.StateDir, "events-buffer.json")
+		if config.Events.BufferPath == "" {
+			config.Events.BufferPath = filepath.Join(resolvedStateDir, "events-buffer.json")
+		}
 	}
 
 	// Override with command line flags
@@ -266,9 +282,8 @@ func ValidateConfig(config *models.Config) error {
 	if config.Events.MaxRetries <= 0 {
 		config.Events.MaxRetries = 10
 	}
-	if config.Events.BufferPath == "" {
-		config.Events.BufferPath = "/var/lib/radio-gaga/events-buffer.json"
-	}
+	// Events.BufferPath is filled in LoadConfig (from -state-dir flag, config,
+	// or the auto-detected state dir). No fallback needed here.
 
 	// Initialize Telegram config with defaults
 	if config.Telegram.Enabled {

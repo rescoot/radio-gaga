@@ -54,7 +54,13 @@ func TestLoadConfig_StateDirDerivesBufferPaths(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_NoStateDirKeepsDefaults(t *testing.T) {
+func TestLoadConfig_NoStateDirAutoDetects(t *testing.T) {
+	// Override the candidate list so the test doesn't depend on host filesystem.
+	autoDir := filepath.Join(t.TempDir(), "auto")
+	prev := stateDirCandidates
+	stateDirCandidates = []string{autoDir}
+	t.Cleanup(func() { stateDirCandidates = prev })
+
 	configPath := writeMinimalConfig(t)
 	flags := &models.CommandLineFlags{ConfigPath: configPath}
 	cfg, _, err := LoadConfig(flags)
@@ -62,14 +68,83 @@ func TestLoadConfig_NoStateDirKeepsDefaults(t *testing.T) {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 
-	// With no -state-dir and no path set in config, telemetry persist path should remain empty
-	// (radio-gaga treats empty as "no disk persistence") and events buffer should fall back
-	// to the legacy default in ValidateConfig.
-	if cfg.Telemetry.Buffer.PersistPath != "" {
-		t.Errorf("telemetry persist path = %q, want empty", cfg.Telemetry.Buffer.PersistPath)
+	if cfg.StateDir != autoDir {
+		t.Errorf("cfg.StateDir = %q, want %q", cfg.StateDir, autoDir)
 	}
-	if cfg.Events.BufferPath != "/var/lib/radio-gaga/events-buffer.json" {
-		t.Errorf("events buffer path = %q, want legacy default", cfg.Events.BufferPath)
+	wantTelemetry := filepath.Join(autoDir, "telemetry-buffer.json")
+	wantEvents := filepath.Join(autoDir, "events-buffer.json")
+	if cfg.Telemetry.Buffer.PersistPath != wantTelemetry {
+		t.Errorf("telemetry persist path = %q, want %q", cfg.Telemetry.Buffer.PersistPath, wantTelemetry)
+	}
+	if cfg.Events.BufferPath != wantEvents {
+		t.Errorf("events buffer path = %q, want %q", cfg.Events.BufferPath, wantEvents)
+	}
+}
+
+func TestLoadConfig_ConfigValuesWinOverAutoDetect(t *testing.T) {
+	// When the YAML config sets explicit paths and the operator passes no flags,
+	// the config values should be respected (auto-detect only fills empties).
+	autoDir := filepath.Join(t.TempDir(), "auto")
+	prev := stateDirCandidates
+	stateDirCandidates = []string{autoDir}
+	t.Cleanup(func() { stateDirCandidates = prev })
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "radio-gaga.yml")
+	yaml := minimalConfigYAML + `
+telemetry:
+  buffer:
+    persist_path: /custom/telemetry.json
+events:
+  buffer_path: /custom/events.json
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	flags := &models.CommandLineFlags{ConfigPath: path}
+	cfg, _, err := LoadConfig(flags)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if cfg.Telemetry.Buffer.PersistPath != "/custom/telemetry.json" {
+		t.Errorf("telemetry persist path = %q, want /custom/telemetry.json", cfg.Telemetry.Buffer.PersistPath)
+	}
+	if cfg.Events.BufferPath != "/custom/events.json" {
+		t.Errorf("events buffer path = %q, want /custom/events.json", cfg.Events.BufferPath)
+	}
+}
+
+func TestLoadConfig_StateDirFlagOverridesConfigValues(t *testing.T) {
+	// -state-dir is recent operator intent and overrides whatever the config says.
+	stateDir := t.TempDir()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "radio-gaga.yml")
+	yaml := minimalConfigYAML + `
+telemetry:
+  buffer:
+    persist_path: /old/telemetry.json
+events:
+  buffer_path: /old/events.json
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	flags := &models.CommandLineFlags{ConfigPath: path, StateDir: stateDir}
+	cfg, _, err := LoadConfig(flags)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	wantTelemetry := filepath.Join(stateDir, "telemetry-buffer.json")
+	wantEvents := filepath.Join(stateDir, "events-buffer.json")
+	if cfg.Telemetry.Buffer.PersistPath != wantTelemetry {
+		t.Errorf("telemetry persist path = %q, want %q", cfg.Telemetry.Buffer.PersistPath, wantTelemetry)
+	}
+	if cfg.Events.BufferPath != wantEvents {
+		t.Errorf("events buffer path = %q, want %q", cfg.Events.BufferPath, wantEvents)
 	}
 }
 

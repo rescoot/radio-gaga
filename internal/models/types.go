@@ -61,6 +61,12 @@ type Config struct {
 	UnuUplink     UnuUplinkConfig     `yaml:"unu_uplink,omitempty"`
 	ServiceName   string              `yaml:"service_name,omitempty"`
 	Debug         bool                `yaml:"debug,omitempty"`
+
+	// StateDir is the resolved on-disk state directory for this run.
+	// Populated by config.LoadConfig from -state-dir or auto-detection;
+	// not loaded from yaml. Consumers (e.g. journal upload) read it instead
+	// of hardcoding paths.
+	StateDir string `yaml:"-"`
 }
 
 // ScooterConfig contains scooter-specific configuration
