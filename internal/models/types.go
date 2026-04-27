@@ -43,6 +43,11 @@ type CommandLineFlags struct {
 	// API configuration
 	APIBaseURL   string
 	APIScooterID string
+	// Probe runs a single MQTT connect+subscribe round-trip against the loaded
+	// config and exits 0 on success / non-zero on failure. Used by the
+	// transactional replace machinery to validate a candidate config (and/or
+	// binary) actually reaches the cloud before committing.
+	Probe bool
 }
 
 // Config represents the application configuration

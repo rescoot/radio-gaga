@@ -57,6 +57,10 @@ func ParseFlags() *models.CommandLineFlags {
 	flag.StringVar(&flags.APIBaseURL, "api-base-url", "", "Sunshine API base URL")
 	flag.StringVar(&flags.APIScooterID, "api-scooter-id", "", "Sunshine API scooter ID")
 
+	// Probe mode: connect to MQTT with the loaded config, subscribe to the
+	// per-scooter command topic, exit 0 on success / non-zero on failure.
+	flag.BoolVar(&flags.Probe, "probe", false, "validate the loaded config by connecting to MQTT once and exiting; used by the transactional replace machinery")
+
 	flag.Parse()
 	return flags
 }

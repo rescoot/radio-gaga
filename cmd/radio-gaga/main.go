@@ -8,12 +8,19 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"radio-gaga/internal/client"
 	"radio-gaga/internal/config"
 	"radio-gaga/internal/handlers"
 	"radio-gaga/internal/handlers/commands"
 	"radio-gaga/internal/journalupload"
+)
+
+const (
+	probeConnectTimeout  = 30 * time.Second
+	probeStickinessWait  = 2 * time.Second
+	probeFailExitCode    = 2
 )
 
 // Version is set during the build process
@@ -54,7 +61,26 @@ func main() {
 	// Load configuration
 	cfg, configPath, err := config.LoadConfig(flags)
 	if err != nil {
+		if flags.Probe {
+			// Surface the load error specifically — the orchestrator needs to
+			// see why the candidate config didn't even parse.
+			log.Printf("probe: failed to load config: %v", err)
+			os.Exit(probeFailExitCode)
+		}
 		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Probe mode: connect to MQTT once with the loaded config, verify a SUBACK
+	// on the per-scooter command topic, and exit. Used by the transactional
+	// replace machinery — the orchestrator commits the candidate only if this
+	// child returns 0.
+	if flags.Probe {
+		if err := client.RunProbe(cfg, probeConnectTimeout, probeStickinessWait); err != nil {
+			log.Printf("probe: %v", err)
+			os.Exit(probeFailExitCode)
+		}
+		log.Printf("probe: success")
+		os.Exit(0)
 	}
 
 	// Route journal-upload session/cursor files through the auto-detected
