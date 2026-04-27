@@ -261,10 +261,9 @@ need to point a unit back at :8883.
 ### Rollout phases
 
 1. **Bring up :8884 in staging.** Verify mosquitto serves both listeners,
-   auth + ACL identical, a test scooter can connect to either.
-2. **Canary.** Run the rollout flow against one or two known-good scooters
-   in the field (or a hardware test rig). Watch the txn events. Verify
-   rollback works by deliberately pushing a bad CA bundle.
+   auth + ACL identical. Walk the deep-blue test matrix end to end.
+2. **First fielded scooter.** Pick a known-good unit beyond deep-blue and
+   run the rollout flow against it. Watch txn events from the server side.
 3. **Tranche rollout.** Per-region or per-batch, with the dashboard
    tracking long-tail.
 4. **Long tail forever.** Scooters that don't update stay on :8883. The
@@ -279,27 +278,47 @@ need to point a unit back at :8883.
 - Not changing the existing `InsecureSkipVerify` fallback path (out of scope).
 - Not rotating any other secrets in this work (passwords, API tokens, etc.).
 
-## Test harness
+## Testing
 
-The transactional layer needs to be exercised hard before a single prod
-scooter sees `set_broker_url`.
+No docker-compose harness. The transactional layer is tested against
+**deep-blue** (a real scooter on librescoot) with a staging sunshine
+configured for the new dual-listener setup. This is more honest than a
+container harness because the failure modes that matter — filesystem
+persistence on the real partition layout, systemd restart timing, real
+modem network conditions, NTP behavior, the `/data/radio-gaga/` write path
+— are all exercised on the actual target.
 
-**Layer 1 — Go integration tests.** A `testdata/` mosquitto config with two
-listeners (different CAs) plus a Go test driver that builds a real
-`ScooterMQTTClient` against it. Each test exercises one transition or one
-failure mode from the table above. Hermetic, runs in CI.
+What gets unit-tested in Go (cheap, runs in CI):
 
-**Layer 2 — docker-compose harness.** Compose file with two mosquitto
-containers (or one with two listeners), sunshine API stub, redis,
-radio-gaga. Persistent volumes so we can kill the radio-gaga container
-mid-transaction and verify boot-time rollback. Used for manual exploratory
-testing and chaos.
+- `internal/txn` pure state-machine logic: pending.json round-trip, atomic
+  rename, boot-time `RecoverOnBoot` decision tree (LKG present / LKG
+  missing / staging only / clean state). No MQTT involved.
+- Extended `update_ca_cert` validator: PEM bundle parsing, multi-cert
+  validation, rejection of non-CA certs in any block, single-block
+  backward compat. Already has test scaffolding in
+  `update_ca_cert_test.go`.
 
-**Layer 3 — canary on real hardware.** One scooter on the bench (or
-deep-blue), full rollout flow, deliberately broken CA, deliberately
-unreachable :8884. Manual, gating prod rollout.
+Everything else is exercised on deep-blue. The matrix:
 
-Layers 1 and 2 are CI-grade. Layer 3 is a checklist before prod tranche.
+| What we run on deep-blue | What we verify |
+|---|---|
+| Current radio-gaga + new dual-listener mosquitto on staging | Old chain on :8883 still works (no change in behavior). |
+| Pre-this-work radio-gaga build + new dual-listener mosquitto | Older binaries (no txn support) still connect on :8883 — proves un-updated fleet won't break when we add :8884. |
+| New radio-gaga + `update_ca_cert` with `oldCA+newCA` bundle | Trust pool grows, reconnect on :8883 still works, txn commits. |
+| Same + `set_broker_url` to :8884 | Disconnects from :8883, connects to :8884, PUBACK observed, txn commits. |
+| Forced failure: `set_broker_url` to non-existent host | Rollback to LKG, scooter back on :8883 within probe timeout. |
+| Forced failure: `update_ca_cert` with garbage PEM | Local validation rejects, no txn started. |
+| Forced failure: kill radio-gaga mid-probe (`systemctl kill`) | On restart, `RecoverOnBoot` restores LKG, scooter reconnects on old config. |
+| Forced failure: power-cycle deep-blue mid-probe | Same as above, plus exercises real flush/sync behavior on the data partition. |
+| Forced failure: push `set_broker_url` to a host that does TLS but rejects auth | PUBACK never arrives, rollback fires. |
+| Forced failure: push `set_broker_url` to a host that does TLS + auth but ACL-rejects the txn topic | Same as above. |
+
+deep-blue gets pinned to specific radio-gaga binary builds via the existing
+`/data/radio-gaga-<timestamp>` pattern + symlink swap (already how versions
+are managed there). Older versions are kept around to exercise the
+"un-updatable scooter" path against the new sunshine setup.
+
+Prod tranche rollout is gated on every row of that matrix passing.
 
 ## Files affected
 
@@ -309,9 +328,7 @@ New:
 - `internal/txn/manager.go` — Manager, Run, RecoverOnBoot
 - `internal/txn/state.go` — disk state read/write, atomic rename
 - `internal/handlers/commands/set_broker_url.go` — new command
-- `internal/txn/manager_test.go` — table-driven failure-mode tests
-- `testdata/mosquitto/...` — two-listener test fixture
-- `internal/integration/cert_rotation_test.go` — end-to-end Go test
+- `internal/txn/state_test.go` — pure state-machine unit tests (no MQTT)
 
 Modified:
 - `internal/handlers/commands/update_ca_cert.go` — accept PEM bundle, use txn
