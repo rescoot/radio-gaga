@@ -57,6 +57,13 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
+	// If a -state-dir was provided, route journal-upload session/cursor files
+	// through it as well. /data exists on LibreScoot but not on stock ScooterOS,
+	// so the previous default was wrong on stock.
+	if flags.StateDir != "" {
+		commands.JournalUploadStateDir = flags.StateDir
+	}
+
 	// Create and start MQTT client
 	mqttClient, err := client.NewScooterMQTTClient(cfg, configPath, version)
 	if err != nil {

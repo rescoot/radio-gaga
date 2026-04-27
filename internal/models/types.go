@@ -36,6 +36,10 @@ type CommandLineFlags struct {
 	BufferRetryInterval string
 	BufferPersistPath   string
 	TransmitPeriod      string
+	// StateDir is the base directory for on-disk state files (telemetry buffer,
+	// events buffer, journal-upload session). When set, individual paths default
+	// to <StateDir>/<file>.json; specific flags or config values override.
+	StateDir string
 	// API configuration
 	APIBaseURL   string
 	APIScooterID string

@@ -13,7 +13,8 @@ import (
 )
 
 // JournalUploadStateDir is where session + cursor files live on the scooter.
-// /data is persistent across reboots on both LibreScoot and stock ScooterOS.
+// Defaults to /data/radio-gaga (LibreScoot's writable partition); overridden
+// from main.go when -state-dir is passed (e.g. /var/lib/radio-gaga on stock).
 var JournalUploadStateDir = "/data/radio-gaga"
 
 var (

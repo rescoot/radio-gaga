@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
@@ -47,6 +48,10 @@ func ParseFlags() *models.CommandLineFlags {
 	flag.StringVar(&flags.BufferRetryInterval, "buffer-retry-interval", "1m", "interval between retries for sending buffered telemetry")
 	flag.StringVar(&flags.BufferPersistPath, "buffer-persist-path", "", "path to persist telemetry buffer (empty for no persistence)")
 	flag.StringVar(&flags.TransmitPeriod, "transmit-period", "5m", "period for transmitting buffered telemetry")
+
+	// State directory: base for on-disk state (telemetry buffer, events buffer, journal-upload session).
+	// When set, individual paths default to <state-dir>/<file>.json; specific flags still override.
+	flag.StringVar(&flags.StateDir, "state-dir", "", "base directory for on-disk state files (telemetry/events buffers, journal-upload session)")
 
 	// API configuration
 	flag.StringVar(&flags.APIBaseURL, "api-base-url", "", "Sunshine API base URL")
@@ -105,6 +110,16 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) 
 				TransmitPeriod: "5m",
 			},
 		}
+	}
+
+	// Apply -state-dir derivations before the per-flag visit loop so that
+	// specific flags like -buffer-persist-path can still override.
+	if flags.StateDir != "" {
+		if err := os.MkdirAll(flags.StateDir, 0o755); err != nil {
+			log.Printf("Warning: failed to ensure state directory %s: %v", flags.StateDir, err)
+		}
+		config.Telemetry.Buffer.PersistPath = filepath.Join(flags.StateDir, "telemetry-buffer.json")
+		config.Events.BufferPath = filepath.Join(flags.StateDir, "events-buffer.json")
 	}
 
 	// Override with command line flags
