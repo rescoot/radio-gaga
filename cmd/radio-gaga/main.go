@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"radio-gaga/internal/handlers"
 	"radio-gaga/internal/handlers/commands"
 	"radio-gaga/internal/journalupload"
+	"radio-gaga/internal/txn"
 )
 
 const (
@@ -58,7 +60,22 @@ func main() {
 		log.Print("Starting radio-gaga development version")
 	}
 
-	// Load configuration
+	// Boot-time txn recovery: runs BEFORE LoadConfig so a rolled-back config
+	// is what gets parsed. Skipped for probe mode — probe runs as a child of
+	// an orchestrator that already did its own recovery; touching txn state
+	// from inside the probe would interfere with the in-flight transaction.
+	if !flags.Probe {
+		bootCfgPath := flags.ConfigPath
+		if bootCfgPath == "" {
+			bootCfgPath = "radio-gaga.yml"
+		}
+		txnManager := newTxnManager(bootCfgPath)
+		if err := txnManager.RecoverOnBoot(); err != nil {
+			log.Printf("Warning: txn recovery failed: %v (continuing with current on-disk state)", err)
+		}
+	}
+
+	// Load configuration (post-recovery in normal mode).
 	cfg, configPath, err := config.LoadConfig(flags)
 	if err != nil {
 		if flags.Probe {
@@ -71,9 +88,8 @@ func main() {
 	}
 
 	// Probe mode: connect to MQTT once with the loaded config, verify a SUBACK
-	// on the per-scooter command topic, and exit. Used by the transactional
-	// replace machinery — the orchestrator commits the candidate only if this
-	// child returns 0.
+	// on the per-scooter command topic, and exit. The orchestrator commits the
+	// candidate only if this child returns 0.
 	if flags.Probe {
 		if err := client.RunProbe(cfg, probeConnectTimeout, probeStickinessWait); err != nil {
 			log.Printf("probe: %v", err)
@@ -123,4 +139,16 @@ func main() {
 
 	// Stop client on shutdown
 	mqttClient.Stop()
+}
+
+// newTxnManager builds a txn.Manager rooted at the live config path. The
+// .staging and .lkg files live alongside the config (same filesystem so
+// os.Rename is atomic); the pending marker lives in the same directory.
+func newTxnManager(configPath string) *txn.Manager {
+	dir := filepath.Dir(configPath)
+	return &txn.Manager{
+		LiveConfigPath: configPath,
+		PendingPath:    filepath.Join(dir, ".txn-pending.json"),
+		Logger:         log.Default(),
+	}
 }

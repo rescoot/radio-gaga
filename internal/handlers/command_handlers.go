@@ -234,6 +234,8 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		err = commands.HandleConfigDelCommand(client, mqttClient, config, command.Params, command.RequestID)
 	case "config:save":
 		err = commands.HandleConfigSaveCommand(client, mqttClient, config, command.RequestID)
+	case "txn:replace":
+		err = commands.HandleTxnReplaceCommand(client, mqttClient, config, command.Params, command.RequestID)
 	case "update_ca_cert":
 		err = commands.HandleUpdateCACertCommand(client, config, command.Params, command.RequestID)
 	case "fetch_logs":
