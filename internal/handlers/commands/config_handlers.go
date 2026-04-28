@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
@@ -39,11 +40,27 @@ func HandleConfigGetCommand(client ConfigCommandHandlerClient, mqttClient mqtt.C
 		result = config
 	}
 
+	// Also include the raw on-disk YAML when no field is requested. This lets
+	// the YAML editor (admin txn:replace UI) round-trip cleanly without
+	// having to reverse Go's PascalCase JSON marshaling. The struct view
+	// (`config`) stays for the existing field-by-field editor.
+	var configYAML string
+	if !hasField {
+		if path := client.GetConfigPath(); path != "" {
+			if data, err := os.ReadFile(path); err == nil {
+				configYAML = string(data)
+			} else {
+				log.Printf("config:get: could not read on-disk yaml at %s: %v", path, err)
+			}
+		}
+	}
+
 	// Send response with configuration data
 	response := map[string]interface{}{
-		"status":     "success",
-		"config":     result,
-		"request_id": requestID,
+		"status":      "success",
+		"config":      result,
+		"config_yaml": configYAML,
+		"request_id":  requestID,
 	}
 
 	responseJSON, err := json.Marshal(response)
