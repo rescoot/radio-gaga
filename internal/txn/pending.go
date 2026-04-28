@@ -52,6 +52,11 @@ type Pending struct {
 	State         State  `json:"state"`
 	StartedAtUnix int64  `json:"started_at_unix"`
 	DeadlineUnix  int64  `json:"deadline_unix,omitempty"`
+	// NoPriorLive is true when the live file didn't exist at the start of
+	// the transaction (initial bootstrap case). Recovery uses this to know
+	// "rollback = delete staging" rather than the usual rename-from-lkg —
+	// because there's no LKG to roll back to.
+	NoPriorLive bool `json:"no_prior_live,omitempty"`
 }
 
 // readPending returns (nil, nil) if path does not exist; otherwise parses the

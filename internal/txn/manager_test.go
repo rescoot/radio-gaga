@@ -255,6 +255,79 @@ func TestRecoverOnBoot_Idempotent(t *testing.T) {
 	}
 }
 
+// Initial-bootstrap path: no live config when Run is called. The Manager
+// should skip the LKG snapshot, stage + probe + commit, and end up with a
+// live config equal to the candidate.
+func TestRun_NoPriorLiveCommitsLeavesLive(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "config.yaml")
+	pending := filepath.Join(dir, ".txn-pending.json")
+	m := &Manager{LiveConfigPath: live, PendingPath: pending}
+
+	// Sanity: live doesn't exist yet.
+	if _, err := os.Stat(live); !os.IsNotExist(err) {
+		t.Fatalf("live should not exist at start: %v", err)
+	}
+
+	committed, err := m.Run(context.Background(), "txn-bootstrap", KindConfig, []byte("first: true\n"),
+		func(ctx context.Context, _ string) error { return nil })
+	if err != nil || !committed {
+		t.Fatalf("Run: committed=%v err=%v", committed, err)
+	}
+	if got := readFile(t, live); got != "first: true\n" {
+		t.Errorf("live = %q, want first content", got)
+	}
+	mustNotExist(t, live+stagingSuffix)
+	mustNotExist(t, live+lkgSuffix)
+	mustNotExist(t, pending)
+}
+
+// Initial-bootstrap probe failure: no live should remain since there was none.
+func TestRun_NoPriorLiveRollbackLeavesNoLive(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "config.yaml")
+	pending := filepath.Join(dir, ".txn-pending.json")
+	m := &Manager{LiveConfigPath: live, PendingPath: pending}
+
+	probeErr := errors.New("probe rejected")
+	committed, err := m.Run(context.Background(), "txn-bootstrap-fail", KindConfig, []byte("doomed\n"),
+		func(ctx context.Context, _ string) error { return probeErr })
+	if committed {
+		t.Errorf("expected not committed")
+	}
+	if !errors.Is(err, probeErr) {
+		t.Errorf("expected wrapped probe error, got %v", err)
+	}
+	mustNotExist(t, live)
+	mustNotExist(t, live+stagingSuffix)
+	mustNotExist(t, live+lkgSuffix)
+	mustNotExist(t, pending)
+}
+
+// Recovery from a crashed initial-bootstrap inflight: no LKG, no_prior_live=true.
+// Rollback = delete staging, leave live nonexistent, clear pending.
+func TestRecoverOnBoot_InflightNoPriorLiveCleansStaging(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "config.yaml")
+	pending := filepath.Join(dir, ".txn-pending.json")
+	m := &Manager{LiveConfigPath: live, PendingPath: pending}
+
+	staging := live + stagingSuffix
+	if err := os.WriteFile(staging, []byte("staged"), 0o644); err != nil {
+		t.Fatalf("seed staging: %v", err)
+	}
+	if err := writePending(pending, &Pending{TxnID: "crashed-bootstrap", Kind: KindConfig, State: StateInflight, NoPriorLive: true}); err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+
+	if err := m.RecoverOnBoot(); err != nil {
+		t.Fatalf("RecoverOnBoot: %v", err)
+	}
+	mustNotExist(t, live)
+	mustNotExist(t, staging)
+	mustNotExist(t, pending)
+}
+
 // Probe respects context: a probe that honors deadline and returns ctx.Err()
 // rolls back like any other probe failure.
 func TestRun_ProbeDeadlineRollsBack(t *testing.T) {

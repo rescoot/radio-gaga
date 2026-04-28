@@ -48,6 +48,11 @@ type CommandLineFlags struct {
 	// transactional replace machinery to validate a candidate config (and/or
 	// binary) actually reaches the cloud before committing.
 	Probe bool
+	// Bootstrap runs the per-user-token install flow: read hardware IDs,
+	// POST to Sunshine, receive config YAML, hand to the txn machinery,
+	// probe-then-commit. Used by the install script as a one-shot.
+	Bootstrap      bool
+	BootstrapToken string
 }
 
 // Config represents the application configuration

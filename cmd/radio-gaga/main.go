@@ -60,6 +60,20 @@ func main() {
 		log.Print("Starting radio-gaga development version")
 	}
 
+	// Bootstrap mode: per-user-token install flow. Reads hardware IDs, calls
+	// Sunshine's bootstrap endpoint, hands the returned config YAML to the
+	// txn machinery, exits. Used as a one-shot during install — outside the
+	// systemd lifecycle. Skips LoadConfig entirely; the bootstrap handler
+	// only needs the -api-base-url and -config (write target) flags.
+	if flags.Bootstrap {
+		if err := runBootstrap(flags.BootstrapToken, flags.APIBaseURL, flags.ConfigPath, version); err != nil {
+			log.Printf("bootstrap failed: %v", err)
+			os.Exit(probeFailExitCode)
+		}
+		log.Printf("bootstrap: complete")
+		os.Exit(0)
+	}
+
 	// Boot-time txn recovery: runs BEFORE LoadConfig so a rolled-back config
 	// is what gets parsed. Skipped for probe mode — probe runs as a child of
 	// an orchestrator that already did its own recovery; touching txn state

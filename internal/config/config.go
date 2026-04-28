@@ -61,6 +61,12 @@ func ParseFlags() *models.CommandLineFlags {
 	// per-scooter command topic, exit 0 on success / non-zero on failure.
 	flag.BoolVar(&flags.Probe, "probe", false, "validate the loaded config by connecting to MQTT once and exiting; used by the transactional replace machinery")
 
+	// Bootstrap mode: read hardware IDs, POST to Sunshine's bootstrap endpoint
+	// with the user-provided BootstrapToken, receive a config YAML, run it
+	// through the txn machinery (probe-then-commit), exit 0/non-zero.
+	flag.BoolVar(&flags.Bootstrap, "bootstrap", false, "run the per-user install bootstrap flow and exit")
+	flag.StringVar(&flags.BootstrapToken, "bootstrap-token", "", "BootstrapToken plaintext (paired with -bootstrap)")
+
 	flag.Parse()
 	return flags
 }

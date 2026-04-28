@@ -97,15 +97,25 @@ func (m *Manager) Run(ctx context.Context, txnID string, kind Kind, candidate []
 		}
 	}
 
-	// 2. Snapshot live → .lkg.
-	if err := copyFile(m.LiveConfigPath, lkgPath); err != nil {
-		return false, fmt.Errorf("snapshot live to lkg: %w", err)
+	// 2. Snapshot live → .lkg, unless live doesn't exist (initial bootstrap).
+	noPriorLive := false
+	if _, statErr := os.Stat(m.LiveConfigPath); os.IsNotExist(statErr) {
+		noPriorLive = true
+		m.logf("txn %s: no prior live config at %s; this is an initial bootstrap", txnID, m.LiveConfigPath)
+	} else if statErr != nil {
+		return false, fmt.Errorf("stat live config: %w", statErr)
+	} else {
+		if err := copyFile(m.LiveConfigPath, lkgPath); err != nil {
+			return false, fmt.Errorf("snapshot live to lkg: %w", err)
+		}
+		m.logf("txn %s: snapshotted %s → %s", txnID, m.LiveConfigPath, lkgPath)
 	}
-	m.logf("txn %s: snapshotted %s → %s", txnID, m.LiveConfigPath, lkgPath)
 
 	// 3. Write candidate → .staging.
 	if err := writeFileSync(stagingPath, candidate, 0o644); err != nil {
-		_ = os.Remove(lkgPath)
+		if !noPriorLive {
+			_ = os.Remove(lkgPath)
+		}
 		return false, fmt.Errorf("write staging: %w", err)
 	}
 	m.logf("txn %s: staged candidate at %s (%d bytes)", txnID, stagingPath, len(candidate))
@@ -121,6 +131,7 @@ func (m *Manager) Run(ctx context.Context, txnID string, kind Kind, candidate []
 		State:         StateInflight,
 		StartedAtUnix: nowUnix(),
 		DeadlineUnix:  deadlineUnix,
+		NoPriorLive:   noPriorLive,
 	}
 	if err := writePending(m.PendingPath, pending); err != nil {
 		_ = os.Remove(lkgPath)
@@ -200,21 +211,28 @@ func (m *Manager) RecoverOnBoot() error {
 			return fmt.Errorf("remove pending on cleanup: %w", err)
 		}
 	case StateInflight:
-		m.logf("txn %s: recovery — state=inflight; rolling back to lkg", prior.TxnID)
-		// Restore live from lkg if lkg is present.
-		if _, statErr := os.Stat(lkgPath); statErr == nil {
-			if err := os.Rename(lkgPath, m.LiveConfigPath); err != nil {
-				return fmt.Errorf("rollback rename %s → %s: %w", lkgPath, m.LiveConfigPath, err)
+		switch {
+		case prior.NoPriorLive:
+			// Initial-bootstrap rollback: there was no live file when the txn
+			// started, so there's nothing to restore. Delete staging (and the
+			// live file if it somehow got renamed in pre-commit) and clear.
+			m.logf("txn %s: recovery — state=inflight, no_prior_live; clearing staging (no live to restore)", prior.TxnID)
+			_ = os.Remove(stagingPath)
+		default:
+			m.logf("txn %s: recovery — state=inflight; rolling back to lkg", prior.TxnID)
+			// Restore live from lkg if lkg is present.
+			if _, statErr := os.Stat(lkgPath); statErr == nil {
+				if err := os.Rename(lkgPath, m.LiveConfigPath); err != nil {
+					return fmt.Errorf("rollback rename %s → %s: %w", lkgPath, m.LiveConfigPath, err)
+				}
+				m.logf("txn %s: recovery — restored live from lkg", prior.TxnID)
+			} else {
+				// lkg missing during inflight (and not a no_prior_live txn) is
+				// the documented "impossible state" — log loudly and clear.
+				m.logf("txn %s: WARNING recovery — state=inflight but lkg missing; live file is unchanged, clearing pending", prior.TxnID)
 			}
-			m.logf("txn %s: recovery — restored live from lkg", prior.TxnID)
-		} else {
-			// lkg missing during inflight is the documented "impossible
-			// state" — log loudly and clear the pending so the next boot is
-			// normal. Live file is whatever it was; might be old, might be
-			// new, but consistent with the on-disk state we have.
-			m.logf("txn %s: WARNING recovery — state=inflight but lkg missing; live file is unchanged, clearing pending", prior.TxnID)
+			_ = os.Remove(stagingPath)
 		}
-		_ = os.Remove(stagingPath)
 		if err := removePending(m.PendingPath); err != nil {
 			return fmt.Errorf("remove pending on rollback: %w", err)
 		}
