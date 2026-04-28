@@ -73,6 +73,7 @@ func runBootstrap(token, apiBaseURL, configPath, softwareVersion string) error {
 
 	manager := &txn.Manager{
 		LiveConfigPath: configPath,
+		LiveBinaryPath: exePath,
 		PendingPath:    filepath.Join(filepath.Dir(configPath), ".txn-pending.json"),
 		Logger:         log.Default(),
 	}
@@ -80,13 +81,13 @@ func runBootstrap(token, apiBaseURL, configPath, softwareVersion string) error {
 		log.Printf("bootstrap: WARNING pre-bootstrap recovery failed: %v (continuing)", err)
 	}
 
-	probe := txn.SubprocessProbe(exePath, log.Default().Writer())
+	probe := txn.SubprocessProbe(log.Default().Writer())
 
 	ctx, cancel := context.WithTimeout(context.Background(), bootstrapTxnTimeout)
 	defer cancel()
 
 	txnID := fmt.Sprintf("bootstrap-%d", time.Now().Unix())
-	committed, runErr := manager.Run(ctx, txnID, txn.KindConfig, []byte(yaml), probe)
+	committed, runErr := manager.Run(ctx, txnID, txn.KindConfig, txn.Candidate{Config: []byte(yaml)}, probe)
 	if !committed {
 		return fmt.Errorf("bootstrap probe rejected the config: %w", runErr)
 	}

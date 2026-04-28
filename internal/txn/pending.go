@@ -52,11 +52,22 @@ type Pending struct {
 	State         State  `json:"state"`
 	StartedAtUnix int64  `json:"started_at_unix"`
 	DeadlineUnix  int64  `json:"deadline_unix,omitempty"`
-	// NoPriorLive is true when the live file didn't exist at the start of
-	// the transaction (initial bootstrap case). Recovery uses this to know
+	// NoPriorLiveConfig / NoPriorLiveBinary are true when the corresponding
+	// live file didn't exist at the start of the transaction (initial
+	// bootstrap or first-time binary install). Recovery uses these to know
 	// "rollback = delete staging" rather than the usual rename-from-lkg —
-	// because there's no LKG to roll back to.
-	NoPriorLive bool `json:"no_prior_live,omitempty"`
+	// because there's no LKG to roll back to. Tracked separately so the
+	// combined-kind case can rollback each file pair correctly.
+	NoPriorLiveConfig bool `json:"no_prior_live_config,omitempty"`
+	NoPriorLiveBinary bool `json:"no_prior_live_binary,omitempty"`
+}
+
+// Candidate carries the bytes for the swap. For KindConfig only Config is
+// used; for KindBinary only Binary; for KindBoth both. Manager.Run validates
+// the right fields are populated for the given Kind.
+type Candidate struct {
+	Config []byte
+	Binary []byte
 }
 
 // readPending returns (nil, nil) if path does not exist; otherwise parses the
