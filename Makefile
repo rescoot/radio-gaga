@@ -4,12 +4,10 @@ BUILDFLAGS := -tags netgo,osusergo
 MAIN_PATH := ./cmd/radio-gaga
 OUTPUT_NAME := radio-gaga
 
-# ARM cross-compile (armhf / ARMv7 hard-float). cgo is required for
-# github.com/coreos/go-systemd/v22/sdjournal — libsystemd is dlopen'd at
-# runtime, so the binary only NEEDs libc.so.6.
-ARM_CC := arm-linux-gnueabihf-gcc
-ARM_PKG_CONFIG_PATH := /usr/lib/arm-linux-gnueabihf/pkgconfig
-ARM_ENV := GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=$(ARM_CC) PKG_CONFIG_PATH=$(ARM_PKG_CONFIG_PATH)
+# ARM cross-compile (armhf / ARMv7 hard-float). Pure-Go build — journal upload
+# now shells out to journalctl instead of linking libsystemd, so we don't need
+# cgo and the resulting binary has no glibc dependency.
+ARM_ENV := GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0
 
 .PHONY: build amd64 arm arm-debug dist clean install
 

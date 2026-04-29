@@ -37,7 +37,7 @@ func StartManager(state *journalupload.State) {
 	go func() {
 		m := &journalupload.Manager{
 			State:     state,
-			NewReader: journalupload.NewSdJournalReader,
+			NewReader: journalupload.NewJournalctlReader,
 		}
 		m.Run(runCtx)
 		managerMu.Lock()
