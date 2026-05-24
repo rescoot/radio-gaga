@@ -259,18 +259,23 @@ func ValidateConfig(config *models.Config) error {
 		config.Telemetry.TransmitPeriod = "5m"
 	}
 
-	// Initialize priority config with defaults
+	// Initialize priority config with defaults. These are deadlines for the
+	// change-driven monitor (priority.go) — the *upper bound* on how long a
+	// pending change waits before being flushed. Quick/Medium/Slow are
+	// deliberately relaxed: battery voltage / engine current / aux & CBB
+	// metrics fluctuate constantly even on a parked scooter and used to
+	// dominate publish cadence with the old 5s/1m/15m values.
 	if config.Telemetry.Priorities.Immediate == "" {
 		config.Telemetry.Priorities.Immediate = "1s"
 	}
 	if config.Telemetry.Priorities.Quick == "" {
-		config.Telemetry.Priorities.Quick = "5s"
+		config.Telemetry.Priorities.Quick = "30s"
 	}
 	if config.Telemetry.Priorities.Medium == "" {
-		config.Telemetry.Priorities.Medium = "1m"
+		config.Telemetry.Priorities.Medium = "5m"
 	}
 	if config.Telemetry.Priorities.Slow == "" {
-		config.Telemetry.Priorities.Slow = "15m"
+		config.Telemetry.Priorities.Slow = "1h"
 	}
 
 	// Initialize API config with defaults
