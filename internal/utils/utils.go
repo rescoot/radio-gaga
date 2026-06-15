@@ -191,6 +191,58 @@ func ConvertToStringKeyMap(m interface{}) interface{} {
 	}
 }
 
+// LookupCommandParam resolves a command parameter that may be written either as
+// a single flat key ("hazards.flash") or as a path into nested maps
+// ("hazards:" -> "flash:"). The flat form is tried first so existing configs and
+// dotted keys keep working; otherwise the key is split on "." and walked through
+// nested maps. yaml.v2 decodes nested maps as map[interface{}]interface{}, so
+// both that and map[string]interface{} are accepted at each level. Returns
+// defaultValue when the key resolves to nothing.
+func LookupCommandParam(params map[string]interface{}, key string, defaultValue interface{}) interface{} {
+	if params == nil {
+		return defaultValue
+	}
+	if v, ok := params[key]; ok {
+		return v
+	}
+
+	parts := strings.Split(key, ".")
+	if len(parts) < 2 {
+		return defaultValue
+	}
+
+	var current interface{} = params
+	for _, part := range parts {
+		m := asStringKeyMap(current)
+		if m == nil {
+			return defaultValue
+		}
+		v, ok := m[part]
+		if !ok {
+			return defaultValue
+		}
+		current = v
+	}
+	return current
+}
+
+// asStringKeyMap normalises a YAML-decoded map (string- or interface-keyed) to a
+// map[string]interface{} for a single level of traversal, or nil if v is not a map.
+func asStringKeyMap(v interface{}) map[string]interface{} {
+	switch m := v.(type) {
+	case map[string]interface{}:
+		return m
+	case map[interface{}]interface{}:
+		out := make(map[string]interface{}, len(m))
+		for k, val := range m {
+			out[fmt.Sprintf("%v", k)] = val
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 // ReadMdbSerialNumbers reads MDB serial numbers from hardware registers.
 // It tries the NVMEM device first, then falls back to the OTP sysfs files —
 // the same strategy used by version-service.

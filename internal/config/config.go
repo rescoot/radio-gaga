@@ -36,7 +36,7 @@ func ParseFlags() *models.CommandLineFlags {
 	flag.StringVar(&flags.NtpServer, "ntp-server", "pool.ntp.rescoot.org", "NTP server address")
 
 	// Telemetry intervals
-	flag.StringVar(&flags.DrivingInterval, "driving-interval", "1s", "telemetry interval while driving")
+	flag.StringVar(&flags.DrivingInterval, "driving-interval", "30s", "telemetry interval while driving")
 	flag.StringVar(&flags.StandbyInterval, "standby-interval", "5m", "telemetry interval in standby")
 	flag.StringVar(&flags.StandbyNoBatteryInterval, "standby-no-battery-interval", "8h", "telemetry interval in standby without battery")
 	flag.StringVar(&flags.HibernateInterval, "hibernate-interval", "24h", "telemetry interval in hibernate mode")
@@ -231,7 +231,7 @@ func ValidateConfig(config *models.Config) error {
 
 	// Validate telemetry intervals
 	if config.Telemetry.Intervals.Driving == "" {
-		config.Telemetry.Intervals.Driving = "1s"
+		config.Telemetry.Intervals.Driving = "30s"
 	}
 	if config.Telemetry.Intervals.Standby == "" {
 		config.Telemetry.Intervals.Standby = "5m"
@@ -260,13 +260,14 @@ func ValidateConfig(config *models.Config) error {
 	}
 
 	// Initialize priority config with defaults. These are deadlines for the
-	// change-driven monitor (priority.go) — the *upper bound* on how long a
-	// pending change waits before being flushed. Quick/Medium/Slow are
-	// deliberately relaxed: battery voltage / engine current / aux & CBB
-	// metrics fluctuate constantly even on a parked scooter and used to
-	// dominate publish cadence with the old 5s/1m/15m values.
+	// change-driven monitor (priority.go): the *upper bound* on how long a
+	// pending change waits before being flushed. All tiers are deliberately
+	// relaxed to cut publish volume: vehicle state / lock / blinkers can toggle
+	// repeatedly, and battery voltage / engine current / aux & CBB metrics
+	// fluctuate constantly even on a parked scooter. They used to dominate
+	// publish cadence with the old 1s/5s/1m/15m values.
 	if config.Telemetry.Priorities.Immediate == "" {
-		config.Telemetry.Priorities.Immediate = "1s"
+		config.Telemetry.Priorities.Immediate = "10s"
 	}
 	if config.Telemetry.Priorities.Quick == "" {
 		config.Telemetry.Priorities.Quick = "30s"

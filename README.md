@@ -37,12 +37,12 @@ Reporting intervals adjust automatically based on vehicle state:
 
 | State | Default Interval | Rationale |
 |-------|-----------------|-----------|
-| Driving | 1s | Real-time tracking |
+| Driving | 30s | Movement tracking without flooding the broker |
 | Standby (with battery) | 5m | Periodic check-ins |
 | Standby (no battery) | 8h | Conserve cellular data |
 | Hibernate | 24h | Minimal keepalive |
 
-State changes trigger an immediate telemetry push regardless of the interval timer.
+State changes are flushed promptly via the priority deadlines below, regardless of the interval timer.
 
 ### Priority-Based Flushing
 
@@ -50,10 +50,12 @@ Not all telemetry fields change at the same rate. When a field changes between r
 
 | Priority | Default Deadline | Fields |
 |----------|-----------------|--------|
-| Immediate | 1s | Vehicle state, lock status, blinkers |
-| Quick | 5s | GPS, battery charge level |
-| Medium | 1m | Most other fields |
-| Slow | 15m | Aux battery, CBB, BLE status |
+| Immediate | 10s | Vehicle state, lock status, blinkers |
+| Quick | 30s | GPS, battery charge level |
+| Medium | 5m | Most other fields |
+| Slow | 1h | Aux battery, CBB, BLE status |
+
+Deadlines must stay ordered `immediate <= quick <= medium <= slow`. Lower values are more responsive but cost more traffic.
 
 ### Telemetry Buffering
 
@@ -252,7 +254,7 @@ See [`radio-gaga.example.yml`](radio-gaga.example.yml) for a complete annotated 
 -debug                Enable debug logging
 -ntp-enabled          Enable NTP sync (default: true)
 -ntp-server string    NTP server (default: pool.ntp.rescoot.org)
--driving-interval string    Telemetry interval while driving (default: 1s)
+-driving-interval string    Telemetry interval while driving (default: 30s)
 -standby-interval string    Telemetry interval in standby (default: 5m)
 -standby-no-battery-interval string  Without battery (default: 8h)
 -hibernate-interval string  In hibernate (default: 24h)

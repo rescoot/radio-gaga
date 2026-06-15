@@ -1230,9 +1230,7 @@ func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
 // getCommandParam retrieves a command parameter from configuration
 func (s *ScooterMQTTClient) getCommandParam(cmd, param string, defaultValue interface{}) interface{} {
 	if cmdConfig, ok := s.config.Commands[cmd]; ok {
-		if params, ok := cmdConfig.Params[param]; ok {
-			return params
-		}
+		return utils.LookupCommandParam(cmdConfig.Params, param, defaultValue)
 	}
 	return defaultValue
 }

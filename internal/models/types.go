@@ -123,10 +123,10 @@ type TelemetryConfig struct {
 // PriorityConfig contains priority-based flush deadline configuration
 // Deadlines must be ordered: immediate <= quick <= medium <= slow
 type PriorityConfig struct {
-	Immediate string `yaml:"immediate"` // Vehicle state, lock status, blinkers (default: 1s)
-	Quick     string `yaml:"quick"`     // GPS, battery charge (default: 5s)
-	Medium    string `yaml:"medium"`    // Most other fields (default: 1m)
-	Slow      string `yaml:"slow"`      // Aux battery, CBB, BLE (default: 15m)
+	Immediate string `yaml:"immediate"` // Vehicle state, lock status, blinkers (default: 10s)
+	Quick     string `yaml:"quick"`     // GPS, battery charge (default: 30s)
+	Medium    string `yaml:"medium"`    // Most other fields (default: 5m)
+	Slow      string `yaml:"slow"`      // Aux battery, CBB, BLE (default: 1h)
 }
 
 // EventsConfig contains event detection and buffering configuration

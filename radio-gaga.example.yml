@@ -1,12 +1,22 @@
+# radio-gaga configuration - annotated example
+#
+# Only `scooter.identifier`, `scooter.token` and a reachable broker/redis are
+# strictly required. Every other key has a sensible default (shown below as
+# `# default: ...`); delete a key to fall back to its default.
+
 scooter:
-  identifier: VEHICLE-ID
-  token: 64character_sha256_token
-environment: development  # or production
+  identifier: VEHICLE-ID            # MQTT username / vehicle id (required)
+  token: 64character_sha256_token   # MQTT password (required)
+  # name: "My Scooter"              # optional friendly name
+
+environment: production             # production | development (default: production)
+                                    # `shell` command is only allowed in development
+
 mqtt:
   broker_url: ssl://mqtt.sunshine.rescoot.org:8883
-  # You can use either ca_cert to specify a file path
+  # Supply the broker CA either as a file path...
   # ca_cert: /etc/keys/sunshine-mqtt-ca.crt
-  # Or ca_cert_embedded to embed the certificate directly in the config file
+  # ...or embedded inline (takes precedence over ca_cert):
   ca_cert_embedded: |
     -----BEGIN CERTIFICATE-----
     MIIFTTCCAzWgAwIBAgIBATANBgkqhkiG9w0BAQsFADBIMQswCQYDVQQGEwJERTEa
@@ -39,68 +49,90 @@ mqtt:
     sy90wZjkg07+oyrwJXSiZ3nXJupQ7A5QPye4UAgUYM9QpQEXkMto4BNyzHRngrAa
     1iWwV8WUCGyjH/DNVAGKth0=
     -----END CERTIFICATE-----
-  keepalive: 30s
-ntp:
-  enabled: true
-  server: pool.ntp.rescoot.org
-redis_url: redis://localhost:6379
-telemetry:
-  intervals:
-    driving: 10s
-    standby: 5m
-    standby_no_battery: 2h
-    hibernate: 24h
-  # Priority-based flush deadlines for field changes
-  # Must be ordered: immediate <= quick <= medium <= slow
-  priorities:
-    immediate: 1s   # Vehicle state, lock status, blinkers
-    quick: 5s       # GPS, battery charge
-    medium: 1m      # Most other fields (default)
-    slow: 15m       # Aux battery, CBB, BLE
-  buffer:
-    enabled: true
-    max_size: 1000
-    max_retries: 5
-    retry_interval: 1m
-    persist_path: /var/lib/radio-gaga/telemetry-buffer.json
-  transmit_period: 30m
+  keepalive: 30s                    # default: 30s
 
-# Event detection and buffering configuration
+ntp:
+  enabled: true                     # default: true
+  server: pool.ntp.rescoot.org      # default: pool.ntp.rescoot.org
+
+redis_url: redis://localhost:6379   # on-board Redis (default: redis://127.0.0.1:6379)
+
+telemetry:
+  # Periodic full-snapshot cadence, chosen by the vehicle's power state.
+  intervals:
+    driving: 30s            # default: 30s - keep this >= 30s to limit data volume
+    standby: 5m             # default: 5m
+    standby_no_battery: 8h  # default: 8h
+    hibernate: 24h          # default: 24h
+
+  # Change-driven flush deadlines: the upper bound on how long a changed field
+  # waits before being published. Must be ordered immediate <= quick <= medium <= slow.
+  # Lower = more responsive but more traffic. The defaults below are tuned to keep
+  # the scooter from spamming the broker.
+  priorities:
+    immediate: 10s   # default: 10s - vehicle state, lock status, blinkers
+    quick: 30s       # default: 30s - GPS, battery charge
+    medium: 5m       # default: 5m  - most other fields
+    slow: 1h         # default: 1h  - aux battery, CBB, BLE
+
+  transmit_period: 5m       # default: 5m - how often buffered telemetry is drained
+
+  # Offline buffering: persist telemetry when the broker is unreachable and
+  # replay it once reconnected. The on-disk path is auto-detected (not configurable).
+  buffer:
+    enabled: true           # default: false
+    max_size: 1000          # default: 1000 - max buffered records
+    max_retries: 5          # default: 5
+    retry_interval: 1m      # default: 1m
+
+# Event detection and buffering (movement, alarm, faults, ...). The buffer path
+# is auto-detected and cannot be set here.
 events:
-  enabled: true
-  buffer_path: /var/lib/radio-gaga/events-buffer.json
-  max_retries: 10
+  enabled: true             # default: true
+  max_retries: 10           # default: 10
+
+# Per-command overrides. You only need to list a command to disable it or to
+# tune its params - unlisted commands keep their defaults and stay enabled.
+# ping and get_state can never be disabled.
 commands:
-  lock:
-  unlock:
-  blinkers:
   honk:
-    disabled: true
-    on_time: 50ms
-  alarm:
     disabled: false
-    hazards:
-      flash: true
-    horn:
-      honk: true
-      on_time: 400ms
-      off_time: 400ms
+    params:
+      on_time: 100ms        # default: 100ms - horn pulse length for one honk
   locate:
     disabled: false
+    params:
+      honk_time: 40ms       # default: 40ms - length of each locate beep
+      honk_interval: 80ms   # default: 80ms - gap between the two beeps in a pair
+      interval: 4s          # default: 4s   - gap between the two beep pairs
+  alarm:
+    disabled: false
+    params:
+      # Nested (shown) or flat dotted keys (e.g. "hazards.flash: true") both work.
+      hazards:
+        flash: true       # default: true   - flash hazards during the alarm
+      horn:
+        honk: true        # default: true   - sound the horn during the alarm
+        on_time: 400ms    # default: 400ms  - horn on duration per pulse
+        off_time: 400ms   # default: 400ms  - horn off duration per pulse
   open_seatbox:
     disabled: false
+  # Example: disable a command entirely
+  # shell:
+  #   disabled: true
+
 # Telegram notifications (optional)
-# Sends alerts directly to a Telegram chat via the Bot API
-# Create a bot via @BotFather, get chat_id by messaging the bot
-# and calling https://api.telegram.org/bot<token>/getUpdates
+# Sends alerts directly to a Telegram chat via the Bot API.
+# Create a bot via @BotFather, then get your chat_id by messaging the bot and
+# calling https://api.telegram.org/bot<token>/getUpdates
 # telegram:
 #   enabled: true
 #   bot_token: "YOUR_BOT_TOKEN"
 #   chat_id: "YOUR_CHAT_ID"
-#   rate_limit: 1s
-#   queue_size: 100
-#   daily_limit: 0          # 0 = unlimited
-#   events:
+#   rate_limit: 1s          # default: 1s  - minimum gap between messages
+#   queue_size: 100         # default: 100
+#   daily_limit: 0          # default: 0   - 0 = unlimited
+#   events:                 # default: alarm/unauthorized_movement/battery_warning/temperature_warning enabled
 #     alarm: true
 #     unauthorized_movement: true
 #     battery_warning: true
@@ -113,7 +145,7 @@ commands:
 # Rules are evaluated on every Redis pub/sub change and can route to telegram, sms, or both.
 # notifications:
 #   rules:
-#     # Alert when CB battery drops below 50% — sent to Telegram with 30-min cooldown
+#     # Alert when CB battery drops below 50% - sent to Telegram with a 30-min cooldown
 #     - name: "cbb_low"
 #       conditions:
 #         - source: "cb-battery"    # Redis hash to watch
@@ -124,7 +156,7 @@ commands:
 #       cooldown: "30m"
 #       message: "CB battery at {{cb-battery.charge}}%"  # optional, {{source.field}} placeholders
 #
-#     # Alert when alarm triggers while the scooter is parked (multi-condition AND logic)
+#     # Alert when the alarm triggers while parked (multi-condition AND logic)
 #     - name: "alarm_while_parked"
 #       conditions:
 #         - source: "alarm"
@@ -145,17 +177,17 @@ commands:
 #           value: "triggered"
 #       channels: [telegram]
 #
-#   # SMS via ModemManager (mmcli) — requires a cellular modem
+#   # SMS via ModemManager (mmcli) - requires a cellular modem
 #   sms:
 #     enabled: false
 #     phone_number: "+491234567890"
-#     rate_limit: "30s"    # minimum gap between SMS messages
-#     daily_limit: 20      # max messages per calendar day (0 = unlimited)
-#     queue_size: 20
+#     rate_limit: "30s"    # default: 30s - minimum gap between SMS messages
+#     daily_limit: 20      # default: 20  - max messages per calendar day (0 = unlimited)
+#     queue_size: 20       # default: 20
 
 # unu-uplink reconfiguration (optional)
-# If enabled, radio-gaga will reconfigure mdb-uplink-service to use the same
-# MQTT broker and CA certificate as radio-gaga, then restart the service.
-# This is useful since unu is defunct and the default unu-uplink config won't work.
+# If enabled, radio-gaga reconfigures mdb-uplink-service to use the same MQTT
+# broker and CA certificate as radio-gaga, then restarts the service. Useful on
+# stock unu firmware, since the defunct unu cloud config no longer works.
 unu_uplink:
-  enabled: false
+  enabled: false           # default: false

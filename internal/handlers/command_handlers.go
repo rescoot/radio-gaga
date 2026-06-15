@@ -81,9 +81,7 @@ func (c *ClientImplementation) SendCommandResponseWithPID(requestID, status, err
 // GetCommandParam retrieves a command parameter from configuration
 func (c *ClientImplementation) GetCommandParam(cmd, param string, defaultValue interface{}) interface{} {
 	if cmdConfig, ok := c.Config.Commands[cmd]; ok {
-		if params, ok := cmdConfig.Params[param]; ok {
-			return params
-		}
+		return utils.LookupCommandParam(cmdConfig.Params, param, defaultValue)
 	}
 	return defaultValue
 }
