@@ -121,6 +121,10 @@ func (m *Monitor) handleFieldChange(hash, field, value string) {
 		return
 	}
 
+	// Round noisy numeric fields to their bucket so sub-bucket dither does not
+	// register as a change. No-op for unmapped fields.
+	value = QuantizeForChangeDetection(hash, field, value)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -253,7 +257,7 @@ func (m *Monitor) InitializeBaseline(ctx context.Context) {
 
 		for field, value := range fields {
 			fullKey := hash + "[" + field + "]"
-			m.lastValues[fullKey] = value
+			m.lastValues[fullKey] = QuantizeForChangeDetection(hash, field, value)
 		}
 	}
 

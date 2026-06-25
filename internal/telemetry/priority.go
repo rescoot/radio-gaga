@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"math"
+	"strconv"
 	"time"
 
 	"radio-gaga/internal/models"
@@ -35,12 +37,15 @@ var FieldPriorities = map[string]Priority{
 	"vehicle[blinker:state]":         Immediate,
 	"power-manager[state]":           Immediate,
 
-	// Quick priority - frequently changing important data
-	"gps[latitude]":      Quick,
-	"gps[longitude]":     Quick,
-	"gps[altitude]":      Quick,
+	// Quick priority - frequently changing important data.
+	// GPS position (latitude/longitude/altitude/course) is deliberately NOT
+	// here: while parked it jitters by a few meters every read and would trip a
+	// full-snapshot flush every ~30s, which is the single biggest source of
+	// standby traffic. Those fields live in NoisyFields instead, so they ride
+	// along in snapshots but never trigger one. gps[speed] stays (quantized to
+	// whole units, so parked GPS-speed noise rounds to 0) and gps[state] stays
+	// (fix acquired/lost is a real, rare event).
 	"gps[speed]":         Quick,
-	"gps[course]":        Quick,
 	"gps[state]":         Quick,
 	"battery:0[charge]":  Quick,
 	"battery:0[state]":   Quick,
@@ -66,7 +71,6 @@ var FieldPriorities = map[string]Priority{
 // HashPriorities maps Redis hash names to their default priority
 // Used when a field isn't explicitly mapped in FieldPriorities
 var HashPriorities = map[string]Priority{
-	"gps":       Quick,
 	"battery:0": Quick,
 	"battery:1": Quick,
 }
@@ -76,6 +80,54 @@ var HashPriorities = map[string]Priority{
 var NoisyFields = map[string]bool{
 	"gps[timestamp]":           true,
 	"internet[signal-quality]": true,
+	// GPS position jitters constantly while parked; treat it as noise for
+	// change detection so it never triggers a flush. The current values are
+	// still read fresh from Redis whenever some other field triggers one, so
+	// snapshots keep an accurate position.
+	"gps[latitude]":  true,
+	"gps[longitude]": true,
+	"gps[altitude]":  true,
+	"gps[course]":    true,
+}
+
+// quantizationBuckets maps "hash[field]" to a bucket size used ONLY for change
+// detection. Sensor values like battery voltage/current dither by a few least
+// significant units every read; without bucketing each dither registers as a
+// "change" and trips a flush. Rounding the value to its bucket before the
+// change comparison suppresses sub-bucket noise.
+//
+// This never affects reported telemetry: payloads are read fresh from Redis at
+// flush time, so the exact value is always what gets sent. Units (from the
+// Redis field reference): voltages mV, currents mA, gps speed in whole units.
+// Battery and ECU temperatures are already whole degrees C, so they need no
+// bucketing.
+var quantizationBuckets = map[string]int{
+	"battery:0[voltage]":        50,  // mV
+	"battery:1[voltage]":        50,  // mV
+	"battery:0[current]":        100, // mA
+	"battery:1[current]":        100, // mA
+	"engine-ecu[motor:voltage]": 50,  // mV
+	"engine-ecu[motor:current]": 100, // mA
+	"aux-battery[voltage]":      50,  // mV
+	"cb-battery[cell-voltage]":  50,  // mV
+	"cb-battery[current]":       100, // mA
+	"gps[speed]":                1,   // round parked GPS-speed noise down to 0
+}
+
+// QuantizeForChangeDetection rounds a noisy numeric field to its bucket so that
+// sub-bucket dither does not register as a change. Non-numeric or unmapped
+// fields are returned unchanged.
+func QuantizeForChangeDetection(hash, field, value string) string {
+	bucket, ok := quantizationBuckets[hash+"["+field+"]"]
+	if !ok || bucket <= 0 || value == "" {
+		return value
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return value
+	}
+	rounded := math.Round(f/float64(bucket)) * float64(bucket)
+	return strconv.FormatInt(int64(rounded), 10)
 }
 
 // GetFieldPriority returns the priority for a given hash and field

@@ -17,8 +17,8 @@ func TestGetFieldPriority_ExactMatch(t *testing.T) {
 		{"vehicle", "handlebar:lock-sensor", Immediate},
 		{"vehicle", "blinker:state", Immediate},
 		{"power-manager", "state", Immediate},
-		{"gps", "latitude", Quick},
-		{"gps", "longitude", Quick},
+		{"gps", "speed", Quick},
+		{"gps", "state", Quick},
 		{"battery:0", "charge", Quick},
 		{"battery:0", "state", Quick},
 		{"aux-battery", "charge", Slow},
@@ -43,9 +43,9 @@ func TestGetFieldPriority_HashFallback(t *testing.T) {
 		field    string
 		expected Priority
 	}{
-		{"gps", "unknown_field", Quick},       // gps hash is Quick
 		{"battery:0", "unknown_field", Quick}, // battery:0 hash is Quick
 		{"battery:1", "temperature", Quick},   // battery:1 hash is Quick
+		{"gps", "unknown_field", Medium},      // gps no longer has a hash priority
 	}
 
 	for _, tt := range tests {
@@ -82,10 +82,48 @@ func TestGetFieldPriority_DefaultMedium(t *testing.T) {
 }
 
 func TestGetFieldPriority_NoisyField(t *testing.T) {
-	// Noisy fields should return -1
-	got := GetFieldPriority("gps", "timestamp")
-	if got != -1 {
-		t.Errorf("GetFieldPriority(gps, timestamp) = %v, want -1 (noisy)", got)
+	// Noisy fields should return -1 (filtered from change detection)
+	noisy := []struct{ hash, field string }{
+		{"gps", "timestamp"},
+		{"internet", "signal-quality"},
+		{"gps", "latitude"},
+		{"gps", "longitude"},
+		{"gps", "altitude"},
+		{"gps", "course"},
+	}
+	for _, tt := range noisy {
+		t.Run(tt.hash+"["+tt.field+"]", func(t *testing.T) {
+			if got := GetFieldPriority(tt.hash, tt.field); got != -1 {
+				t.Errorf("GetFieldPriority(%s, %s) = %v, want -1 (noisy)", tt.hash, tt.field, got)
+			}
+		})
+	}
+}
+
+func TestQuantizeForChangeDetection(t *testing.T) {
+	tests := []struct {
+		name               string
+		hash, field, value string
+		want               string
+	}{
+		{"voltage rounds to 50mV", "battery:0", "voltage", "54213", "54200"},
+		{"voltage rounds up", "battery:1", "voltage", "54226", "54250"},
+		{"current rounds to 100mA", "battery:0", "current", "1249", "1200"},
+		{"negative current", "battery:0", "current", "-1280", "-1300"},
+		{"motor voltage", "engine-ecu", "motor:voltage", "52140", "52150"},
+		{"parked gps speed noise rounds to 0", "gps", "speed", "0.34", "0"},
+		{"real gps speed", "gps", "speed", "23.7", "24"},
+		{"unmapped field unchanged", "battery:0", "charge", "87", "87"},
+		{"non-numeric unchanged", "battery:0", "voltage", "n/a", "n/a"},
+		{"empty unchanged", "battery:0", "voltage", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := QuantizeForChangeDetection(tt.hash, tt.field, tt.value); got != tt.want {
+				t.Errorf("QuantizeForChangeDetection(%s, %s, %q) = %q, want %q",
+					tt.hash, tt.field, tt.value, got, tt.want)
+			}
+		})
 	}
 }
 
