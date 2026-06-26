@@ -73,6 +73,16 @@ type ScooterMQTTClient struct {
 
 	consecutivePublishFailures int32       // atomic counter for publish failure tracking
 	tlsConfig                  *tls.Config // reference to active TLS config (for insecure fallback)
+
+	// Delta telemetry state. The server ingests type:"delta" messages and
+	// deep-merges them into current_telemetry_state, so we send only changed
+	// leaves instead of a full ~6KB snapshot every time. telMu serialises
+	// telemetry sends so lastSentMap stays consistent across the ticker,
+	// monitor-flush and state-change paths.
+	telMu            sync.Mutex
+	lastSentMap      map[string]any // last full state we sent, for diffing
+	lastSentState    string         // last vehicle state we sent (a change forces a full)
+	flushesSinceFull int            // deltas since the last full snapshot (resync cadence)
 }
 
 // parseOSRelease extracts ID and VERSION_ID from /etc/os-release content
@@ -1104,18 +1114,10 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 					currentData, telErr := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.monotonicRef, s.clockValid.Load())
 					if telErr == nil {
-						if s.config.Telemetry.Buffer.Enabled {
-							if addErr := s.addTelemetryToBuffer(currentData); addErr == nil {
-								if transErr := s.transmitBuffer(); transErr != nil {
-									log.Printf("Failed to transmit buffer for state '%s': %v", powerState, transErr)
-								}
-							} else {
-								log.Printf("Failed to add final telemetry to buffer for state '%s': %v", powerState, addErr)
-							}
-						} else {
-							if pubErr := s.publishTelemetryData(currentData); pubErr != nil {
-								log.Printf("Failed to publish final telemetry for state '%s': %v", powerState, pubErr)
-							}
+						// Final pre-disconnect send: force a full snapshot so the
+						// server has complete state if the scooter stays offline.
+						if pubErr := s.publishTelemetrySmart(currentData, true); pubErr != nil {
+							log.Printf("Failed to publish final telemetry for state '%s': %v", powerState, pubErr)
 						}
 					} else {
 						log.Printf("Failed to get telemetry data for state '%s': %v", powerState, telErr)

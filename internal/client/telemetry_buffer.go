@@ -635,14 +635,9 @@ func (s *ScooterMQTTClient) collectAndPublishTelemetry() error {
 		return fmt.Errorf("failed to get telemetry: %v", err)
 	}
 
-	if s.config.Telemetry.Buffer.Enabled {
-		if err := s.addTelemetryToBuffer(current); err != nil {
-			log.Printf("Failed to add telemetry to buffer: %v", err)
-		}
-		return nil
-	}
-
-	return s.publishTelemetryData(current)
+	// Delta clients publish straight to MQTT (full snapshot or sparse delta),
+	// bypassing the offline buffer; a reconnect re-establishes state with a full.
+	return s.publishTelemetrySmart(current, false)
 }
 
 // collectAndFlushTelemetry collects a telemetry snapshot, adds it to the buffer,
@@ -654,12 +649,8 @@ func (s *ScooterMQTTClient) collectAndFlushTelemetry() error {
 		return fmt.Errorf("failed to get telemetry: %v", err)
 	}
 
-	if s.config.Telemetry.Buffer.Enabled {
-		if err := s.addTelemetryToBuffer(current); err != nil {
-			log.Printf("Failed to add telemetry to buffer: %v", err)
-		}
-		return s.transmitBuffer()
-	}
-
-	return s.publishTelemetryData(current)
+	// publishTelemetrySmart forces a full snapshot whenever the vehicle state
+	// changed since the last send, so state-edge callers get a full while the
+	// monitor's change-triggered flushes get sparse deltas.
+	return s.publishTelemetrySmart(current, false)
 }
