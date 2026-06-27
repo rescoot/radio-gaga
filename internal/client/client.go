@@ -83,6 +83,9 @@ type ScooterMQTTClient struct {
 	lastSentMap      map[string]any // last full state we sent, for diffing
 	lastSentState    string         // last vehicle state we sent (a change forces a full)
 	flushesSinceFull int            // deltas since the last full snapshot (resync cadence)
+	lastGPSLat       float64        // last REPORTED position, for parked-GPS smoothing
+	lastGPSLng       float64
+	lastGPSValid     bool
 }
 
 // parseOSRelease extracts ID and VERSION_ID from /etc/os-release content

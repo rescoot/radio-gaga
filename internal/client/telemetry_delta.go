@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -71,18 +72,68 @@ func joinKey(prefix, k string) string {
 	return prefix + "." + k
 }
 
+// parkedGPSSmoothingMetres is the displacement (from the last REPORTED position)
+// below which a new parked GPS fix is treated as jitter and suppressed. Deep
+// Blue's parked fixes step <5m between samples (p99 ~2.7m, max ~4.9m) while
+// slow-walking ~16m over time, so 5m drops every observed jitter step while
+// still re-reporting a genuine reposition.
+const parkedGPSSmoothingMetres = 5.0
+
+// smoothParkedGPS holds the last reported lat/lng while the scooter is not
+// driving, only letting the reported position move once a fix lands >= the
+// smoothing threshold away, so sub-threshold GPS noise never enters a delta.
+// Driving always reports the raw fix (live tracking). It mutates td.GPS to the
+// reported position and returns the new last-reported state to persist.
+func smoothParkedGPS(td *models.TelemetryData, lastLat, lastLng float64, lastValid, driving bool) (repLat, repLng float64, valid bool) {
+	cur := td.GPS
+	curValid := gpsFixValid(cur.Lat, cur.Lng)
+
+	if driving || !curValid {
+		return cur.Lat, cur.Lng, curValid
+	}
+	if lastValid && haversineMetres(lastLat, lastLng, cur.Lat, cur.Lng) < parkedGPSSmoothingMetres {
+		td.GPS.Lat = lastLat
+		td.GPS.Lng = lastLng
+		return lastLat, lastLng, true
+	}
+	return cur.Lat, cur.Lng, true
+}
+
+// gpsFixValid rejects the null island / unset fix.
+func gpsFixValid(lat, lng float64) bool {
+	return lat != 0 || lng != 0
+}
+
+// haversineMetres is the great-circle distance between two lat/lng points.
+func haversineMetres(lat1, lng1, lat2, lng2 float64) float64 {
+	const earthRadiusM = 6371000.0
+	rad := math.Pi / 180
+	dlat := (lat2 - lat1) * rad
+	dlng := (lng2 - lng1) * rad
+	a := math.Sin(dlat/2)*math.Sin(dlat/2) +
+		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dlng/2)*math.Sin(dlng/2)
+	return earthRadiusM * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
 // publishTelemetrySmart sends a full snapshot or a delta depending on what has
 // changed since the last send. It serialises sends under telMu so lastSentMap
 // stays consistent across the ticker, monitor-flush and state-change callers.
 func (s *ScooterMQTTClient) publishTelemetrySmart(current *models.TelemetryData, forceFull bool) error {
-	curr, err := telemetryToMap(current)
-	if err != nil {
-		return fmt.Errorf("failed to map telemetry: %v", err)
-	}
 	state := current.VehicleState.State
 
 	s.telMu.Lock()
 	defer s.telMu.Unlock()
+
+	// Smooth parked GPS: hold the last reported position until a fix lands
+	// >= the threshold away, so jitter does not ride into deltas. Mutates
+	// current.GPS before it is serialised for diffing.
+	s.lastGPSLat, s.lastGPSLng, s.lastGPSValid =
+		smoothParkedGPS(current, s.lastGPSLat, s.lastGPSLng, s.lastGPSValid, state == "ready-to-drive")
+
+	curr, err := telemetryToMap(current)
+	if err != nil {
+		return fmt.Errorf("failed to map telemetry: %v", err)
+	}
 
 	full := forceFull ||
 		s.lastSentMap == nil ||
