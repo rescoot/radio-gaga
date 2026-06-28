@@ -44,7 +44,7 @@ func TestGetFieldPriority_HashFallback(t *testing.T) {
 		expected Priority
 	}{
 		{"battery:0", "unknown_field", Quick}, // battery:0 hash is Quick
-		{"battery:1", "temperature", Quick},   // battery:1 hash is Quick
+		{"battery:1", "voltage", Quick},       // battery:1 hash is Quick (voltage only quantized, not mapped)
 		{"gps", "unknown_field", Medium},      // gps no longer has a hash priority
 	}
 
@@ -55,6 +55,32 @@ func TestGetFieldPriority_HashFallback(t *testing.T) {
 				t.Errorf("GetFieldPriority(%s, %s) = %v, want %v", tt.hash, tt.field, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestGetFieldPriority_BatteryTemperatureSlow(t *testing.T) {
+	// Battery pack temperatures are whole-degree readings that wiggle by ~1C
+	// while parked. They must NOT inherit the battery hash's Quick default, or
+	// every sensor twitch pulls a flush forward. They class Slow instead.
+	for _, hash := range []string{"battery:0", "battery:1"} {
+		for _, field := range []string{"temperature", "temperature:0", "temperature:1", "temperature:3"} {
+			if got := GetFieldPriority(hash, field); got != Slow {
+				t.Errorf("GetFieldPriority(%s, %s) = %v, want Slow", hash, field, got)
+			}
+		}
+		// Non-temperature battery fields still fall through to the Quick default,
+		// so charge/voltage/current keep reporting promptly.
+		if got := GetFieldPriority(hash, "charge"); got != Quick {
+			t.Errorf("GetFieldPriority(%s, charge) = %v, want Quick", hash, got)
+		}
+		if got := GetFieldPriority(hash, "current"); got != Quick {
+			t.Errorf("GetFieldPriority(%s, current) = %v, want Quick", hash, got)
+		}
+	}
+
+	// Other hashes' temperature is unaffected by the battery-scoped rule.
+	if got := GetFieldPriority("engine-ecu", "temperature"); got != Medium {
+		t.Errorf("GetFieldPriority(engine-ecu, temperature) = %v, want Medium", got)
 	}
 }
 

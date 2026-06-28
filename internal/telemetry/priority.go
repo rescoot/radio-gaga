@@ -3,6 +3,7 @@ package telemetry
 import (
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"radio-gaga/internal/models"
@@ -142,6 +143,16 @@ func GetFieldPriority(hash, field string) Priority {
 	// Check exact field mapping first
 	if priority, ok := FieldPriorities[fullKey]; ok {
 		return priority
+	}
+
+	// Battery pack temperatures (temperature:0..N) are whole-degree sensor
+	// readings that wiggle by ~1C constantly while parked. Without this they
+	// fall through to the battery hash default (Quick) and a single sensor twitch
+	// pulls a flush forward every time. Temperature is a slow-moving metric, so
+	// class it Slow: it still rides along in every flush (read fresh from Redis),
+	// it just stops *triggering* fast flushes.
+	if strings.HasPrefix(hash, "battery:") && strings.HasPrefix(field, "temperature") {
+		return Slow
 	}
 
 	// Fall back to hash-level priority
