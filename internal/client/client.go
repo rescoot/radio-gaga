@@ -292,6 +292,14 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	willTopic := fmt.Sprintf("scooters/%s/status", config.Scooter.Identifier)
 	willMessage := []byte(`{"status": "disconnected"}`)
 
+	// Declared up front so the OnConnect closure below can subscribe to the
+	// command topic. The struct is assigned before createMQTTClient connects, so
+	// OnConnect (which paho may invoke from a goroutine the moment the connection
+	// is up) always sees a fully initialized client. OnConnect is the single
+	// place that subscribes to commands, on the first connect and every
+	// reconnect.
+	var client *ScooterMQTTClient
+
 	opts := mqtt.NewClientOptions().
 		AddBroker(config.MQTT.BrokerURL).
 		SetClientID(clientID).
@@ -335,6 +343,19 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 			}
 			if err := redisClient.Publish(ctx, "internet", "unu-cloud").Err(); err != nil {
 				log.Printf("Failed to publish unu-cloud status: %v", err)
+			}
+
+			// Subscribe to the command topic on every connect, including the
+			// first. If the broker lost our session (e.g. it restarted), it has
+			// no command subscription for us even though auto-reconnect restored
+			// the connection; without this the scooter would silently stop
+			// receiving commands while telemetry keeps flowing. client is
+			// assigned before the connection is established, so it is non-nil
+			// here; the guard is defensive only.
+			if client != nil {
+				if err := client.subscribeCommands(c); err != nil {
+					log.Printf("Failed to subscribe to commands on connect: %v", err)
+				}
 			}
 		})
 
@@ -395,12 +416,6 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		}
 	}
 
-	mqttClient, err := createMQTTClient(config, opts)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("MQTT connection failed: %v", err)
-	}
-
 	// Generate unique session ID
 	sessionID, err := generateRandomID()
 	if err != nil {
@@ -408,10 +423,13 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		sessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
 	}
 
-	client := &ScooterMQTTClient{
+	// Build the struct before connecting so the OnConnect handler always sees a
+	// fully initialized client and can subscribe to the command topic. mqttClient
+	// is filled in right after Connect returns; OnConnect uses the client handle
+	// passed to it, not this field, so the brief window where it is nil is safe.
+	client = &ScooterMQTTClient{
 		config:           config,
 		configPath:       configPath,
-		mqttClient:       mqttClient,
 		redisClient:      redisClient,
 		ctx:              ctx,
 		cancel:           cancel,
@@ -424,6 +442,13 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	if clockIsValid {
 		client.clockValid.Store(true)
 	}
+
+	mqttClient, err := createMQTTClient(config, opts)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("MQTT connection failed: %v", err)
+	}
+	client.mqttClient = mqttClient
 
 	// Single Redis pub/sub fan-out shared by monitor and event detector
 	client.bus = redisbus.New(redisClient, redisBusDebounce)
@@ -535,17 +560,29 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 	return client, nil
 }
 
-// Start starts the MQTT client and subscribes to command topic
-func (s *ScooterMQTTClient) Start() error {
-	// Subscribe to command topic
+// subscribeCommands subscribes to the command topic on the given client. It is
+// called from the OnConnect handler on every connect (the first one and every
+// reconnect), so a broker-side session loss (e.g. broker restart) can't leave
+// the scooter without a command subscription while telemetry keeps flowing.
+// With CleanSession(false) the broker is supposed to retain the subscription
+// across reconnects, but a broker that lost all sessions will not, hence the
+// unconditional (re)subscribe on each connect.
+func (s *ScooterMQTTClient) subscribeCommands(c mqtt.Client) error {
 	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
-	token := s.mqttClient.Subscribe(commandTopic, 1, s.handleCommand)
+	token := c.Subscribe(commandTopic, 1, s.handleCommand)
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		return fmt.Errorf("failed to subscribe to commands: %v", token.Error())
 	}
 
 	log.Printf("Subscribed to commands channel %s", commandTopic)
+	return nil
+}
 
+// Start starts the MQTT client background workers. The command-topic
+// subscription is handled by the OnConnect handler (see NewScooterMQTTClient),
+// which runs on the first connect and every reconnect, so there is no explicit
+// subscribe here.
+func (s *ScooterMQTTClient) Start() error {
 	// Fetch static modem identity in the background — the USB modem may not
 	// have enumerated yet at this point.
 	modeminfo.StartPoller(s.ctx)
@@ -1334,12 +1371,8 @@ func (s *ScooterMQTTClient) RequestReconnect() {
 
 		s.mqttClient = newClient
 
-		commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
-		token := s.mqttClient.Subscribe(commandTopic, 1, s.handleCommand)
-		if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
-			log.Printf("Failed to re-subscribe to commands after reconnect: %v", token.Error())
-			return
-		}
+		// The command (re)subscribe is handled by the OnConnect handler in
+		// buildMQTTOptions, which fires when newClient connects above.
 
 		log.Println("MQTT client reconnected successfully with new CA certificate")
 	}()
@@ -1397,6 +1430,12 @@ func (s *ScooterMQTTClient) buildMQTTOptions() *mqtt.ClientOptions {
 			}
 			if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
 				log.Printf("Failed to publish unu-cloud status: %v", err)
+			}
+
+			// Re-subscribe to the command topic on every (re)connect so a
+			// broker-side session loss can't leave the scooter unsubscribed.
+			if err := s.subscribeCommands(c); err != nil {
+				log.Printf("Failed to re-subscribe to commands on reconnect: %v", err)
 			}
 		})
 
