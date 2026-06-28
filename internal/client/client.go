@@ -998,25 +998,34 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 	}
 }
 
-// forceReconnect forces a full MQTT disconnect/reconnect cycle.
-// This handles the case where paho's auto-reconnect is stuck (e.g., due to
-// an expired CA certificate causing repeated TLS handshake failures).
+// forceReconnect forces a full MQTT reconnect by rebuilding the client.
+// This handles the case where paho's auto-reconnect is stuck (e.g., due to an
+// expired CA certificate causing repeated TLS handshake failures, or a wedged
+// connection where publishes fail with "not Connected").
+//
+// We rebuild a fresh client rather than calling Connect() on the existing one:
+// with SetAutoReconnect(true), paho's own reconnect is often already mid-flight,
+// so a manual Disconnect+Connect on the same client races its internal state
+// machine ("status can only transition to connecting from disconnected") and can
+// leave the client permanently wedged. createMQTTClient performs the robust
+// connect (including the insecure-TLS fallback), and buildMQTTOptions' OnConnect
+// re-subscribes to the command topic. This mirrors RequestReconnect; the
+// s.mqttClient reassignment is unsynchronized to match that existing pattern.
 func (s *ScooterMQTTClient) forceReconnect() {
-	log.Println("Forcing MQTT reconnect: disconnecting to reset connection state")
-	s.mqttClient.Disconnect(250)
-	time.Sleep(500 * time.Millisecond)
+	log.Println("Forcing MQTT reconnect: rebuilding client")
+	if s.mqttClient.IsConnected() {
+		s.mqttClient.Disconnect(250)
+	}
 
-	token := s.mqttClient.Connect()
-	if token.WaitTimeout(models.MQTTPublishTimeout) && token.Error() == nil {
-		log.Println("Forced reconnect succeeded")
-		atomic.StoreInt32(&s.consecutivePublishFailures, 0)
+	newClient, err := createMQTTClient(s.config, s.buildMQTTOptions())
+	if err != nil {
+		log.Printf("Forced reconnect failed: %v", err)
 		return
 	}
-	errMsg := "timeout"
-	if token.Error() != nil {
-		errMsg = token.Error().Error()
-	}
-	log.Printf("Forced reconnect failed: %s", errMsg)
+
+	s.mqttClient = newClient
+	log.Println("Forced reconnect succeeded")
+	atomic.StoreInt32(&s.consecutivePublishFailures, 0)
 }
 
 // publishTelemetryData publishes a telemetry payload to MQTT
