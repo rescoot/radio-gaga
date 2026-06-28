@@ -132,10 +132,10 @@ func TestQuantizeForChangeDetection(t *testing.T) {
 		hash, field, value string
 		want               string
 	}{
-		{"voltage rounds to 50mV", "battery:0", "voltage", "54213", "54200"},
-		{"voltage rounds up", "battery:1", "voltage", "54226", "54250"},
-		{"current rounds to 100mA", "battery:0", "current", "1249", "1200"},
-		{"negative current", "battery:0", "current", "-1280", "-1300"},
+		{"voltage rounds to 100mV", "battery:0", "voltage", "54213", "54200"},
+		{"voltage rounds up", "battery:1", "voltage", "54260", "54300"},
+		{"current rounds to 250mA", "battery:0", "current", "1249", "1250"},
+		{"negative current", "battery:0", "current", "-1280", "-1250"},
 		{"motor voltage", "engine-ecu", "motor:voltage", "52140", "52150"},
 		{"parked gps speed noise rounds to 0", "gps", "speed", "0.34", "0"},
 		{"real gps speed", "gps", "speed", "23.7", "24"},

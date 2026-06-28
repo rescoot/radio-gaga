@@ -102,11 +102,18 @@ var NoisyFields = map[string]bool{
 // Redis field reference): voltages mV, currents mA, gps speed in whole units.
 // Battery and ECU temperatures are already whole degrees C, so they need no
 // bucketing.
+// Main-pack voltage/current buckets are wider than the 50mV/100mA sensor
+// resolution on purpose. Parked, the readings dither within a few mV / tens of
+// mA (p99 step ~25mV / ~30mA on deep-blue), and at the tight buckets the value
+// straddles boundaries and trips Quick flushes ~8/hr while stationary. 100mV /
+// 250mA sit just past the dither (the trigger-rate knee: current 100->250mA cut
+// 4.1 -> 0.7/hr), so sub-bucket noise stops triggering while a real sag/draw
+// still crosses immediately.
 var quantizationBuckets = map[string]int{
-	"battery:0[voltage]":        50,  // mV
-	"battery:1[voltage]":        50,  // mV
-	"battery:0[current]":        100, // mA
-	"battery:1[current]":        100, // mA
+	"battery:0[voltage]":        100, // mV
+	"battery:1[voltage]":        100, // mV
+	"battery:0[current]":        250, // mA
+	"battery:1[current]":        250, // mA
 	"engine-ecu[motor:voltage]": 50,  // mV
 	"engine-ecu[motor:current]": 100, // mA
 	"aux-battery[voltage]":      50,  // mV
