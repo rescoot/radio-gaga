@@ -236,6 +236,10 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		err = commands.HandleTxnReplaceCommand(client, mqttClient, config, command.Params, command.RequestID)
 	case "update_ca_cert":
 		err = commands.HandleUpdateCACertCommand(client, config, command.Params, command.RequestID)
+	case "migrate_broker":
+		err = commands.HandleMigrateBrokerCommand(client, config, command.Params, command.RequestID)
+	case "restart":
+		err = commands.HandleRestartCommand()
 	case "fetch_logs":
 		err = commands.HandleFetchLogsCommand(client, redisClient, ctx, config, command.Params, command.RequestID)
 	case "start_log_upload":

@@ -73,6 +73,7 @@ type ScooterMQTTClient struct {
 
 	consecutivePublishFailures int32       // atomic counter for publish failure tracking
 	tlsConfig                  *tls.Config // reference to active TLS config (for insecure fallback)
+	reconnectMu                sync.Mutex  // serialises client rebuilds so concurrent reconnects can't orphan a client
 
 	// Delta telemetry state. The server ingests type:"delta" messages and
 	// deep-merges them into current_telemetry_state, so we send only changed
@@ -998,34 +999,49 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 	}
 }
 
-// forceReconnect forces a full MQTT reconnect by rebuilding the client.
-// This handles the case where paho's auto-reconnect is stuck (e.g., due to an
-// expired CA certificate causing repeated TLS handshake failures, or a wedged
-// connection where publishes fail with "not Connected").
-//
-// We rebuild a fresh client rather than calling Connect() on the existing one:
-// with SetAutoReconnect(true), paho's own reconnect is often already mid-flight,
-// so a manual Disconnect+Connect on the same client races its internal state
-// machine ("status can only transition to connecting from disconnected") and can
-// leave the client permanently wedged. createMQTTClient performs the robust
-// connect (including the insecure-TLS fallback), and buildMQTTOptions' OnConnect
-// re-subscribes to the command topic. This mirrors RequestReconnect; the
-// s.mqttClient reassignment is unsynchronized to match that existing pattern.
+// forceReconnect forces a full MQTT reconnect by rebuilding the client. Used by
+// the publish-failure path when paho's auto-reconnect is stuck (expired CA, or a
+// wedged connection where publishes fail with "not Connected").
 func (s *ScooterMQTTClient) forceReconnect() {
-	log.Println("Forcing MQTT reconnect: rebuilding client")
-	if s.mqttClient.IsConnected() {
+	_ = s.rebuildClient("consecutive publish failures")
+}
+
+// rebuildClient tears down the current MQTT client and builds a fresh one from
+// the current config, serialised by reconnectMu.
+//
+// Serialisation is load-bearing: without it, concurrent callers (the
+// publish-failure path, RequestReconnect, migrate_broker, and duplicate command
+// delivery) each disconnect-and-rebuild, and whichever client gets overwritten
+// in s.mqttClient is orphaned. With SetAutoReconnect(true) that orphan keeps its
+// goroutines alive and reconnects under the same client-id, so it and the live
+// client repeatedly "session taken over" each other forever. We always
+// Disconnect the previous client first -- even when it is only "reconnecting",
+// not connected -- to stop those goroutines.
+//
+// We rebuild rather than Disconnect+Connect the same client: with auto-reconnect
+// paho is often mid-flight, so reusing the client races its state machine
+// ("status can only transition to connecting from disconnected") and can wedge.
+// createMQTTClient performs the robust connect (insecure-TLS fallback) and
+// buildMQTTOptions' OnConnect re-subscribes to the command topic.
+func (s *ScooterMQTTClient) rebuildClient(reason string) error {
+	s.reconnectMu.Lock()
+	defer s.reconnectMu.Unlock()
+
+	log.Printf("Rebuilding MQTT client (%s)", reason)
+	if s.mqttClient != nil {
 		s.mqttClient.Disconnect(250)
 	}
 
 	newClient, err := createMQTTClient(s.config, s.buildMQTTOptions())
 	if err != nil {
-		log.Printf("Forced reconnect failed: %v", err)
-		return
+		log.Printf("Reconnect failed (%s): %v", reason, err)
+		return err
 	}
 
 	s.mqttClient = newClient
-	log.Println("Forced reconnect succeeded")
 	atomic.StoreInt32(&s.consecutivePublishFailures, 0)
+	log.Printf("MQTT client rebuilt (%s)", reason)
+	return nil
 }
 
 // publishTelemetryData publishes a telemetry payload to MQTT
@@ -1365,25 +1381,10 @@ func (s *ScooterMQTTClient) IsConnected() bool {
 // The delay allows the command response to be sent on the current connection first.
 func (s *ScooterMQTTClient) RequestReconnect() {
 	go func() {
+		// Delay so the triggering command's response leaves on the current
+		// connection before we tear it down.
 		time.Sleep(2 * time.Second)
-		log.Println("Reconnecting MQTT client with updated configuration...")
-
-		if s.mqttClient.IsConnected() {
-			s.mqttClient.Disconnect(500)
-		}
-
-		newClient, err := createMQTTClient(s.config, s.buildMQTTOptions())
-		if err != nil {
-			log.Printf("Failed to reconnect MQTT client: %v", err)
-			return
-		}
-
-		s.mqttClient = newClient
-
-		// The command (re)subscribe is handled by the OnConnect handler in
-		// buildMQTTOptions, which fires when newClient connects above.
-
-		log.Println("MQTT client reconnected successfully with new CA certificate")
+		_ = s.rebuildClient("configuration update")
 	}()
 }
 
