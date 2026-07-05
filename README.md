@@ -138,7 +138,7 @@ Available when `environment: development`:
 | `shell` | Execute shell commands with streaming output |
 | `redis` | Execute Redis operations (get, set, hget, hset, hgetall, lpush, lpop, publish) |
 
-These are disabled in production.
+`shell` is disabled outside the development environment. `redis` is available in all environments but hard-limited to the typed operations listed above (anything else is rejected); the backend relies on it for alarm control, admin tooling, and the API.
 
 ## Notifications
 
@@ -356,7 +356,7 @@ Requires Go 1.24+. Runtime dependencies: Redis, an MQTT broker (Sunshine).
 - TLS for MQTT with custom CA certificate support
 - NTP sync on startup (required for TLS certificate validation)
 - Per-vehicle authentication (identifier + token)
-- Environment-based command restrictions (shell/redis disabled in production)
+- Environment-based command restrictions (shell disabled in production; redis limited to a fixed whitelist of typed operations)
 - Checksum verification for OTA updates with automatic rollback
 - Read-only filesystem handling during updates
 - Retained MQTT message cleanup to prevent stale command replay
