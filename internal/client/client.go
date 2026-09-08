@@ -599,10 +599,9 @@ func (s *ScooterMQTTClient) Start() error {
 	s.eventDetector.InitializeBaseline(s.ctx)
 
 	// Start telemetry and dashboard watcher goroutines
-	s.wg.Add(3)
+	s.wg.Add(2)
 	go s.publishTelemetry()
 	go s.watchDashboardStatus()
-	go s.watchInternetStatus()
 
 	// Start monitor, event detector, and the shared pub/sub bus
 	s.wg.Add(3)
@@ -761,72 +760,6 @@ func (s *ScooterMQTTClient) Stop() {
 	}
 
 	log.Println("ScooterMQTTClient stopped.")
-}
-
-// watchInternetStatus monitors internet connectivity and updates unu-cloud status
-func (s *ScooterMQTTClient) watchInternetStatus() {
-	defer s.wg.Done()
-	pubsub := s.redisClient.Subscribe(s.ctx, "internet")
-	s.registerPubSub(pubsub)
-	defer pubsub.Close()
-
-	log.Println("Subscribed to internet status channel")
-
-	// Check initial state on startup
-	internetStatus, _ := s.redisClient.HGet(s.ctx, "internet", "status").Result()
-	if internetStatus == "disconnected" {
-		log.Println("Internet status is disconnected on startup, setting unu-cloud to disconnected")
-		if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
-			log.Printf("Failed to set unu-cloud status on startup: %v", err)
-		}
-		if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
-			log.Printf("Failed to publish unu-cloud status on startup: %v", err)
-		}
-	}
-
-	for {
-		msg, err := pubsub.ReceiveMessage(s.ctx)
-		if err != nil {
-			// Check if the error is due to context cancellation (expected on shutdown)
-			if s.ctx.Err() != nil {
-				log.Println("Internet status watcher stopping due to context cancellation.")
-				return
-			}
-			log.Printf("Error receiving internet message: %v", err)
-			// Avoid busy-looping on persistent errors
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		if msg.Channel == "internet" && msg.Payload == "status" {
-			internetStatus, err := s.redisClient.HGet(s.ctx, "internet", "status").Result()
-			if err != nil {
-				log.Printf("Error getting internet status: %v", err)
-				continue
-			}
-
-			log.Printf("Internet status changed to: %s", internetStatus)
-
-			// If internet is disconnected, ensure unu-cloud is also marked as disconnected
-			if internetStatus == "disconnected" {
-				currentCloudStatus, _ := s.redisClient.HGet(s.ctx, "internet", "unu-cloud").Result()
-				if currentCloudStatus != "disconnected" {
-					log.Println("Internet disconnected, setting unu-cloud to disconnected")
-					if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
-						log.Printf("Failed to set unu-cloud status: %v", err)
-					}
-					if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
-						log.Printf("Failed to publish unu-cloud status: %v", err)
-					}
-				}
-			} else if internetStatus == "connected" {
-				if !s.mqttClient.IsConnectionOpen() {
-					log.Println("Internet reconnected but MQTT not connected, forcing reconnect")
-					s.forceReconnect()
-				}
-			}
-		}
-	}
 }
 
 // watchDashboardStatus monitors dashboard status changes
