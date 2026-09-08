@@ -34,6 +34,32 @@ import (
 // deadlines and cuts redundant Redis traffic on chatty hashes like cb-battery.
 const redisBusDebounce = 10 * time.Millisecond
 
+const remoteAccessUpdateScript = `
+local oldField = redis.call('HGET', KEYS[1], ARGV[1])
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+local fields = redis.call('HGETALL', KEYS[1])
+local aggregate = 'disconnected'
+for i = 1, #fields, 2 do
+  if fields[i] ~= 'status' and fields[i + 1] == 'connected' then
+    aggregate = 'connected'
+    break
+  end
+end
+local oldAggregate = redis.call('HGET', KEYS[1], 'status')
+redis.call('HSET', KEYS[1], 'status', aggregate)
+redis.call('HSET', KEYS[2], 'unu-cloud', ARGV[2])
+if oldField ~= ARGV[2] then redis.call('PUBLISH', KEYS[1], ARGV[1]) end
+if oldAggregate ~= aggregate then redis.call('PUBLISH', KEYS[1], 'status') end
+redis.call('PUBLISH', KEYS[2], 'unu-cloud')
+return aggregate
+`
+
+func writeCloudStatus(ctx context.Context, client redis.Cmdable, status string) error {
+	_, err := client.Eval(ctx, remoteAccessUpdateScript,
+		[]string{"remote-access", "internet"}, "radio-gaga", status).Result()
+	return err
+}
+
 // ScooterMQTTClient manages the MQTT and Redis connections
 type ScooterMQTTClient struct {
 	config           *models.Config
@@ -281,11 +307,8 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	}
 
 	log.Println("Setting initial cloud status to disconnected")
-	if err := redisClient.HSet(ctx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
-		log.Printf("Failed to set initial unu-cloud status: %v", err)
-	}
-	if err := redisClient.Publish(ctx, "internet", "unu-cloud").Err(); err != nil {
-		log.Printf("Failed to publish initial unu-cloud status: %v", err)
+	if err := writeCloudStatus(ctx, redisClient, "disconnected"); err != nil {
+		log.Printf("Failed to set initial cloud status: %v", err)
 	}
 
 	clientID := fmt.Sprintf("radio-gaga-%s", config.Scooter.Identifier)
@@ -316,11 +339,8 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		SetWill(willTopic, string(willMessage), 1, true). // QoS 1 and retained
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
 			log.Printf("Connection lost: %v", err)
-			if err := redisClient.HSet(ctx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
-				log.Printf("Failed to set unu-cloud status: %v", err)
-			}
-			if err := redisClient.Publish(ctx, "internet", "unu-cloud").Err(); err != nil {
-				log.Printf("Failed to publish unu-cloud status: %v", err)
+			if err := writeCloudStatus(ctx, redisClient, "disconnected"); err != nil {
+				log.Printf("Failed to set cloud status: %v", err)
 			}
 		}).
 		SetOnConnectHandler(func(c mqtt.Client) {
@@ -338,12 +358,9 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 				}
 			}
 
-			// Update cloud status
-			if err := redisClient.HSet(ctx, "internet", "unu-cloud", "connected").Err(); err != nil {
-				log.Printf("Failed to set unu-cloud status: %v", err)
-			}
-			if err := redisClient.Publish(ctx, "internet", "unu-cloud").Err(); err != nil {
-				log.Printf("Failed to publish unu-cloud status: %v", err)
+			// Update cloud status from the live MQTT connection.
+			if err := writeCloudStatus(ctx, redisClient, "connected"); err != nil {
+				log.Printf("Failed to set cloud status: %v", err)
 			}
 
 			// Subscribe to the command topic on every connect, including the
@@ -732,11 +749,8 @@ func (s *ScooterMQTTClient) Stop() {
 	log.Println("Setting cloud status to disconnected before shutdown")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer shutdownCancel()
-	if err := s.redisClient.HSet(shutdownCtx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
-		log.Printf("Failed to set unu-cloud status on shutdown: %v", err)
-	}
-	if err := s.redisClient.Publish(shutdownCtx, "internet", "unu-cloud").Err(); err != nil {
-		log.Printf("Failed to publish unu-cloud status on shutdown: %v", err)
+	if err := writeCloudStatus(shutdownCtx, s.redisClient, "disconnected"); err != nil {
+		log.Printf("Failed to set cloud status on shutdown: %v", err)
 	}
 
 	if s.mqttClient.IsConnected() {
@@ -1235,13 +1249,10 @@ func (s *ScooterMQTTClient) getCommandParam(cmd, param string, defaultValue inte
 	return defaultValue
 }
 
-// updateCloudStatus sets unu-cloud status to connected and publishes notification
+// updateCloudStatus records the current live MQTT connection as reachable.
 func (s *ScooterMQTTClient) updateCloudStatus() {
-	if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "connected").Err(); err != nil {
-		log.Printf("Failed to set unu-cloud status: %v", err)
-	}
-	if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
-		log.Printf("Failed to publish unu-cloud status: %v", err)
+	if err := writeCloudStatus(s.ctx, s.redisClient, "connected"); err != nil {
+		log.Printf("Failed to set cloud status: %v", err)
 	}
 }
 
@@ -1347,11 +1358,8 @@ func (s *ScooterMQTTClient) buildMQTTOptions() *mqtt.ClientOptions {
 		SetWill(willTopic, willMessage, 1, true).
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
 			log.Printf("Connection lost: %v", err)
-			if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "disconnected").Err(); err != nil {
-				log.Printf("Failed to set unu-cloud status: %v", err)
-			}
-			if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
-				log.Printf("Failed to publish unu-cloud status: %v", err)
+			if err := writeCloudStatus(s.ctx, s.redisClient, "disconnected"); err != nil {
+				log.Printf("Failed to set cloud status: %v", err)
 			}
 		}).
 		SetOnConnectHandler(func(c mqtt.Client) {
@@ -1368,11 +1376,8 @@ func (s *ScooterMQTTClient) buildMQTTOptions() *mqtt.ClientOptions {
 				}
 			}
 
-			if err := s.redisClient.HSet(s.ctx, "internet", "unu-cloud", "connected").Err(); err != nil {
-				log.Printf("Failed to set unu-cloud status: %v", err)
-			}
-			if err := s.redisClient.Publish(s.ctx, "internet", "unu-cloud").Err(); err != nil {
-				log.Printf("Failed to publish unu-cloud status: %v", err)
+			if err := writeCloudStatus(s.ctx, s.redisClient, "connected"); err != nil {
+				log.Printf("Failed to set cloud status: %v", err)
 			}
 
 			// Re-subscribe to the command topic on every (re)connect so a
