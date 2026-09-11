@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -33,6 +34,17 @@ import (
 // into a single HGETALL fan-out. 10ms is well below all telemetry/event
 // deadlines and cuts redundant Redis traffic on chatty hashes like cb-battery.
 const redisBusDebounce = 10 * time.Millisecond
+
+const (
+	commandSubscriptionAttempts   = 3
+	commandSubscriptionRetryDelay = time.Second
+	commandSubscriptionRejected   = byte(0x80)
+)
+
+var (
+	errCommandSubscriptionRejected = errors.New("command subscription rejected by broker")
+	errInactiveMQTTClient          = errors.New("MQTT callback client is no longer active")
+)
 
 const remoteAccessUpdateScript = `
 local oldField = redis.call('HGET', KEYS[1], ARGV[1])
@@ -64,6 +76,7 @@ func writeCloudStatus(ctx context.Context, client redis.Cmdable, status string) 
 type ScooterMQTTClient struct {
 	config           *models.Config
 	configPath       string
+	mqttClientMu     sync.RWMutex
 	mqttClient       mqtt.Client
 	redisClient      *redis.Client
 	ctx              context.Context
@@ -100,6 +113,14 @@ type ScooterMQTTClient struct {
 	consecutivePublishFailures int32       // atomic counter for publish failure tracking
 	tlsConfig                  *tls.Config // reference to active TLS config (for insecure fallback)
 	reconnectMu                sync.Mutex  // serialises client rebuilds so concurrent reconnects can't orphan a client
+
+	// remote-access readiness means the current MQTT connection has received a
+	// successful SUBACK for the command topic. The generation prevents a stale
+	// subscribe completion from restoring readiness after a connection loss.
+	commandSubscriptionMu         sync.Mutex
+	commandSubscriptionClient     mqtt.Client
+	commandSubscriptionReady      bool
+	commandSubscriptionGeneration uint64
 
 	// Delta telemetry state. The server ingests type:"delta" messages and
 	// deep-merges them into current_telemetry_state, so we send only changed
@@ -315,12 +336,11 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 
 	willTopic := fmt.Sprintf("scooters/%s/status", config.Scooter.Identifier)
 	willMessage := []byte(`{"status": "disconnected"}`)
+	commandTopic := fmt.Sprintf("scooters/%s/commands", config.Scooter.Identifier)
 
-	// Declared up front so the OnConnect closure below can subscribe to the
-	// command topic. The struct is assigned before createMQTTClient connects, so
-	// OnConnect (which paho may invoke from a goroutine the moment the connection
-	// is up) always sees a fully initialized client. OnConnect is the single
-	// place that subscribes to commands, on the first connect and every
+	// Declared up front so MQTT callbacks can use the fully initialized service
+	// object. createMQTTClient registers the command route before Connect, then
+	// OnConnect unconditionally subscribes on the first connect and every
 	// reconnect.
 	var client *ScooterMQTTClient
 
@@ -338,42 +358,13 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		SetCleanSession(false).                           // Maintain session for message queueing
 		SetWill(willTopic, string(willMessage), 1, true). // QoS 1 and retained
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
-			log.Printf("Connection lost: %v", err)
-			if err := writeCloudStatus(ctx, redisClient, "disconnected"); err != nil {
-				log.Printf("Failed to set cloud status: %v", err)
+			if client != nil {
+				client.handleMQTTConnectionLost(c, err)
 			}
 		}).
 		SetOnConnectHandler(func(c mqtt.Client) {
-			log.Printf("Connected to MQTT broker at %s", config.MQTT.BrokerURL)
-
-			// Say hello to the cloud
-			statusTopic := fmt.Sprintf("scooters/%s/status", config.Scooter.Identifier)
-			statusMessage := []byte(`{"status": "connected"}`)
-			token := c.Publish(statusTopic, 1, true, statusMessage)
-			if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
-				if !token.WaitTimeout(0) {
-					log.Printf("Failed to publish connection status: timeout")
-				} else {
-					log.Printf("Failed to publish connection status: %v", token.Error())
-				}
-			}
-
-			// Update cloud status from the live MQTT connection.
-			if err := writeCloudStatus(ctx, redisClient, "connected"); err != nil {
-				log.Printf("Failed to set cloud status: %v", err)
-			}
-
-			// Subscribe to the command topic on every connect, including the
-			// first. If the broker lost our session (e.g. it restarted), it has
-			// no command subscription for us even though auto-reconnect restored
-			// the connection; without this the scooter would silently stop
-			// receiving commands while telemetry keeps flowing. client is
-			// assigned before the connection is established, so it is non-nil
-			// here; the guard is defensive only.
 			if client != nil {
-				if err := client.subscribeCommands(c); err != nil {
-					log.Printf("Failed to subscribe to commands on connect: %v", err)
-				}
+				client.handleMQTTConnected(c)
 			}
 		})
 
@@ -409,7 +400,9 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	}
 
 	opts.SetReconnectingHandler(func(c mqtt.Client, opts *mqtt.ClientOptions) {
-		log.Printf("MQTT auto-reconnect attempting...")
+		if client != nil {
+			client.handleMQTTReconnectStart(c)
+		}
 	})
 
 	// Capture monotonic reference BEFORE MQTT setup (which may trigger NTP)
@@ -441,10 +434,9 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		sessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
 	}
 
-	// Build the struct before connecting so the OnConnect handler always sees a
-	// fully initialized client and can subscribe to the command topic. mqttClient
-	// is filled in right after Connect returns; OnConnect uses the client handle
-	// passed to it, not this field, so the brief window where it is nil is safe.
+	// Build the struct before connecting so the route and callbacks always see a
+	// fully initialized service. Command handling uses the callback-provided MQTT
+	// client, so delivery during Connect does not depend on the active-client field.
 	client = &ScooterMQTTClient{
 		config:           config,
 		configPath:       configPath,
@@ -461,13 +453,11 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		client.clockValid.Store(true)
 	}
 
-	mqttClient, err := createMQTTClient(config, opts)
+	_, err = createMQTTClient(config, opts, commandTopic, client.handleCommand, client.setActiveMQTTClient)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("MQTT connection failed: %v", err)
 	}
-	client.mqttClient = mqttClient
-
 	// Single Redis pub/sub fan-out shared by monitor and event detector
 	client.bus = redisbus.New(redisClient, redisBusDebounce)
 
@@ -523,9 +513,17 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	return client, nil
 }
 
-// createMQTTClient creates and connects an MQTT client
-func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Client, error) {
+// createMQTTClient creates and connects an MQTT client. The command route and
+// active-client reference are installed before Connect so queued persistent-
+// session commands can be handled safely before OnConnect re-subscribes.
+func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTopic string, commandHandler mqtt.MessageHandler, activate func(mqtt.Client)) (mqtt.Client, error) {
 	client := mqtt.NewClient(opts)
+	if commandHandler != nil {
+		client.AddRoute(commandTopic, commandHandler)
+	}
+	if activate != nil {
+		activate(client)
+	}
 	token := client.Connect()
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		err := token.Error()
@@ -563,6 +561,12 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 			if err == nil {
 				insecureOpts.SetTLSConfig(tlsConfig)
 				insecureClient := mqtt.NewClient(insecureOpts)
+				if commandHandler != nil {
+					insecureClient.AddRoute(commandTopic, commandHandler)
+				}
+				if activate != nil {
+					activate(insecureClient)
+				}
 				token := insecureClient.Connect()
 				if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 					return nil, fmt.Errorf("all connection attempts failed, last error: %v", token.Error())
@@ -586,14 +590,267 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions) (mqtt.Cli
 // across reconnects, but a broker that lost all sessions will not, hence the
 // unconditional (re)subscribe on each connect.
 func (s *ScooterMQTTClient) subscribeCommands(c mqtt.Client) error {
+	_, err := s.subscribeCommandsAttempt(c)
+	return err
+}
+
+func (s *ScooterMQTTClient) subscribeCommandsAttempt(c mqtt.Client) (uint64, error) {
+	generation, active := s.beginCommandSubscription(c)
+	if !active {
+		return 0, fmt.Errorf("failed to subscribe to commands: %w", errInactiveMQTTClient)
+	}
 	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
 	token := c.Subscribe(commandTopic, 1, s.handleCommand)
-	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
-		return fmt.Errorf("failed to subscribe to commands: %v", token.Error())
+	if !token.WaitTimeout(models.MQTTPublishTimeout) {
+		s.failCommandSubscription(c, generation)
+		return generation, fmt.Errorf("failed to subscribe to commands: timeout")
+	}
+	if err := token.Error(); err != nil {
+		s.failCommandSubscription(c, generation)
+		return generation, fmt.Errorf("failed to subscribe to commands: %v", err)
+	}
+
+	if err := validateCommandSubscriptionResult(token, commandTopic); err != nil {
+		s.failCommandSubscription(c, generation)
+		return generation, err
+	}
+
+	if !s.completeCommandSubscription(c, generation) {
+		return generation, fmt.Errorf("failed to subscribe to commands: MQTT connection changed before subscription became ready")
 	}
 
 	log.Printf("Subscribed to commands channel %s", commandTopic)
+	return generation, nil
+}
+
+func validateCommandSubscriptionResult(token mqtt.Token, commandTopic string) error {
+	var (
+		result          map[string]byte
+		resultAvailable bool
+	)
+	switch token := token.(type) {
+	case *mqtt.SubscribeToken:
+		result = token.Result()
+		resultAvailable = true
+	case interface{ Result() map[string]byte }:
+		// Allows focused token doubles while production uses SubscribeToken.
+		result = token.Result()
+		resultAvailable = true
+	}
+	if !resultAvailable {
+		return nil
+	}
+	returnCode, ok := result[commandTopic]
+	if !ok {
+		return fmt.Errorf("%w: SUBACK omitted command topic", errCommandSubscriptionRejected)
+	}
+	if returnCode == commandSubscriptionRejected || returnCode > 2 {
+		return fmt.Errorf("%w: SUBACK rejected topic with code 0x%02x", errCommandSubscriptionRejected, returnCode)
+	}
 	return nil
+}
+
+func (s *ScooterMQTTClient) subscribeCommandsWithRetry(c mqtt.Client, attempts int, delay time.Duration) error {
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		generation, err := s.subscribeCommandsAttempt(c)
+		if err != nil {
+			lastErr = err
+			log.Printf("Command subscription attempt %d/%d failed: %v", attempt, attempts, err)
+		} else {
+			return nil
+		}
+
+		// SUBACK refusal is a broker policy/protocol result, not a transport
+		// failure. Keep readiness disconnected without reconnect churn.
+		if errors.Is(lastErr, errCommandSubscriptionRejected) || errors.Is(lastErr, errInactiveMQTTClient) || attempt == attempts || !c.IsConnectionOpen() {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+			if !s.commandSubscriptionAttemptCurrent(c, generation) {
+				return lastErr
+			}
+		case <-s.ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return s.ctx.Err()
+		}
+	}
+	return lastErr
+}
+
+func (s *ScooterMQTTClient) beginCommandSubscription(c mqtt.Client) (uint64, bool) {
+	// Hold the active-client read lock through the readiness mutation. A rebuild
+	// cannot replace the active client between validation and generation update.
+	s.mqttClientMu.RLock()
+	defer s.mqttClientMu.RUnlock()
+	if c != s.mqttClient {
+		return 0, false
+	}
+
+	s.commandSubscriptionMu.Lock()
+	defer s.commandSubscriptionMu.Unlock()
+	s.commandSubscriptionGeneration++
+	s.commandSubscriptionClient = c
+	s.commandSubscriptionReady = false
+	s.writeCloudStatusLocked(s.ctx, "disconnected")
+	return s.commandSubscriptionGeneration, true
+}
+
+func (s *ScooterMQTTClient) failCommandSubscription(c mqtt.Client, generation uint64) {
+	s.commandSubscriptionMu.Lock()
+	defer s.commandSubscriptionMu.Unlock()
+
+	if c != s.commandSubscriptionClient || generation != s.commandSubscriptionGeneration {
+		return
+	}
+	s.commandSubscriptionReady = false
+	s.writeCloudStatusLocked(s.ctx, "disconnected")
+}
+
+func (s *ScooterMQTTClient) commandSubscriptionAttemptCurrent(c mqtt.Client, generation uint64) bool {
+	s.commandSubscriptionMu.Lock()
+	defer s.commandSubscriptionMu.Unlock()
+	return c == s.commandSubscriptionClient && generation == s.commandSubscriptionGeneration && !s.commandSubscriptionReady
+}
+
+func (s *ScooterMQTTClient) completeCommandSubscription(c mqtt.Client, generation uint64) bool {
+	s.commandSubscriptionMu.Lock()
+	defer s.commandSubscriptionMu.Unlock()
+
+	if c != s.commandSubscriptionClient || generation != s.commandSubscriptionGeneration {
+		return false
+	}
+	s.commandSubscriptionReady = true
+	s.writeCloudStatusLocked(s.ctx, "connected")
+	return true
+}
+
+func (s *ScooterMQTTClient) clearCommandSubscriptionReadiness(ctx context.Context) {
+	s.commandSubscriptionMu.Lock()
+	defer s.commandSubscriptionMu.Unlock()
+
+	s.commandSubscriptionGeneration++
+	s.commandSubscriptionClient = nil
+	s.commandSubscriptionReady = false
+	s.writeCloudStatusLocked(ctx, "disconnected")
+}
+
+func (s *ScooterMQTTClient) clearCommandSubscriptionReadinessForClient(ctx context.Context, c mqtt.Client) {
+	s.commandSubscriptionMu.Lock()
+	defer s.commandSubscriptionMu.Unlock()
+
+	// OnConnectionLost is scheduled asynchronously. Ignore it if a different
+	// client is now ready, or this client has already reconnected successfully.
+	if s.commandSubscriptionClient != nil && c != s.commandSubscriptionClient {
+		return
+	}
+	if c.IsConnectionOpen() {
+		return
+	}
+
+	s.commandSubscriptionGeneration++
+	s.commandSubscriptionClient = c
+	s.commandSubscriptionReady = false
+	s.writeCloudStatusLocked(ctx, "disconnected")
+}
+
+func (s *ScooterMQTTClient) writeCloudStatusLocked(ctx context.Context, status string) {
+	if err := writeCloudStatus(ctx, s.redisClient, status); err != nil {
+		log.Printf("Failed to set cloud status to %s: %v", status, err)
+	}
+}
+
+func (s *ScooterMQTTClient) activeMQTTClient() mqtt.Client {
+	s.mqttClientMu.RLock()
+	defer s.mqttClientMu.RUnlock()
+	return s.mqttClient
+}
+
+func (s *ScooterMQTTClient) setActiveMQTTClient(client mqtt.Client) {
+	s.mqttClientMu.Lock()
+	s.mqttClient = client
+	s.mqttClientMu.Unlock()
+}
+
+func (s *ScooterMQTTClient) isCommandSubscriptionReady() bool {
+	s.commandSubscriptionMu.Lock()
+	defer s.commandSubscriptionMu.Unlock()
+	return s.commandSubscriptionReady
+}
+
+func (s *ScooterMQTTClient) handleMQTTConnectionLost(c mqtt.Client, err error) {
+	log.Printf("Connection lost: %v", err)
+	s.clearCommandSubscriptionReadinessForClient(s.ctx, c)
+}
+
+func (s *ScooterMQTTClient) handleMQTTReconnectStart(c mqtt.Client) {
+	log.Printf("MQTT auto-reconnect attempting...")
+	s.clearCommandSubscriptionReadinessForClient(s.ctx, c)
+}
+
+func (s *ScooterMQTTClient) handleMQTTConnected(c mqtt.Client) {
+	log.Printf("Connected to MQTT broker at %s", s.config.MQTT.BrokerURL)
+
+	if err := s.subscribeCommandsWithRetry(c, commandSubscriptionAttempts, commandSubscriptionRetryDelay); err != nil {
+		log.Printf("Failed to establish command subscription: %v", err)
+		if !errors.Is(err, errCommandSubscriptionRejected) && !errors.Is(err, errInactiveMQTTClient) {
+			s.reconnectAfterCommandSubscriptionFailure(c)
+		}
+		return
+	}
+	s.publishConnectedStatus(c)
+}
+
+func (s *ScooterMQTTClient) reconnectAfterCommandSubscriptionFailure(c mqtt.Client) {
+	if !s.commandSubscriptionNeedsReconnect(c) {
+		return
+	}
+
+	go func() {
+		// A concurrent OnConnect may have recovered after this rebuild was queued.
+		if !s.commandSubscriptionNeedsReconnect(c) {
+			return
+		}
+		if err := s.rebuildClient("command subscription failure"); err != nil {
+			log.Printf("Failed to rebuild MQTT client after command subscription failure: %v", err)
+		}
+	}()
+}
+
+func (s *ScooterMQTTClient) commandSubscriptionNeedsReconnect(c mqtt.Client) bool {
+	s.commandSubscriptionMu.Lock()
+	needsReconnect := c == s.commandSubscriptionClient && !s.commandSubscriptionReady && c.IsConnectionOpen()
+	s.commandSubscriptionMu.Unlock()
+	return needsReconnect && s.activeMQTTClient() == c
+}
+
+func (s *ScooterMQTTClient) publishConnectedStatus(c mqtt.Client) {
+	s.commandSubscriptionMu.Lock()
+	defer s.commandSubscriptionMu.Unlock()
+
+	if !s.commandSubscriptionReady || c != s.commandSubscriptionClient {
+		return
+	}
+
+	// Advertise the connection only while the command subscription has a
+	// successful SUBACK. A telemetry-only connection is not remote-access ready.
+	statusTopic := fmt.Sprintf("scooters/%s/status", s.config.Scooter.Identifier)
+	statusMessage := []byte(`{"status": "connected"}`)
+	token := c.Publish(statusTopic, 1, true, statusMessage)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
+		if !token.WaitTimeout(0) {
+			log.Printf("Failed to publish connection status: timeout")
+		} else {
+			log.Printf("Failed to publish connection status: %v", token.Error())
+		}
+	}
 }
 
 // Start starts the MQTT client background workers. The command-topic
@@ -723,10 +980,11 @@ func (s *ScooterMQTTClient) Stop() {
 		}
 	}
 
+	mqttClient := s.activeMQTTClient()
 	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
-	if s.mqttClient.IsConnected() {
+	if mqttClient != nil && mqttClient.IsConnected() {
 		log.Printf("Unsubscribing from %s", commandTopic)
-		if token := s.mqttClient.Unsubscribe(commandTopic); token.WaitTimeout(2*time.Second) && token.Error() != nil {
+		if token := mqttClient.Unsubscribe(commandTopic); token.WaitTimeout(2*time.Second) && token.Error() != nil {
 			log.Printf("Error unsubscribing from command topic: %v", token.Error())
 		}
 	}
@@ -749,22 +1007,20 @@ func (s *ScooterMQTTClient) Stop() {
 	log.Println("Setting cloud status to disconnected before shutdown")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer shutdownCancel()
-	if err := writeCloudStatus(shutdownCtx, s.redisClient, "disconnected"); err != nil {
-		log.Printf("Failed to set cloud status on shutdown: %v", err)
-	}
+	s.clearCommandSubscriptionReadiness(shutdownCtx)
 
-	if s.mqttClient.IsConnected() {
+	if mqttClient != nil && mqttClient.IsConnected() {
 		// Publish disconnected status before clean disconnect
 		// (LWT is only sent on unclean disconnects, so we need to do this explicitly)
 		statusTopic := fmt.Sprintf("scooters/%s/status", s.config.Scooter.Identifier)
 		statusMessage := []byte(`{"status": "disconnected"}`)
-		if token := s.mqttClient.Publish(statusTopic, 1, true, statusMessage); token.WaitTimeout(500*time.Millisecond) && token.Error() != nil {
+		if token := mqttClient.Publish(statusTopic, 1, true, statusMessage); token.WaitTimeout(500*time.Millisecond) && token.Error() != nil {
 			log.Printf("Failed to publish disconnected status on shutdown: %v", token.Error())
 		} else {
 			log.Printf("Published disconnected status to %s", statusTopic)
 		}
 		log.Println("Disconnecting MQTT client...")
-		s.mqttClient.Disconnect(500)
+		mqttClient.Disconnect(500)
 	}
 
 	// Close Redis client
@@ -975,17 +1231,19 @@ func (s *ScooterMQTTClient) rebuildClient(reason string) error {
 	defer s.reconnectMu.Unlock()
 
 	log.Printf("Rebuilding MQTT client (%s)", reason)
-	if s.mqttClient != nil {
-		s.mqttClient.Disconnect(250)
+	s.clearCommandSubscriptionReadiness(s.ctx)
+	oldClient := s.activeMQTTClient()
+	if oldClient != nil {
+		oldClient.Disconnect(250)
 	}
 
-	newClient, err := createMQTTClient(s.config, s.buildMQTTOptions())
+	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
+	_, err := createMQTTClient(s.config, s.buildMQTTOptions(), commandTopic, s.handleCommand, s.setActiveMQTTClient)
 	if err != nil {
 		log.Printf("Reconnect failed (%s): %v", reason, err)
 		return err
 	}
 
-	s.mqttClient = newClient
 	atomic.StoreInt32(&s.consecutivePublishFailures, 0)
 	log.Printf("MQTT client rebuilt (%s)", reason)
 	return nil
@@ -1025,7 +1283,11 @@ func (s *ScooterMQTTClient) publishTelemetryData(current *models.TelemetryData) 
 	}
 
 	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.Scooter.Identifier)
-	token := s.mqttClient.Publish(topic, 1, false, telemetryJSON)
+	mqttClient := s.activeMQTTClient()
+	if mqttClient == nil {
+		return fmt.Errorf("failed to publish telemetry: MQTT client is not initialized")
+	}
+	token := mqttClient.Publish(topic, 1, false, telemetryJSON)
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		failures := atomic.AddInt32(&s.consecutivePublishFailures, 1)
 		log.Printf("Publish failure #%d: %v", failures, token.Error())
@@ -1117,7 +1379,8 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 				switch powerState {
 				case "running":
-					if !s.mqttClient.IsConnectionOpen() {
+					mqttClient := s.activeMQTTClient()
+					if mqttClient == nil || !mqttClient.IsConnectionOpen() {
 						log.Printf("Power state changed to running, forcing MQTT reconnect")
 						s.forceReconnect()
 					}
@@ -1136,17 +1399,19 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 					}
 
 					log.Printf("Disconnecting MQTT client gracefully for state '%s'", powerState)
-					if s.mqttClient.IsConnected() {
+					s.clearCommandSubscriptionReadiness(s.ctx)
+					mqttClient := s.activeMQTTClient()
+					if mqttClient != nil && mqttClient.IsConnected() {
 						// Publish disconnected status before clean disconnect
 						// (LWT is only sent on unclean disconnects, so we need to do this explicitly)
 						statusTopic := fmt.Sprintf("scooters/%s/status", s.config.Scooter.Identifier)
 						statusMessage := []byte(`{"status": "disconnected"}`)
-						if token := s.mqttClient.Publish(statusTopic, 1, true, statusMessage); token.WaitTimeout(models.MQTTPublishTimeout) && token.Error() != nil {
+						if token := mqttClient.Publish(statusTopic, 1, true, statusMessage); token.WaitTimeout(models.MQTTPublishTimeout) && token.Error() != nil {
 							log.Printf("Failed to publish disconnected status: %v", token.Error())
 						} else {
 							log.Printf("Published disconnected status to %s", statusTopic)
 						}
-						s.mqttClient.Disconnect(1000)
+						mqttClient.Disconnect(1000)
 					}
 				}
 			}
@@ -1224,7 +1489,11 @@ func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
 	emptyPayload := []byte{}
 	log.Printf("Publishing empty payload with retain=true to topic %s", topic)
 
-	token := s.mqttClient.Publish(topic, 1, true, emptyPayload)
+	mqttClient := s.activeMQTTClient()
+	if mqttClient == nil {
+		return fmt.Errorf("failed to clean retained message: MQTT client is not initialized")
+	}
+	token := mqttClient.Publish(topic, 1, true, emptyPayload)
 	if !token.WaitTimeout(models.MQTTPublishTimeout) {
 		log.Printf("Timeout waiting to clean retained message on topic: %s", topic)
 		return fmt.Errorf("timeout cleaning retained message")
@@ -1232,7 +1501,7 @@ func (s *ScooterMQTTClient) cleanRetainedMessage(topic string) error {
 
 	if err := token.Error(); err != nil {
 		log.Printf("MQTT publish token error details: %+v", token)
-		log.Printf("MQTT client connection status: %v", s.mqttClient.IsConnectionOpen())
+		log.Printf("MQTT client connection status: %v", mqttClient.IsConnectionOpen())
 		log.Printf("Failed to clean retained message. Topic: %s, Error: %v", topic, err)
 		return fmt.Errorf("failed to clean retained message: %v", err)
 	}
@@ -1249,11 +1518,16 @@ func (s *ScooterMQTTClient) getCommandParam(cmd, param string, defaultValue inte
 	return defaultValue
 }
 
-// updateCloudStatus records the current live MQTT connection as reachable.
+// updateCloudStatus refreshes reachability after an outbound publish, but only
+// while the current MQTT connection has a confirmed command subscription.
 func (s *ScooterMQTTClient) updateCloudStatus() {
-	if err := writeCloudStatus(s.ctx, s.redisClient, "connected"); err != nil {
-		log.Printf("Failed to set cloud status: %v", err)
+	s.commandSubscriptionMu.Lock()
+	defer s.commandSubscriptionMu.Unlock()
+
+	if !s.commandSubscriptionReady {
+		return
 	}
+	s.writeCloudStatusLocked(s.ctx, "connected")
 }
 
 // sendCommandResponse sends a response to a command
@@ -1271,7 +1545,12 @@ func (s *ScooterMQTTClient) sendCommandResponse(requestID, status, errorMsg stri
 	}
 
 	topic := fmt.Sprintf("scooters/%s/acks", s.config.Scooter.Identifier)
-	token := s.mqttClient.Publish(topic, 1, false, responseJSON)
+	mqttClient := s.activeMQTTClient()
+	if mqttClient == nil {
+		log.Printf("Failed to publish response: MQTT client is not initialized")
+		return
+	}
+	token := mqttClient.Publish(topic, 1, false, responseJSON)
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		log.Printf("Failed to publish response: %v", token.Error())
 	} else {
@@ -1302,7 +1581,11 @@ func (s *ScooterMQTTClient) PublishEvent(event events.Event) error {
 	}
 
 	topic := fmt.Sprintf("scooters/%s/events", s.config.Scooter.Identifier)
-	token := s.mqttClient.Publish(topic, 1, false, eventJSON)
+	mqttClient := s.activeMQTTClient()
+	if mqttClient == nil {
+		return fmt.Errorf("failed to publish event: MQTT client is not initialized")
+	}
+	token := mqttClient.Publish(topic, 1, false, eventJSON)
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		return fmt.Errorf("failed to publish event: %v", token.Error())
 	}
@@ -1317,7 +1600,8 @@ func (s *ScooterMQTTClient) PublishEvent(event events.Event) error {
 // IsConnected() because paho's IsConnected() returns true during the
 // "reconnecting" state, which masks stuck reconnection loops.
 func (s *ScooterMQTTClient) IsConnected() bool {
-	return s.mqttClient.IsConnectionOpen()
+	mqttClient := s.activeMQTTClient()
+	return mqttClient != nil && mqttClient.IsConnectionOpen()
 }
 
 // RequestReconnect disconnects and reconnects the MQTT client after a short delay.
@@ -1357,34 +1641,13 @@ func (s *ScooterMQTTClient) buildMQTTOptions() *mqtt.ClientOptions {
 		SetCleanSession(false).
 		SetWill(willTopic, willMessage, 1, true).
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
-			log.Printf("Connection lost: %v", err)
-			if err := writeCloudStatus(s.ctx, s.redisClient, "disconnected"); err != nil {
-				log.Printf("Failed to set cloud status: %v", err)
-			}
+			s.handleMQTTConnectionLost(c, err)
 		}).
 		SetOnConnectHandler(func(c mqtt.Client) {
-			log.Printf("Connected to MQTT broker at %s", s.config.MQTT.BrokerURL)
-
-			statusTopic := fmt.Sprintf("scooters/%s/status", s.config.Scooter.Identifier)
-			statusMessage := []byte(`{"status": "connected"}`)
-			token := c.Publish(statusTopic, 1, true, statusMessage)
-			if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
-				if !token.WaitTimeout(0) {
-					log.Printf("Failed to publish connection status: timeout")
-				} else {
-					log.Printf("Failed to publish connection status: %v", token.Error())
-				}
-			}
-
-			if err := writeCloudStatus(s.ctx, s.redisClient, "connected"); err != nil {
-				log.Printf("Failed to set cloud status: %v", err)
-			}
-
-			// Re-subscribe to the command topic on every (re)connect so a
-			// broker-side session loss can't leave the scooter unsubscribed.
-			if err := s.subscribeCommands(c); err != nil {
-				log.Printf("Failed to re-subscribe to commands on reconnect: %v", err)
-			}
+			s.handleMQTTConnected(c)
+		}).
+		SetReconnectingHandler(func(c mqtt.Client, opts *mqtt.ClientOptions) {
+			s.handleMQTTReconnectStart(c)
 		})
 
 	if utils.IsTLSURL(s.config.MQTT.BrokerURL) {

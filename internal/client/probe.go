@@ -97,7 +97,7 @@ func RunProbe(cfg *models.Config, probeTimeout, stickinessWait time.Duration) er
 	// insecure-TLS fallback behavior production has. If the live client
 	// reaches the broker via the insecure fallback, the probe should too —
 	// otherwise we'd reject a config production happily accepts.
-	mqClient, err := createMQTTClient(cfg, opts)
+	mqClient, err := createMQTTClient(cfg, opts, "", nil, nil)
 	if err != nil {
 		return fmt.Errorf("connect: %v", err)
 	}
@@ -109,6 +109,9 @@ func RunProbe(cfg *models.Config, probeTimeout, stickinessWait time.Duration) er
 		return fmt.Errorf("subscribe to %s timed out (no SUBACK within %s)", commandTopic, probeTimeout)
 	}
 	if err := subToken.Error(); err != nil {
+		return fmt.Errorf("subscribe to %s failed: %v", commandTopic, err)
+	}
+	if err := validateCommandSubscriptionResult(subToken, commandTopic); err != nil {
 		return fmt.Errorf("subscribe to %s failed: %v", commandTopic, err)
 	}
 

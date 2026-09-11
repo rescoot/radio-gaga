@@ -181,7 +181,11 @@ func (s *ScooterMQTTClient) publishTelemetryDelta(delta map[string]any, cleared 
 	}
 
 	topic := fmt.Sprintf("scooters/%s/telemetry", s.config.Scooter.Identifier)
-	token := s.mqttClient.Publish(topic, 1, false, payload)
+	mqttClient := s.activeMQTTClient()
+	if mqttClient == nil {
+		return fmt.Errorf("failed to publish delta: MQTT client is not initialized")
+	}
+	token := mqttClient.Publish(topic, 1, false, payload)
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		failures := atomic.AddInt32(&s.consecutivePublishFailures, 1)
 		log.Printf("Delta publish failure #%d: %v", failures, token.Error())

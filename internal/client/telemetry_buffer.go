@@ -351,7 +351,11 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 
 	// Publish batch
 	topic := fmt.Sprintf("scooters/%s/telemetry_batch", s.config.Scooter.Identifier)
-	token := s.mqttClient.Publish(topic, 1, false, batchJSON)
+	mqttClient := s.activeMQTTClient()
+	if mqttClient == nil {
+		return fmt.Errorf("failed to publish batch: MQTT client is not initialized")
+	}
+	token := mqttClient.Publish(topic, 1, false, batchJSON)
 	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
 		// Update attempt count for each event
 		for i := range buffer.Events {

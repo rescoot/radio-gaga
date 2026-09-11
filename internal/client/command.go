@@ -34,11 +34,13 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 		}
 	}
 
-	// Create a client implementation that can be used by command handlers
+	// Use the callback-provided client. Commands queued in a persistent session
+	// can arrive during Connect, before the active-client field is assigned, and
+	// commands from an old client must not publish through a newer connection.
 	clientImpl := &handlers.ClientImplementation{
 		Config:        s.config,
 		ConfigPath:    s.configPath,
-		MQTTClient:    s.mqttClient,
+		MQTTClient:    client,
 		RedisClient:   s.redisClient,
 		Ctx:           s.ctx,
 		Version:       s.version,
@@ -46,15 +48,20 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 	}
 
 	// Delegate to the common command handler
-	handlers.HandleCommand(clientImpl, s.mqttClient, s.redisClient, s.ctx, s.config, s.version, msg)
+	handlers.HandleCommand(clientImpl, client, s.redisClient, s.ctx, s.config, s.version, msg)
 }
 
 // SendCommandResponse sends a response to a command
 func (s *ScooterMQTTClient) SendCommandResponse(requestID, status, errorMsg string) {
+	mqttClient := s.activeMQTTClient()
+	if mqttClient == nil {
+		log.Printf("Cannot publish command response: MQTT client is not initialized")
+		return
+	}
 	clientImpl := &handlers.ClientImplementation{
 		Config:      s.config,
 		ConfigPath:  s.configPath,
-		MQTTClient:  s.mqttClient,
+		MQTTClient:  mqttClient,
 		RedisClient: s.redisClient,
 		Ctx:         s.ctx,
 		Version:     s.version,
