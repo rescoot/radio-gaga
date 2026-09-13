@@ -120,6 +120,42 @@ func auxBatteryFromHash(auxBattery map[string]string) *models.AuxBatteryData {
 	}
 }
 
+func cbbBatteryFromHash(cbbBattery map[string]string) *models.CBBatteryData {
+	if cbbBattery["present"] == "false" {
+		present := false
+		return &models.CBBatteryData{Present: &present}
+	}
+
+	cellVoltage := utils.ParseIntPtr(cbbBattery["cell-voltage"])
+	if cellVoltage == nil || *cellVoltage <= 0 {
+		return nil
+	}
+
+	var present *bool
+	if cbbBattery["present"] == "true" {
+		value := true
+		present = &value
+	}
+
+	return &models.CBBatteryData{
+		Level:             utils.ParseInt(cbbBattery["charge"]),
+		Current:           utils.ParseInt(cbbBattery["current"]),
+		Temperature:       utils.ParseInt(cbbBattery["temperature"]),
+		SOH:               utils.ParseInt(cbbBattery["state-of-health"]),
+		ChargeStatus:      cbbBattery["charge-status"],
+		CellVoltage:       *cellVoltage,
+		CycleCount:        utils.ParseInt(cbbBattery["cycle-count"]),
+		FullCapacity:      utils.ParseInt(cbbBattery["full-capacity"]),
+		PartNumber:        cbbBattery["part-number"],
+		Present:           present,
+		RemainingCapacity: utils.ParseInt(cbbBattery["remaining-capacity"]),
+		SerialNumber:      cbbBattery["serial-number"],
+		TimeToEmpty:       utils.ParseInt(cbbBattery["time-to-empty"]),
+		TimeToFull:        utils.ParseInt(cbbBattery["time-to-full"]),
+		UniqueID:          cbbBattery["unique-id"],
+	}
+}
+
 // GetTelemetryFromRedis retrieves telemetry data from Redis.
 // monotonicRef should be captured at process start with time.Now() (preserving monotonic reading).
 // clockValid indicates whether the system clock has been validated (e.g. via NTP).
@@ -213,23 +249,7 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 	if err != nil {
 		return nil, fmt.Errorf("failed to get CBB data: %v", err)
 	}
-	telemetry.CBBattery = models.CBBatteryData{
-		Level:             utils.ParseInt(cbbBattery["charge"]),
-		Current:           utils.ParseInt(cbbBattery["current"]),
-		Temperature:       utils.ParseInt(cbbBattery["temperature"]),
-		SOH:               utils.ParseInt(cbbBattery["state-of-health"]),
-		ChargeStatus:      cbbBattery["charge-status"],
-		CellVoltage:       utils.ParseInt(cbbBattery["cell-voltage"]),
-		CycleCount:        utils.ParseInt(cbbBattery["cycle-count"]),
-		FullCapacity:      utils.ParseInt(cbbBattery["full-capacity"]),
-		PartNumber:        cbbBattery["part-number"],
-		Present:           cbbBattery["present"] == "true",
-		RemainingCapacity: utils.ParseInt(cbbBattery["remaining-capacity"]),
-		SerialNumber:      cbbBattery["serial-number"],
-		TimeToEmpty:       utils.ParseInt(cbbBattery["time-to-empty"]),
-		TimeToFull:        utils.ParseInt(cbbBattery["time-to-full"]),
-		UniqueID:          cbbBattery["unique-id"],
-	}
+	telemetry.CBBattery = cbbBatteryFromHash(cbbBattery)
 
 	// Get dashboard status (must be before system info to populate DBC serial number)
 	dashboard, err := redisClient.HGetAll(ctx, "dashboard").Result()

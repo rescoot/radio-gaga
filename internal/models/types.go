@@ -270,7 +270,7 @@ type CBBatteryData struct {
 	CycleCount        int    `json:"cycle_count"`
 	FullCapacity      int    `json:"full_capacity"`
 	PartNumber        string `json:"part_number"`
-	Present           bool   `json:"present"`
+	Present           *bool  `json:"present,omitempty"`
 	RemainingCapacity int    `json:"remaining_capacity"`
 	SerialNumber      string `json:"serial_number"`
 	TimeToEmpty       int    `json:"time_to_empty"`
@@ -387,7 +387,7 @@ type TelemetryData struct {
 	Battery0           BatteryData            `json:"battery0"`
 	Battery1           BatteryData            `json:"battery1"`
 	AuxBattery         *AuxBatteryData        `json:"aux_battery,omitempty"`
-	CBBattery          CBBatteryData          `json:"cbb_battery"`
+	CBBattery          *CBBatteryData         `json:"cbb_battery,omitempty"`
 	System             SystemInfo             `json:"system"`
 	Connectivity       ConnectivityStatus     `json:"connectivity"`
 	Modem              ModemData              `json:"modem,omitempty"`

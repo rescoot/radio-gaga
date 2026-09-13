@@ -174,6 +174,9 @@ func TestTelemetryToMap_V2Shape(t *testing.T) {
 	if _, ok := m["aux_battery"]; ok {
 		t.Errorf("expected unavailable aux battery to be omitted, got %v", m["aux_battery"])
 	}
+	if _, ok := m["cbb_battery"]; ok {
+		t.Errorf("expected unavailable CBB battery to be omitted, got %v", m["cbb_battery"])
+	}
 
 	td.AuxBattery = &models.AuxBatteryData{Level: 0, Voltage: 10_900}
 	m, err = telemetryToMap(td)

@@ -23,3 +23,25 @@ func TestAuxBatteryFromHash(t *testing.T) {
 		}
 	})
 }
+
+func TestCBBatteryFromHash(t *testing.T) {
+	t.Run("omits unpopulated startup data", func(t *testing.T) {
+		if got := cbbBatteryFromHash(map[string]string{}); got != nil {
+			t.Fatalf("CBB battery = %#v, want nil", got)
+		}
+	})
+
+	t.Run("reports explicit absence", func(t *testing.T) {
+		got := cbbBatteryFromHash(map[string]string{"present": "false"})
+		if got == nil || got.Present == nil || *got.Present {
+			t.Fatalf("CBB battery = %#v, want present=false", got)
+		}
+	})
+
+	t.Run("accepts a measured CBB without presence", func(t *testing.T) {
+		got := cbbBatteryFromHash(map[string]string{"charge": "100", "cell-voltage": "4200000"})
+		if got == nil || got.Present != nil || got.Level != 100 || got.CellVoltage != 4200000 {
+			t.Errorf("CBB battery = %#v", got)
+		}
+	})
+}
