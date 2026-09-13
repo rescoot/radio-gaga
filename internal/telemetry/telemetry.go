@@ -105,6 +105,21 @@ func GetBatteryData(ctx context.Context, redisClient *redis.Client, index int) (
 	}, nil
 }
 
+// auxBatteryFromHash ignores the empty startup hash until bluetooth-service
+// has reported a usable voltage.
+func auxBatteryFromHash(auxBattery map[string]string) *models.AuxBatteryData {
+	voltage := utils.ParseIntPtr(auxBattery["voltage"])
+	if voltage == nil || *voltage <= 0 {
+		return nil
+	}
+
+	return &models.AuxBatteryData{
+		Level:        utils.ParseInt(auxBattery["charge"]),
+		Voltage:      *voltage,
+		ChargeStatus: auxBattery["charge-status"],
+	}
+}
+
 // GetTelemetryFromRedis retrieves telemetry data from Redis.
 // monotonicRef should be captured at process start with time.Now() (preserving monotonic reading).
 // clockValid indicates whether the system clock has been validated (e.g. via NTP).
@@ -191,11 +206,7 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 	if err != nil {
 		return nil, fmt.Errorf("failed to get aux battery data: %v", err)
 	}
-	telemetry.AuxBattery = models.AuxBatteryData{
-		Level:        utils.ParseInt(auxBattery["charge"]),
-		Voltage:      utils.ParseInt(auxBattery["voltage"]),
-		ChargeStatus: auxBattery["charge-status"],
-	}
+	telemetry.AuxBattery = auxBatteryFromHash(auxBattery)
 
 	// Get CBB data
 	cbbBattery, err := redisClient.HGetAll(ctx, "cb-battery").Result()

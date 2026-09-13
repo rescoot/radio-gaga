@@ -171,4 +171,20 @@ func TestTelemetryToMap_V2Shape(t *testing.T) {
 	if vs["state"] != "stand-by" {
 		t.Errorf("vehicle_state.state = %v, want stand-by", vs["state"])
 	}
+	if _, ok := m["aux_battery"]; ok {
+		t.Errorf("expected unavailable aux battery to be omitted, got %v", m["aux_battery"])
+	}
+
+	td.AuxBattery = &models.AuxBatteryData{Level: 0, Voltage: 10_900}
+	m, err = telemetryToMap(td)
+	if err != nil {
+		t.Fatalf("telemetryToMap with aux battery: %v", err)
+	}
+	aux, ok := m["aux_battery"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected populated aux battery section, got %v", m["aux_battery"])
+	}
+	if aux["level"] != float64(0) || aux["voltage"] != float64(10_900) {
+		t.Errorf("aux_battery = %v, want level 0 and voltage 10900", aux)
+	}
 }

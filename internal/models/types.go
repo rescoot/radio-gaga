@@ -386,7 +386,7 @@ type TelemetryData struct {
 	Engine             EngineData             `json:"engine"`
 	Battery0           BatteryData            `json:"battery0"`
 	Battery1           BatteryData            `json:"battery1"`
-	AuxBattery         AuxBatteryData         `json:"aux_battery"`
+	AuxBattery         *AuxBatteryData        `json:"aux_battery,omitempty"`
 	CBBattery          CBBatteryData          `json:"cbb_battery"`
 	System             SystemInfo             `json:"system"`
 	Connectivity       ConnectivityStatus     `json:"connectivity"`
