@@ -13,234 +13,148 @@ import (
 	"radio-gaga/internal/models"
 )
 
-// MockCommandHandlerClient for testing
-type MockCommandHandlerClient struct{}
-
-func (m *MockCommandHandlerClient) SendCommandResponse(requestID, status, message string) {
+type MockCommandHandlerClient struct {
+	configPath string
 }
 
+func (m *MockCommandHandlerClient) SendCommandResponse(requestID, status, message string) {}
 func (m *MockCommandHandlerClient) SendCommandResponseWithPID(requestID, status, message string, pid int) {
 }
-
-func (m *MockCommandHandlerClient) CleanRetainedMessage(topic string) error {
-	return nil
-}
-
+func (m *MockCommandHandlerClient) CleanRetainedMessage(topic string) error { return nil }
 func (m *MockCommandHandlerClient) GetCommandParam(command, param string, defaultValue interface{}) interface{} {
 	return defaultValue
 }
-
 func (m *MockCommandHandlerClient) PublishTelemetryData(current *models.TelemetryData) error {
 	return nil
 }
+func (m *MockCommandHandlerClient) GetConfigPath() string { return m.configPath }
+func (m *MockCommandHandlerClient) RequestReconnect()     {}
 
-func (m *MockCommandHandlerClient) GetConfigPath() string {
-	return "/tmp/test-config.yml"
-}
+func TestSelfUpdateCommitsOnlyAfterCandidateProbeSucceeds(t *testing.T) {
+	tempDir := t.TempDir()
+	liveBinary := filepath.Join(tempDir, "radio-gaga")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	oldBinary := []byte("old binary")
+	candidate := []byte("#!/bin/sh\n[ \"$1\" = \"-probe\" ] || exit 3\nexit 0\n")
+	mustWriteFile(t, liveBinary, oldBinary, 0o755)
+	mustWriteFile(t, configPath, []byte("test: true\n"), 0o644)
 
-func (m *MockCommandHandlerClient) RequestReconnect() {
-}
+	server, checksum := binaryServer(t, candidate)
+	client := &MockCommandHandlerClient{configPath: configPath}
 
-func TestHandleSelfUpdateCommand(t *testing.T) {
-	// Create a temporary directory for test files
-	tempDir, err := os.MkdirTemp("", "radio-gaga-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+	originalExecutable, originalRestart := selfUpdateExecutable, selfUpdateRestart
+	defer func() {
+		selfUpdateExecutable = originalExecutable
+		selfUpdateRestart = originalRestart
+	}()
+	selfUpdateExecutable = func() (string, error) { return liveBinary, nil }
+	restartScheduled := false
+	selfUpdateRestart = func() error {
+		restartScheduled = true
+		return nil
 	}
-	defer os.RemoveAll(tempDir)
 
-	// Create a mock binary file
-	mockBinary := []byte("mock binary content for testing")
-	mockBinaryHash := sha256.Sum256(mockBinary)
-	mockBinaryChecksum := fmt.Sprintf("%x", mockBinaryHash[:])
+	err := handleSelfUpdateCommand(client, map[string]interface{}{
+		"url":      server.URL,
+		"checksum": checksum,
+	}, "request-1", &models.Config{})
+	if err != nil {
+		t.Fatalf("handleSelfUpdateCommand: %v", err)
+	}
+	if !restartScheduled {
+		t.Fatal("expected restart to be scheduled after commit")
+	}
+	got, err := os.ReadFile(liveBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(candidate) {
+		t.Fatalf("live binary was not replaced with probed candidate: %q", got)
+	}
+}
 
-	// Create HTTP server to serve the mock binary
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(mockBinary)
-	}))
-	defer server.Close()
+func TestSelfUpdateProbeFailurePreservesCurrentBinary(t *testing.T) {
+	tempDir := t.TempDir()
+	liveBinary := filepath.Join(tempDir, "radio-gaga")
+	configPath := filepath.Join(tempDir, "config.yaml")
+	oldBinary := []byte("known-good binary")
+	candidate := []byte("not an executable for this architecture")
+	mustWriteFile(t, liveBinary, oldBinary, 0o755)
+	mustWriteFile(t, configPath, []byte("test: true\n"), 0o644)
+
+	server, checksum := binaryServer(t, candidate)
+	client := &MockCommandHandlerClient{configPath: configPath}
+
+	originalExecutable, originalRestart := selfUpdateExecutable, selfUpdateRestart
+	defer func() {
+		selfUpdateExecutable = originalExecutable
+		selfUpdateRestart = originalRestart
+	}()
+	selfUpdateExecutable = func() (string, error) { return liveBinary, nil }
+	restartScheduled := false
+	selfUpdateRestart = func() error {
+		restartScheduled = true
+		return nil
+	}
+
+	err := handleSelfUpdateCommand(client, map[string]interface{}{
+		"url":      server.URL,
+		"checksum": checksum,
+	}, "request-2", &models.Config{})
+	if err == nil || !strings.Contains(err.Error(), "candidate rejected; current binary preserved") {
+		t.Fatalf("expected candidate rejection, got %v", err)
+	}
+	if restartScheduled {
+		t.Fatal("restart must not be scheduled after a failed probe")
+	}
+	got, readErr := os.ReadFile(liveBinary)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(oldBinary) {
+		t.Fatalf("failed candidate changed live binary: %q", got)
+	}
+}
+
+func TestSelfUpdateValidatesRequestAndChecksum(t *testing.T) {
+	binary := []byte("candidate")
+	server, checksum := binaryServer(t, binary)
+	client := &MockCommandHandlerClient{configPath: "/tmp/config.yaml"}
 
 	tests := []struct {
-		name        string
-		params      map[string]interface{}
-		config      *models.Config
-		expectError bool
-		errorMsg    string
+		name    string
+		params  map[string]interface{}
+		message string
 	}{
-		{
-			name: "successful update",
-			params: map[string]interface{}{
-				"url":      server.URL,
-				"checksum": fmt.Sprintf("sha256:%s", mockBinaryChecksum),
-			},
-			config: &models.Config{
-				ServiceName: "test-service",
-			},
-			expectError: false,
-		},
-		{
-			name: "missing URL",
-			params: map[string]interface{}{
-				"checksum": fmt.Sprintf("sha256:%s", mockBinaryChecksum),
-			},
-			config: &models.Config{
-				ServiceName: "test-service",
-			},
-			expectError: true,
-			errorMsg:    "update URL not specified or invalid",
-		},
-		{
-			name: "missing checksum",
-			params: map[string]interface{}{
-				"url": server.URL,
-			},
-			config: &models.Config{
-				ServiceName: "test-service",
-			},
-			expectError: true,
-			errorMsg:    "checksum not specified or invalid",
-		},
-		{
-			name: "invalid checksum format",
-			params: map[string]interface{}{
-				"url":      server.URL,
-				"checksum": "invalid-checksum-format",
-			},
-			config: &models.Config{
-				ServiceName: "test-service",
-			},
-			expectError: true,
-			errorMsg:    "invalid checksum format",
-		},
-		{
-			name: "checksum mismatch",
-			params: map[string]interface{}{
-				"url":      server.URL,
-				"checksum": "sha256:wrongchecksum",
-			},
-			config: &models.Config{
-				ServiceName: "test-service",
-			},
-			expectError: true,
-			errorMsg:    "checksum mismatch",
-		},
+		{"missing URL", map[string]interface{}{"checksum": checksum}, "update URL not specified"},
+		{"missing checksum", map[string]interface{}{"url": server.URL}, "checksum not specified"},
+		{"invalid checksum", map[string]interface{}{"url": server.URL, "checksum": "invalid"}, "invalid checksum format"},
+		{"checksum mismatch", map[string]interface{}{"url": server.URL, "checksum": "sha256:" + strings.Repeat("0", 64)}, "checksum mismatch"},
 	}
 
-	client := &MockCommandHandlerClient{}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := handleSelfUpdateCommand(client, tt.params, "test-request-id", tt.config)
-
-			if tt.expectError {
-				if err == nil {
-					t.Errorf("Expected error but got none")
-				} else if !strings.Contains(err.Error(), tt.errorMsg) {
-					t.Errorf("Expected error containing '%s', got: %v", tt.errorMsg, err)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-				}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := handleSelfUpdateCommand(client, test.params, "request", &models.Config{})
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("expected error containing %q, got %v", test.message, err)
 			}
 		})
 	}
 }
 
-func TestCreateUpdateHelperScript(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "radio-gaga-script-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	newBinaryPath := filepath.Join(tempDir, "new-binary")
-	currentBinaryPath := filepath.Join(tempDir, "current-binary")
-	serviceName := "test-service"
-
-	// Create mock binary files
-	if err := os.WriteFile(newBinaryPath, []byte("new binary"), 0755); err != nil {
-		t.Fatalf("Failed to create new binary file: %v", err)
-	}
-	if err := os.WriteFile(currentBinaryPath, []byte("current binary"), 0755); err != nil {
-		t.Fatalf("Failed to create current binary file: %v", err)
-	}
-
-	scriptPath, err := createUpdateHelperScript(newBinaryPath, currentBinaryPath, serviceName)
-	if err != nil {
-		t.Fatalf("Failed to create update helper script: %v", err)
-	}
-	defer os.Remove(scriptPath)
-
-	// Verify script file was created
-	if _, err := os.Stat(scriptPath); err != nil {
-		t.Errorf("Script file was not created: %v", err)
-	}
-
-	// Read and verify script content
-	scriptContent, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("Failed to read script content: %v", err)
-	}
-
-	scriptStr := string(scriptContent)
-
-	// Verify script contains expected elements
-	expectedElements := []string{
-		"#!/bin/sh",
-		"Radio-Gaga update helper script",
-		newBinaryPath,
-		currentBinaryPath,
-		serviceName,
-		"error_cleanup",
-		"systemctl restart",
-		"systemctl is-active",
-		"NEEDS_REMOUNT",
-		"mount -o remount",
-	}
-
-	for _, element := range expectedElements {
-		if !strings.Contains(scriptStr, element) {
-			t.Errorf("Script missing expected element: %s", element)
-		}
-	}
-
-	// Verify script is executable
-	info, err := os.Stat(scriptPath)
-	if err != nil {
-		t.Fatalf("Failed to stat script file: %v", err)
-	}
-	if info.Mode()&0111 == 0 {
-		t.Errorf("Script is not executable")
-	}
+func binaryServer(t *testing.T, binary []byte) (*httptest.Server, string) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(binary)
+	}))
+	t.Cleanup(server.Close)
+	digest := sha256.Sum256(binary)
+	return server, fmt.Sprintf("sha256:%x", digest[:])
 }
 
-func TestUpdateHelperScriptErrorHandling(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "radio-gaga-error-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Test with non-existent paths
-	nonExistentPath := filepath.Join(tempDir, "non-existent")
-	serviceName := "test-service"
-
-	scriptPath, err := createUpdateHelperScript(nonExistentPath, nonExistentPath, serviceName)
-	if err != nil {
-		t.Fatalf("Failed to create update helper script: %v", err)
-	}
-	defer os.Remove(scriptPath)
-
-	// Verify script contains error handling for non-existent files
-	scriptContent, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("Failed to read script content: %v", err)
-	}
-
-	scriptStr := string(scriptContent)
-	if !strings.Contains(scriptStr, "New binary file does not exist") {
-		t.Errorf("Script missing error handling for non-existent new binary")
+func mustWriteFile(t *testing.T, path string, content []byte, mode os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(path, content, mode); err != nil {
+		t.Fatal(err)
 	}
 }

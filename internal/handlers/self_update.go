@@ -1,21 +1,39 @@
 package handlers
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
+	"radio-gaga/internal/handlers/commands"
 	"radio-gaga/internal/models"
+	"radio-gaga/internal/txn"
 	"radio-gaga/internal/utils"
 )
 
-// handleSelfUpdateCommand handles the self_update command with comprehensive error handling
-func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]interface{}, requestID string, config *models.Config) error {
+const (
+	selfUpdateDeadline = 60 * time.Second
+	selfUpdateMaxBytes = 64 * 1024 * 1024
+)
+
+var (
+	selfUpdateExecutable = os.Executable
+	selfUpdateRestart    = commands.HandleRestartCommand
+)
+
+// handleSelfUpdateCommand downloads and verifies the candidate, executes that
+// exact binary in probe mode, and only then atomically installs it. The probe
+// must start, connect to MQTT, subscribe to the command topic, and remain
+// connected briefly. A failed probe leaves the running binary untouched.
+func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]interface{}, requestID string, _ *models.Config) error {
 	updateURL, ok := params["url"].(string)
 	if !ok || updateURL == "" {
 		return fmt.Errorf("update URL not specified or invalid")
@@ -26,305 +44,132 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		return fmt.Errorf("checksum not specified or invalid")
 	}
 
-	// Parse checksum algorithm and value
 	parts := strings.SplitN(checksum, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid checksum format. Expected format: algorithm:value")
 	}
-	algorithm, expectedChecksum := parts[0], parts[1]
 
-	// Validate service name
-	serviceName := config.ServiceName
-	if serviceName == "" {
-		serviceName = "rescoot-radio-gaga.service" // Default fallback
-		log.Printf("Warning: No service name configured, using default: %s", serviceName)
-	}
-
-	// Download new binary to temporary location
-	tempFile, err := os.CreateTemp("/tmp", "radio-gaga-*.new")
+	binary, err := downloadSelfUpdateBinary(updateURL, parts[0], parts[1])
 	if err != nil {
-		return fmt.Errorf("failed to create temporary file: %v", err)
+		return err
 	}
-	tempFileName := tempFile.Name()
 
-	// Track whether we successfully created the update script
-	var updateScriptCreated bool
-
-	// Ensure cleanup of temporary file on error
-	defer func() {
-		if tempFile != nil {
-			tempFile.Close()
-		}
-		// Only clean up temp file if we haven't successfully passed it to the update script
-		if !updateScriptCreated {
-			if _, statErr := os.Stat(tempFileName); statErr == nil {
-				os.Remove(tempFileName)
-			}
-		}
-	}()
-
-	log.Printf("Downloading new binary from %s", updateURL)
-	// Create HTTP client with TLS verification skipping as system time might be unreliable
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	configPath := client.GetConfigPath()
+	if configPath == "" {
+		return fmt.Errorf("config path unavailable; cannot test candidate")
 	}
-	httpClient := &http.Client{Transport: transport}
 
-	resp, err := httpClient.Get(updateURL)
+	executablePath, err := selfUpdateExecutable()
 	if err != nil {
-		return fmt.Errorf("failed to download new binary: %v", err)
+		return fmt.Errorf("resolve current executable: %w", err)
 	}
-	defer resp.Body.Close()
-
-	// Check HTTP status
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to download new binary: HTTP %d", resp.StatusCode)
-	}
-
-	// Calculate checksum while downloading
-	hasher, err := utils.CreateHash(algorithm)
+	executablePath, err = filepath.EvalSymlinks(executablePath)
 	if err != nil {
-		return fmt.Errorf("failed to create hash: %v", err)
+		return fmt.Errorf("resolve current executable symlinks: %w", err)
 	}
 
-	writer := io.MultiWriter(tempFile, hasher)
-	if _, err := io.Copy(writer, resp.Body); err != nil {
-		return fmt.Errorf("failed to save new binary: %v", err)
-	}
-	tempFile.Close()
-	tempFile = nil // Prevent defer from closing again
-
-	// Verify checksum
-	calculatedChecksum := fmt.Sprintf("%x", hasher.Sum(nil))
-	if calculatedChecksum != expectedChecksum {
-		return fmt.Errorf("checksum mismatch. Expected: %s, got: %s", expectedChecksum, calculatedChecksum)
-	}
-	log.Printf("Checksum verification successful: %s", calculatedChecksum)
-
-	// Make new binary executable
-	if err := os.Chmod(tempFileName, 0755); err != nil {
-		return fmt.Errorf("failed to make new binary executable: %v", err)
-	}
-
-	// Get current executable path
-	currentExe, err := os.Executable()
+	remounted, err := ensureSelfUpdateWritable(filepath.Dir(executablePath))
 	if err != nil {
-		return fmt.Errorf("failed to get current executable path: %v", err)
+		return err
+	}
+	if remounted {
+		defer restoreSelfUpdateReadOnly()
 	}
 
-	// Verify current executable exists
-	if _, err := os.Stat(currentExe); err != nil {
-		return fmt.Errorf("current executable not found at %s: %v", currentExe, err)
+	manager := &txn.Manager{
+		LiveConfigPath: configPath,
+		LiveBinaryPath: executablePath,
+		PendingPath:    filepath.Join(filepath.Dir(configPath), ".txn-pending.json"),
+		Logger:         log.Default(),
 	}
 
-	// Create the update helper script
-	scriptPath, err := createUpdateHelperScript(tempFileName, currentExe, serviceName)
-	if err != nil {
-		return fmt.Errorf("failed to create update helper script: %v", err)
+	txnID := "self-update-" + requestID
+	if requestID == "" {
+		txnID = fmt.Sprintf("self-update-%d", time.Now().UnixNano())
 	}
 
-	// Make script executable
-	if err := os.Chmod(scriptPath, 0755); err != nil {
-		os.Remove(scriptPath)
-		return fmt.Errorf("failed to make helper script executable: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), selfUpdateDeadline)
+	defer cancel()
+
+	committed, runErr := manager.Run(
+		ctx,
+		txnID,
+		txn.KindBinary,
+		txn.Candidate{Binary: binary},
+		txn.SubprocessProbe(log.Default().Writer()),
+	)
+	if !committed {
+		return fmt.Errorf("candidate rejected; current binary preserved: %w", runErr)
+	}
+	if runErr != nil {
+		log.Printf("Self-update committed with cleanup warning: %v", runErr)
 	}
 
-	// Mark that we've successfully created the update script, so temp file should not be cleaned up
-	updateScriptCreated = true
-
-	// Execute the update helper script in background
-	log.Printf("Starting update helper script to replace binary and restart service")
-	log.Printf("Update script: %s", scriptPath)
-	log.Printf("Update log will be written to: /tmp/radio-gaga-update.log")
-
-	cmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("nohup %s > /tmp/radio-gaga-update.log 2>&1 &", scriptPath))
-	if err := cmd.Start(); err != nil {
-		os.Remove(scriptPath)
-		return fmt.Errorf("failed to start update helper script: %v", err)
+	// Return to the normal command dispatcher so it can publish the success
+	// response. The delayed SIGTERM then lets systemd start the probed binary.
+	if err := selfUpdateRestart(); err != nil {
+		return fmt.Errorf("update committed but failed to schedule restart: %w", err)
 	}
-
-	log.Printf("Update process initiated successfully. The service will restart shortly.")
 	return nil
 }
 
-// createUpdateHelperScript creates a robust shell script to handle binary replacement and service restart
-func createUpdateHelperScript(newBinaryPath, currentBinaryPath, serviceName string) (string, error) {
-	scriptContent := fmt.Sprintf(`#!/bin/sh
-# Radio-Gaga update helper script
-# This script handles replacing the binary and restarting the service with comprehensive error handling
-
-set -e
-LOG_FILE="/tmp/radio-gaga-update.log"
-
-log() {
-    echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') - $1" | tee -a "$LOG_FILE"
-}
-
-error_cleanup() {
-    local error_msg="$1"
-    log "ERROR: $error_msg"
-
-    # Clean up temporary files
-    [ -f "$NEW_BINARY" ] && rm -f "$NEW_BINARY"
-    [ -f "$SCRIPT_PATH" ] && rm -f "$SCRIPT_PATH"
-
-    # Remount filesystem back to read-only if we changed it
-    if [ $NEEDS_REMOUNT -eq 1 ]; then
-        log "Remounting filesystem back to read-only due to error"
-        mount -o remount,ro / 2>/dev/null || log "WARNING: Failed to remount filesystem back to read-only"
-    fi
-
-    exit 1
-}
-
-# Trap to ensure cleanup on script exit
-trap 'error_cleanup "Script interrupted"' INT TERM
-
-log "Starting update helper script"
-
-NEW_BINARY="%s"
-CURRENT_PATH="%s"
-SERVICE_NAME="%s"
-BACKUP_PATH="${CURRENT_PATH}.old"
-SCRIPT_PATH="$0"
-
-log "New binary: $NEW_BINARY"
-log "Current binary: $CURRENT_PATH"
-log "Service name: $SERVICE_NAME"
-
-# Verify new binary exists and is executable
-if [ ! -f "$NEW_BINARY" ]; then
-    error_cleanup "New binary file does not exist: $NEW_BINARY"
-fi
-
-if [ ! -x "$NEW_BINARY" ]; then
-    log "Making new binary executable"
-    chmod +x "$NEW_BINARY" || error_cleanup "Failed to make new binary executable"
-fi
-
-# Verify current binary exists
-if [ ! -f "$CURRENT_PATH" ]; then
-    error_cleanup "Current binary does not exist: $CURRENT_PATH"
-fi
-
-# Check if filesystem needs to be remounted
-NEEDS_REMOUNT=0
-CURRENT_DIR=$(dirname "$CURRENT_PATH")
-log "Checking if $CURRENT_DIR is writable"
-
-if ! touch "$CURRENT_DIR/.write_test" 2>/dev/null; then
-    log "Filesystem is not writable, need to remount"
-    NEEDS_REMOUNT=1
-else
-    rm -f "$CURRENT_DIR/.write_test"
-fi
-
-# Remount filesystem if needed
-if [ $NEEDS_REMOUNT -eq 1 ]; then
-    log "Remounting root filesystem as read-write"
-    if ! mount -o remount,rw /; then
-        error_cleanup "Failed to remount filesystem as read-write"
-    fi
-    log "Filesystem remounted successfully"
-fi
-
-# Create backup of current binary using cp to preserve original
-log "Creating backup of current binary"
-if ! cp "$CURRENT_PATH" "$BACKUP_PATH"; then
-    error_cleanup "Failed to create backup of current binary"
-fi
-log "Backup created successfully"
-
-# Replace binary
-log "Replacing binary"
-if ! mv "$NEW_BINARY" "$CURRENT_PATH"; then
-    log "Failed to replace binary, restoring from backup"
-    if ! mv "$BACKUP_PATH" "$CURRENT_PATH"; then
-        error_cleanup "Failed to replace binary AND failed to restore backup - manual intervention required!"
-    fi
-    error_cleanup "Failed to replace binary, but backup restored successfully"
-fi
-log "Binary replaced successfully"
-
-# Restart service
-log "Restarting service: $SERVICE_NAME"
-if ! systemctl restart "$SERVICE_NAME"; then
-    log "Failed to restart service, rolling back to previous version"
-    if mv "$BACKUP_PATH" "$CURRENT_PATH" && systemctl restart "$SERVICE_NAME"; then
-        error_cleanup "Service restart failed, but rollback completed successfully"
-    else
-        error_cleanup "Service restart failed AND rollback failed - manual intervention required!"
-    fi
-fi
-log "Service restarted successfully"
-
-# Verify service is running with multiple checks
-log "Verifying service is running properly"
-sleep 5
-
-# Check 1: Service is active
-if ! systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
-    log "Service is not active, rolling back"
-    if mv "$BACKUP_PATH" "$CURRENT_PATH" && systemctl restart "$SERVICE_NAME"; then
-        error_cleanup "Service failed to start, but rollback completed successfully"
-    else
-        error_cleanup "Service failed to start AND rollback failed - manual intervention required!"
-    fi
-fi
-
-# Check 2: Wait a bit more and verify again
-log "Waiting additional time for service stabilization"
-sleep 10
-
-if ! systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
-    log "Service became inactive after initial check, rolling back"
-    if mv "$BACKUP_PATH" "$CURRENT_PATH" && systemctl restart "$SERVICE_NAME"; then
-        error_cleanup "Service became unstable, but rollback completed successfully"
-    else
-        error_cleanup "Service became unstable AND rollback failed - manual intervention required!"
-    fi
-fi
-
-log "Service verification completed successfully"
-
-# Remount filesystem back to read-only if we changed it
-if [ $NEEDS_REMOUNT -eq 1 ]; then
-    log "Remounting filesystem back to read-only"
-    if ! mount -o remount,ro /; then
-        log "WARNING: Failed to remount filesystem back to read-only"
-    else
-        log "Filesystem remounted to read-only successfully"
-    fi
-fi
-
-# Update successful, clean up
-log "Update completed successfully"
-rm -f "$BACKUP_PATH"
-rm -f "$SCRIPT_PATH"
-log "Cleanup completed"
-exit 0
-`, newBinaryPath, currentBinaryPath, serviceName)
-
-	// Write script to temporary file
-	scriptFile, err := os.CreateTemp("/tmp", "radio-gaga-updater-*.sh")
+func downloadSelfUpdateBinary(url, algorithm, expectedChecksum string) ([]byte, error) {
+	hasher, err := utils.CreateHash(algorithm)
 	if err != nil {
-		return "", fmt.Errorf("failed to create update script file: %v", err)
+		return nil, fmt.Errorf("failed to create hash: %w", err)
 	}
 
-	if _, err := scriptFile.WriteString(scriptContent); err != nil {
-		scriptFile.Close()
-		os.Remove(scriptFile.Name())
-		return "", fmt.Errorf("failed to write update script content: %v", err)
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // Device clocks may be invalid.
+	httpClient := &http.Client{Transport: transport, Timeout: selfUpdateDeadline}
+
+	response, err := httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download new binary: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to download new binary: HTTP %d", response.StatusCode)
 	}
 
-	scriptPath := scriptFile.Name()
-	scriptFile.Close()
-
-	// Make script executable
-	if err := os.Chmod(scriptPath, 0755); err != nil {
-		os.Remove(scriptPath)
-		return "", fmt.Errorf("failed to make update script executable: %v", err)
+	limited := io.LimitReader(response.Body, selfUpdateMaxBytes+1)
+	binary, err := io.ReadAll(io.TeeReader(limited, hasher))
+	if err != nil {
+		return nil, fmt.Errorf("failed to download new binary: %w", err)
+	}
+	if len(binary) > selfUpdateMaxBytes {
+		return nil, fmt.Errorf("new binary exceeds %d-byte limit", selfUpdateMaxBytes)
 	}
 
-	return scriptPath, nil
+	calculatedChecksum := fmt.Sprintf("%x", hasher.Sum(nil))
+	if !strings.EqualFold(calculatedChecksum, expectedChecksum) {
+		return nil, fmt.Errorf("checksum mismatch. Expected: %s, got: %s", expectedChecksum, calculatedChecksum)
+	}
+	log.Printf("Self-update checksum verification successful: %s", calculatedChecksum)
+	return binary, nil
+}
+
+// ensureSelfUpdateWritable remounts / read-write when the executable directory
+// is on a read-only root filesystem. It returns true only when it remounted /.
+func ensureSelfUpdateWritable(dir string) (bool, error) {
+	probe, err := os.CreateTemp(dir, ".radio-gaga-write-test-*")
+	if err == nil {
+		name := probe.Name()
+		_ = probe.Close()
+		_ = os.Remove(name)
+		return false, nil
+	}
+
+	log.Printf("Self-update executable directory is not writable; remounting root read-write")
+	if mountErr := syscall.Mount("", "/", "", syscall.MS_REMOUNT, ""); mountErr != nil {
+		return false, fmt.Errorf("make executable directory writable (initial error: %v): %w", err, mountErr)
+	}
+	return true, nil
+}
+
+func restoreSelfUpdateReadOnly() {
+	log.Printf("Self-update remounting root read-only")
+	if err := syscall.Mount("", "/", "", syscall.MS_REMOUNT|syscall.MS_RDONLY, ""); err != nil {
+		log.Printf("Warning: failed to remount root read-only: %v", err)
+	}
 }
