@@ -46,7 +46,15 @@ const (
 //	  "binary_url":       "https://.../radio-gaga"      (required for binary / both)
 //	  "binary_sha256":    "<hex>"                       (optional but recommended)
 //	  "deadline_seconds": <int, optional, default 60, capped at 5min>
+//	  "restart":          <bool, optional, default false>  (force a restart
+//	                       after a config-only commit)
 //	}
+//
+// A config-only commit deliberately does not restart on its own: the running
+// process keeps the config it loaded at boot, so the swap would take effect only
+// after the next unrelated restart. Callers that need it applied now — the
+// bootstrap claim push, for instance — pass `restart: true`. Binary and both
+// always restart, because the running process is the old binary.
 //
 // Response (on the data topic):
 //
@@ -58,6 +66,18 @@ const (
 // `restart_pending: true` tells the operator that the scoot will SIGTERM
 // itself within ~2s of the response being acked so systemd respawns into the
 // new binary. Reconnects show up shortly afterward.
+// restartNeeded reports whether a committed transaction must restart radio-gaga
+// for the result to take effect.
+//
+// A config-only commit does not restart on its own: the running process keeps the
+// config it loaded at boot. Making that restart unconditional would be wrong,
+// because the admin config editor drives this same command and would start
+// bouncing scooters on every edit; so it is an explicit opt-in. Binary and both
+// restart regardless, because the process on disk is by then the old binary.
+func restartNeeded(kind txn.Kind, requested bool) bool {
+	return kind == txn.KindBinary || kind == txn.KindBoth || requested
+}
+
 func HandleTxnReplaceCommand(client ConfigCommandHandlerClient, mqttClient mqtt.Client, config *models.Config, params map[string]any, requestID string) error {
 	txnID, _ := params["txn_id"].(string)
 	if txnID == "" {
@@ -125,7 +145,8 @@ func HandleTxnReplaceCommand(client ConfigCommandHandlerClient, mqttClient mqtt.
 
 	committed, runErr := manager.Run(ctx, txnID, kind, candidate, probe)
 
-	restartPending := committed && (kind == txn.KindBinary || kind == txn.KindBoth)
+	requestedRestart, _ := params["restart"].(bool)
+	restartPending := committed && restartNeeded(kind, requestedRestart)
 
 	resp := map[string]any{
 		"type":            "txn",
@@ -168,7 +189,7 @@ func HandleTxnReplaceCommand(client ConfigCommandHandlerClient, mqttClient mqtt.
 	if restartPending {
 		go func(id string) {
 			time.Sleep(txnPostCommitGrace)
-			log.Printf("txn:replace %s: requesting clean restart for binary swap", id)
+			log.Printf("txn:replace %s: requesting clean restart (kind=%s, restart_pending=%v)", id, kind, restartPending)
 			if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 				log.Printf("txn:replace %s: SIGTERM self failed: %v", id, err)
 			}
