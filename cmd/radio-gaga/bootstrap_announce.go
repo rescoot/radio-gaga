@@ -146,8 +146,13 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 		SetKeepAlive(30 * time.Second).
 		SetAutoReconnect(true).
 		SetConnectTimeout(announceConnectTO).
-		SetConnectRetry(true).
-		SetConnectRetryInterval(15 * time.Second).
+		// Deliberately NOT ConnectRetry: with it, Connect() returns immediately
+		// and retries invisibly, so a refused credential never reaches the log and
+		// the token we wait on never completes. Observed on the bench scooter as
+		// "subscribe ...: not currently connected and ResumeSubs not set" 30s in.
+		// Failing fast instead puts the real error in the journal, and systemd's
+		// Restart=always provides the retry.
+		SetConnectRetry(false).
 		// No will: a pre-claim device has no scooter status topic, and claiming
 		// one would be claiming an identity it does not have yet.
 		SetCleanSession(true)
@@ -168,30 +173,8 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 	}
 
 	configs := make(chan []byte, 1)
-	client := mqtt.NewClient(opts)
 
-	if token := client.Connect(); token.WaitTimeout(announceConnectTO) && token.Error() != nil {
-		return fmt.Errorf("connect as %s: %w", username, token.Error())
-	}
-	if !client.IsConnected() {
-		return fmt.Errorf("connect as %s: timed out", username)
-	}
-	defer client.Disconnect(250)
-
-	if token := client.Subscribe(configTopic, 1, func(_ mqtt.Client, message mqtt.Message) {
-		payload := append([]byte(nil), message.Payload()...)
-		select {
-		case configs <- payload:
-		default:
-			// One config is all this mode can apply; a duplicate is either the
-			// same retained document or a re-push while we are already working.
-		}
-	}); token.WaitTimeout(announceConnectTO) && token.Error() != nil {
-		return fmt.Errorf("subscribe %s: %w", configTopic, token.Error())
-	}
-	log.Printf("bootstrap-announce: subscribed to %s, announcing on %s", configTopic, announceTopic)
-
-	announce := func() {
+	announce := func(client mqtt.Client) {
 		imei := imei
 		if imei == "" {
 			imei = tryReadIMEI(bootstrapModemTimeout)
@@ -199,6 +182,11 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 		serial := mdbSerial
 		if serial == "" {
 			serial, _ = tryReadSerials()
+		}
+		if !client.IsConnected() {
+			// The reconnect handler announces again on reconnect; publishing into
+			// a dead session only produces a token error.
+			return
 		}
 		payload := announcePayload(imei, serial, dbcSerial, softwareVersion, platform, cfg.Scooter.Name, nonce)
 		token := client.Publish(announceTopic, 1, false, payload)
@@ -208,7 +196,47 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 		}
 	}
 
-	announce()
+	// Subscribe on EVERY connect, not just the first. A reconnect after a broker
+	// bounce otherwise leaves the device subscribed to nothing and waiting
+	// forever with no signal — the same failure radio-gaga already fixed once for
+	// the command topic. The announce fires here too, so a reconnect re-announces
+	// rather than waiting up to a full interval.
+	opts.SetOnConnectHandler(func(client mqtt.Client) {
+		token := client.Subscribe(configTopic, 1, func(_ mqtt.Client, message mqtt.Message) {
+			payload := append([]byte(nil), message.Payload()...)
+			select {
+			case configs <- payload:
+			default:
+				// One config is all this mode can apply; a duplicate is either the
+				// same retained document or a re-push while we are already working.
+			}
+		})
+		if !token.WaitTimeout(announceConnectTO) {
+			log.Printf("bootstrap-announce: subscribe %s timed out", configTopic)
+			return
+		}
+		if err := token.Error(); err != nil {
+			log.Printf("bootstrap-announce: subscribe %s: %v", configTopic, err)
+			return
+		}
+		log.Printf("bootstrap-announce: connected; subscribed to %s, announcing on %s", configTopic, announceTopic)
+		announce(client)
+	})
+
+	client := mqtt.NewClient(opts)
+
+	connectToken := client.Connect()
+	if !connectToken.WaitTimeout(announceConnectTO) {
+		return fmt.Errorf("connect as %s: timed out after %s", username, announceConnectTO)
+	}
+	if err := connectToken.Error(); err != nil {
+		// The common case here is a credential the broker does not know, which
+		// means the code was never provisioned (or was rotated). Worth saying
+		// plainly rather than looking like a network fault.
+		return fmt.Errorf("connect as %s: %w", username, err)
+	}
+	defer client.Disconnect(250)
+
 	ticker := time.NewTicker(announceInterval)
 	defer ticker.Stop()
 
@@ -249,7 +277,7 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 			return nil
 
 		case <-ticker.C:
-			announce()
+			announce(client)
 		}
 	}
 }
