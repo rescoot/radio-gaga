@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	probeConnectTimeout  = 30 * time.Second
-	probeStickinessWait  = 2 * time.Second
-	probeFailExitCode    = 2
+	probeConnectTimeout = 30 * time.Second
+	probeStickinessWait = 2 * time.Second
+	probeFailExitCode   = 2
 )
 
 // Version is set during the build process
@@ -99,6 +99,20 @@ func main() {
 			os.Exit(probeFailExitCode)
 		}
 		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Bootstrap-announce mode: the config holds only a short code, so the scooter
+	// has no identity yet. Announce on MQTT and wait for the config Sunshine
+	// pushes once the account owner accepts the claim, then apply it and exit so
+	// systemd respawns into it. Selected by the stanza itself, so the installer
+	// needs no separate unit.
+	if cfg.InBootstrapState() {
+		log.Printf("bootstrap-announce: no scooter token, announcing with the bootstrap code")
+		if err := runBootstrapAnnounce(cfg, configPath, version); err != nil {
+			log.Printf("bootstrap-announce: %v", err)
+			os.Exit(probeFailExitCode)
+		}
+		os.Exit(0)
 	}
 
 	// Probe mode: connect to MQTT once with the loaded config, verify a SUBACK

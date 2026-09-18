@@ -58,6 +58,7 @@ type CommandLineFlags struct {
 // Config represents the application configuration
 type Config struct {
 	Scooter       ScooterConfig       `yaml:"scooter"`
+	Bootstrap     BootstrapConfig     `yaml:"bootstrap,omitempty"`
 	Environment   string              `yaml:"environment"`
 	MQTT          MQTTConfig          `yaml:"mqtt"`
 	NTP           NTPConfig           `yaml:"ntp"`
@@ -77,6 +78,28 @@ type Config struct {
 	// not loaded from yaml. Consumers (e.g. journal upload) read it instead
 	// of hardcoding paths.
 	StateDir string `yaml:"-"`
+}
+
+// BootstrapConfig is the pre-claim state: the scooter holds nothing but a short
+// code and has to reach Sunshine to be given a real config. It is written by the
+// installer, so it must be loadable with no scooter token and no identifier —
+// those do not exist until the claim is accepted.
+type BootstrapConfig struct {
+	// Code is the installer short code, and doubles as the broker password. The
+	// broker username is derived from it (see BootstrapBrokerUsername) so the
+	// code itself never appears in a topic or in a broker log.
+	Code string `yaml:"code,omitempty"`
+	// APIBaseURL is retained for the one-shot HTTP flow and for error reporting.
+	APIBaseURL string `yaml:"api_base_url,omitempty"`
+}
+
+// InBootstrapState reports whether this config is a pre-claim bootstrap config.
+//
+// Selected by an explicit stanza rather than by the absence of a token: a config
+// that merely lost its token should fail loudly, not quietly start announcing
+// itself to Sunshine.
+func (c *Config) InBootstrapState() bool {
+	return c.Bootstrap.Code != "" && c.Scooter.Token == ""
 }
 
 // ScooterConfig contains scooter-specific configuration

@@ -216,11 +216,18 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) 
 func ValidateConfig(config *models.Config) error {
 	var errors []string
 
-	if config.Scooter.Identifier == "" {
-		errors = append(errors, "scooter identifier is required")
-	}
-	if config.Scooter.Token == "" {
-		errors = append(errors, "scooter token is required")
+	// A scooter in bootstrap state holds only a short code: the identifier and
+	// token do not exist until its claim is accepted, so requiring them here would
+	// make the bootstrap stanza impossible to load, which is the whole point of
+	// the mode. An explicit stanza is what selects it — a config that merely lost
+	// its token still fails, rather than silently announcing.
+	if !config.InBootstrapState() {
+		if config.Scooter.Identifier == "" {
+			errors = append(errors, "scooter identifier is required")
+		}
+		if config.Scooter.Token == "" {
+			errors = append(errors, "scooter token is required")
+		}
 	}
 	if config.Environment != "" && config.Environment != "production" && config.Environment != "development" {
 		errors = append(errors, fmt.Sprintf("invalid environment: %s (must be 'production' or 'development')", config.Environment))

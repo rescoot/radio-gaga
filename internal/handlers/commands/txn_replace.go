@@ -23,11 +23,11 @@ import (
 
 // Defaults for the txn:replace command.
 const (
-	txnDefaultDeadline   = 60 * time.Second
-	txnMaxDeadline       = 5 * time.Minute
-	txnBinaryDownloadTO  = 60 * time.Second
-	txnPostCommitGrace   = 2 * time.Second
-	txnBinaryMaxBytes    = 64 * 1024 * 1024 // 64 MiB cap
+	txnDefaultDeadline  = 60 * time.Second
+	txnMaxDeadline      = 5 * time.Minute
+	txnBinaryDownloadTO = 60 * time.Second
+	txnPostCommitGrace  = 2 * time.Second
+	txnBinaryMaxBytes   = 64 * 1024 * 1024 // 64 MiB cap
 )
 
 // HandleTxnReplaceCommand handles a `txn:replace` MQTT command. Sunshine sends
