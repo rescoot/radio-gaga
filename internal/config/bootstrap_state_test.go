@@ -29,7 +29,7 @@ func TestValidateConfigAcceptsBootstrapState(t *testing.T) {
 // the cloud as nobody.
 func TestValidateConfigStillRequiresATokenWithoutTheStanza(t *testing.T) {
 	cfg := &models.Config{
-		Scooter:  models.ScooterConfig{Identifier: "WUNU2S4BXLZ000348"},
+		Scooter:  models.ScooterConfig{Identifier: "WUNU2S4BXLZ000000"},
 		RedisURL: "redis://127.0.0.1:6379",
 		MQTT:     models.MQTTConfig{BrokerURL: "ssl://mqtt2.sunshine.rescoot.org:8883", KeepAlive: "30s"},
 	}
@@ -47,7 +47,7 @@ func TestValidateConfigStillRequiresATokenWithoutTheStanza(t *testing.T) {
 func TestTokenMeansNotBootstrapState(t *testing.T) {
 	cfg := &models.Config{
 		Bootstrap: models.BootstrapConfig{Code: "FGHX7A"},
-		Scooter:   models.ScooterConfig{Identifier: "WUNU2S4BXLZ000348", Token: "secret"},
+		Scooter:   models.ScooterConfig{Identifier: "WUNU2S4BXLZ000000", Token: "secret"},
 	}
 
 	if cfg.InBootstrapState() {
