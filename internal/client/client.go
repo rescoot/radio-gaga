@@ -46,29 +46,15 @@ var (
 	errInactiveMQTTClient          = errors.New("MQTT callback client is no longer active")
 )
 
-const remoteAccessUpdateScript = `
-local oldField = redis.call('HGET', KEYS[1], ARGV[1])
-redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
-local fields = redis.call('HGETALL', KEYS[1])
-local aggregate = 'disconnected'
-for i = 1, #fields, 2 do
-  if fields[i] ~= 'status' and fields[i + 1] == 'connected' then
-    aggregate = 'connected'
-    break
-  end
-end
-local oldAggregate = redis.call('HGET', KEYS[1], 'status')
-redis.call('HSET', KEYS[1], 'status', aggregate)
-redis.call('HSET', KEYS[2], 'unu-cloud', ARGV[2])
-if oldField ~= ARGV[2] then redis.call('PUBLISH', KEYS[1], ARGV[1]) end
-if oldAggregate ~= aggregate then redis.call('PUBLISH', KEYS[1], 'status') end
-redis.call('PUBLISH', KEYS[2], 'unu-cloud')
-return aggregate
-`
-
 func writeCloudStatus(ctx context.Context, client redis.Cmdable, status string) error {
-	_, err := client.Eval(ctx, remoteAccessUpdateScript,
-		[]string{"remote-access", "internet"}, "radio-gaga", status).Result()
+	_, err := client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.HSet(ctx, "remote-access", "radio-gaga", status)
+		pipe.HDel(ctx, "remote-access", "status")
+		pipe.Publish(ctx, "remote-access", "radio-gaga")
+		pipe.HSet(ctx, "internet", "unu-cloud", status)
+		pipe.Publish(ctx, "internet", "unu-cloud")
+		return nil
+	})
 	return err
 }
 

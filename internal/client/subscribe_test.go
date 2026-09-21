@@ -445,9 +445,6 @@ func assertRadioGagaStatus(t *testing.T, server *miniredis.Miniredis, want strin
 	if got := server.HGet("remote-access", "radio-gaga"); got != want {
 		t.Fatalf("remote-access.radio-gaga = %q, want %q", got, want)
 	}
-	if got := server.HGet("remote-access", "status"); got != want {
-		t.Fatalf("remote-access.status = %q, want %q", got, want)
-	}
 	if got := server.HGet("internet", "unu-cloud"); got != want {
 		t.Fatalf("internet.unu-cloud = %q, want %q", got, want)
 	}
