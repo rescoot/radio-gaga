@@ -98,8 +98,17 @@ Commands arrive as JSON on the MQTT commands topic:
 | `honk` | Sound the horn (configurable duration) |
 | `locate` | Flash lights and honk in a pattern |
 | `alarm` | Trigger alarm system (hazard lights, horn patterns) |
-| `navigate` | Set destination coordinates for DBC navigation |
+| `navigate` | Set one destination (`latitude`, `longitude`, optional `address`); omit both coordinates to clear navigation |
+| `navigate:route` | Set an ordered route (`waypoints` array, 1–25 stops); unsupported clients reject this command without changing the current target |
 | `hibernate` | Force hibernate mode |
+
+`navigate:route` accepts stops with `latitude`/`longitude` (or `lat`/`lon`) and optional `label` (or `name`):
+
+```json
+{"command":"navigate:route","params":{"waypoints":[{"latitude":52.51,"longitude":13.41,"label":"Work"},{"latitude":52.52,"longitude":13.42,"label":"Home"}]},"request_id":"abc-123"}
+```
+
+The first stop is the current navigation target. Sending a single `navigate` or clearing navigation also clears any active route plan.
 
 ### System
 

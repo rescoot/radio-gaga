@@ -210,6 +210,8 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 		err = handleShellCommand(client, mqttClient, config, command.Params, command.RequestID, command.Stream)
 	case "navigate":
 		err = handleNavigateCommand(redisClient, ctx, command.Params, command.RequestID)
+	case "navigate:route":
+		err = handleNavigateRouteCommand(redisClient, ctx, command.Params)
 	case "locations:merge":
 		err = handleLocationsMergeCommand(redisClient, ctx, command.Params)
 	case "hibernate":
@@ -786,9 +788,12 @@ func handleNavigateCommand(redisClient *redis.Client, ctx context.Context, param
 
 	// Check if this is a clear navigation command (both latitude and longitude are nil or missing)
 	if (!latOK && !lngOK) || (params["latitude"] == nil && params["longitude"] == nil) {
-		// Clear all navigation fields
-		fields := []string{"latitude", "longitude", "address", "timestamp", "destination"}
-		if err := redisClient.HDel(ctx, "navigation", fields...).Err(); err != nil {
+		// Empty values notify hash watchers and invalidate any active route plan.
+		fields := map[string]interface{}{
+			"latitude": "", "longitude": "", "address": "", "timestamp": "",
+			"destination": "", "waypoints": "", "current-step": "",
+		}
+		if err := redisClient.HSet(ctx, "navigation", fields).Err(); err != nil {
 			return fmt.Errorf("failed to clear navigation destination in Redis: %v", err)
 		}
 
@@ -818,10 +823,13 @@ func handleNavigateCommand(redisClient *redis.Client, ctx context.Context, param
 
 	// Set all navigation fields in Redis
 	navFields := map[string]interface{}{
-		"latitude":    fmt.Sprintf("%f", lat),
-		"longitude":   fmt.Sprintf("%f", lng),
-		"timestamp":   timestamp,
-		"destination": coords, // Legacy field for backward compatibility
+		"latitude":     fmt.Sprintf("%f", lat),
+		"longitude":    fmt.Sprintf("%f", lng),
+		"timestamp":    timestamp,
+		"destination":  coords, // Legacy field for backward compatibility
+		"waypoints":    "",
+		"current-step": "",
+		"address":      address,
 	}
 
 	// Add address if provided
