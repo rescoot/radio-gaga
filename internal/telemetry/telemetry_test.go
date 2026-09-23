@@ -1,6 +1,31 @@
 package telemetry
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/go-redis/redis/v8"
+)
+
+func TestNavigationRouteSupported(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	defer client.Close()
+	ctx := context.Background()
+
+	if navigationRouteSupported(client, ctx) {
+		t.Fatal("missing registry advertised route support")
+	}
+	server.HSet("system", "capabilities", "cap:ext:nav=2:keycard")
+	if !navigationRouteSupported(client, ctx) {
+		t.Fatal("nav=2 was not reported")
+	}
+	server.HSet("system", "capabilities", "cap:ext:nav=20:keycard")
+	if navigationRouteSupported(client, ctx) {
+		t.Fatal("nav=20 was reported as nav=2")
+	}
+}
 
 func TestAuxBatteryFromHash(t *testing.T) {
 	t.Run("omits missing startup data", func(t *testing.T) {

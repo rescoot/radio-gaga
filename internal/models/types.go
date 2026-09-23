@@ -314,6 +314,7 @@ type SystemInfo struct {
 	DbcSerialNumber     string `json:"dbc_sn,omitempty"`
 	DbcSerialNumberReal string `json:"dbc_sn_real,omitempty"`
 	Platform            string `json:"platform,omitempty"`
+	Capabilities        string `json:"capabilities,omitempty"`
 }
 
 // ConnectivityStatus represents internet and modem connectivity
@@ -402,26 +403,27 @@ type NavigationData struct {
 
 // TelemetryData represents the main telemetry data structure
 type TelemetryData struct {
-	Version            int                    `json:"version"`
-	BuildVersion       string                 `json:"build_version,omitempty"`
-	Config             map[string]interface{} `json:"config,omitempty"`
-	VehicleState       VehicleState           `json:"vehicle_state"`
-	Engine             EngineData             `json:"engine"`
-	Battery0           BatteryData            `json:"battery0"`
-	Battery1           BatteryData            `json:"battery1"`
-	AuxBattery         *AuxBatteryData        `json:"aux_battery,omitempty"`
-	CBBattery          *CBBatteryData         `json:"cbb_battery,omitempty"`
-	System             SystemInfo             `json:"system"`
-	Connectivity       ConnectivityStatus     `json:"connectivity"`
-	Modem              ModemData              `json:"modem,omitempty"`
-	GPS                GPSData                `json:"gps"`
-	Power              PowerStatus            `json:"power"`
-	BLE                BLEStatus              `json:"ble"`
-	Keycard            KeycardStatus          `json:"keycard"`
-	Dashboard          DashboardStatus        `json:"dashboard"`
-	Navigation         NavigationData         `json:"navigation,omitempty"`
-	ScooterTemperature *float64               `json:"scooter_temperature,omitempty"`
-	Timestamp          string                 `json:"timestamp"`
+	Version                  int                    `json:"version"`
+	BuildVersion             string                 `json:"build_version,omitempty"`
+	NavigationRouteSupported bool                   `json:"navigation_route_supported"`
+	Config                   map[string]interface{} `json:"config,omitempty"`
+	VehicleState             VehicleState           `json:"vehicle_state"`
+	Engine                   EngineData             `json:"engine"`
+	Battery0                 BatteryData            `json:"battery0"`
+	Battery1                 BatteryData            `json:"battery1"`
+	AuxBattery               *AuxBatteryData        `json:"aux_battery,omitempty"`
+	CBBattery                *CBBatteryData         `json:"cbb_battery,omitempty"`
+	System                   SystemInfo             `json:"system"`
+	Connectivity             ConnectivityStatus     `json:"connectivity"`
+	Modem                    ModemData              `json:"modem,omitempty"`
+	GPS                      GPSData                `json:"gps"`
+	Power                    PowerStatus            `json:"power"`
+	BLE                      BLEStatus              `json:"ble"`
+	Keycard                  KeycardStatus          `json:"keycard"`
+	Dashboard                DashboardStatus        `json:"dashboard"`
+	Navigation               NavigationData         `json:"navigation,omitempty"`
+	ScooterTemperature       *float64               `json:"scooter_temperature,omitempty"`
+	Timestamp                string                 `json:"timestamp"`
 }
 
 // BufferedTelemetryEvent represents a telemetry event in the buffer

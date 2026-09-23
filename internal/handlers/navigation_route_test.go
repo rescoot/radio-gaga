@@ -14,6 +14,7 @@ func TestNavigateRouteCommand(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	defer client.Close()
 	ctx := context.Background()
+	server.HSet("system", "capabilities", "cap:ext:nav=2:keycard:ota")
 
 	params := map[string]interface{}{"waypoints": []interface{}{
 		map[string]interface{}{"latitude": 52.51, "longitude": 13.41, "label": "Work"},
@@ -48,11 +49,30 @@ func TestNavigateRouteCommand(t *testing.T) {
 	}
 }
 
+func TestNavigateRouteRequiresAdvertisedCapability(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	defer client.Close()
+	params := map[string]interface{}{"waypoints": []interface{}{
+		map[string]interface{}{"lat": 52.0, "lon": 13.0},
+	}}
+	for _, capabilities := range []string{"", "cap:ext:nav=1", "cap:ext:nav=20", "nav=2"} {
+		server.HSet("system", "capabilities", capabilities)
+		if err := handleNavigateRouteCommand(client, context.Background(), params); err == nil {
+			t.Error("accepted route without advertised nav=2 capability")
+		}
+		if server.Exists("navigation") {
+			t.Error("unsupported route changed navigation state")
+		}
+	}
+}
+
 func TestNavigateRouteRejectsInvalidStopsWithoutClearingDestination(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	defer client.Close()
 	ctx := context.Background()
+	server.HSet("system", "capabilities", "cap:ext:nav=2:keycard:ota")
 	server.HSet("navigation", "destination", "52.000000,13.000000")
 
 	for _, raw := range []interface{}{

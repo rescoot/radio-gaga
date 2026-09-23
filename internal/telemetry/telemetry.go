@@ -6,6 +6,7 @@ import (
 	"log"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -156,6 +157,19 @@ func cbbBatteryFromHash(cbbBattery map[string]string) *models.CBBatteryData {
 	}
 }
 
+func navigationRouteSupported(client *redis.Client, ctx context.Context) bool {
+	value, err := client.HGet(ctx, "system", "capabilities").Result()
+	if err != nil || !strings.HasPrefix(value, "cap:ext:") {
+		return false
+	}
+	for _, group := range strings.Split(strings.TrimPrefix(value, "cap:ext:"), ":") {
+		if group == "nav=2" {
+			return true
+		}
+	}
+	return false
+}
+
 // GetTelemetryFromRedis retrieves telemetry data from Redis.
 // monotonicRef should be captured at process start with time.Now() (preserving monotonic reading).
 // clockValid indicates whether the system clock has been validated (e.g. via NTP).
@@ -174,9 +188,10 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 	}
 
 	telemetry := &models.TelemetryData{
-		Version:      2,
-		BuildVersion: version,
-		Config:       configMap,
+		Version:                  2,
+		BuildVersion:             version,
+		NavigationRouteSupported: navigationRouteSupported(redisClient, ctx),
+		Config:                   configMap,
 	}
 
 	// Get vehicle state
@@ -288,6 +303,7 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		DbcSerialNumber:     telemetry.Dashboard.SerialNumber,
 		DbcSerialNumberReal: system["dbc-sn-real"],
 		Platform:            runtime.GOARCH,
+		Capabilities:        system["capabilities"],
 	}
 
 	// Get internet connectivity status

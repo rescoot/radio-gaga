@@ -21,6 +21,10 @@ type routeStop struct {
 // A distinct command name lets older MQTT clients reject routes without
 // interpreting missing latitude/longitude as a request to clear navigation.
 func handleNavigateRouteCommand(client *redis.Client, ctx context.Context, params map[string]interface{}) error {
+	capabilities, err := client.HGet(ctx, "system", "capabilities").Result()
+	if err != nil || !routeCapabilityAdvertised(capabilities) {
+		return fmt.Errorf("scooter does not advertise multi-stop routes")
+	}
 	stops, err := parseRouteStops(params["waypoints"])
 	if err != nil {
 		return err
@@ -43,6 +47,18 @@ func handleNavigateRouteCommand(client *redis.Client, ctx context.Context, param
 		return err
 	}
 	return client.Publish(ctx, "navigation", "updated").Err()
+}
+
+func routeCapabilityAdvertised(capabilities string) bool {
+	if !strings.HasPrefix(capabilities, "cap:ext:") {
+		return false
+	}
+	for _, group := range strings.Split(strings.TrimPrefix(capabilities, "cap:ext:"), ":") {
+		if group == "nav=2" {
+			return true
+		}
+	}
+	return false
 }
 
 func parseRouteStops(raw interface{}) ([]routeStop, error) {
