@@ -2,6 +2,9 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -9,7 +12,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	redis_ipc "github.com/librescoot/redis-ipc"
 )
 
 type routeStop struct {
@@ -34,19 +36,54 @@ func handleNavigateRouteCommand(client *redis.Client, ctx context.Context, param
 	}{Stops: stops})
 }
 
-// callRoutePlan uses the settings-service RPC; the navigation hash is its projection.
+// callRoutePlan uses the existing Redis connection so configured authentication,
+// database, and TLS settings also apply to route-plan requests.
 func callRoutePlan(client *redis.Client, ctx context.Context, method string, request interface{}) error {
-	if err := ctx.Err(); err != nil {
-		return err
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("route-plan request ID: %w", err)
 	}
-	ipc, err := redis_ipc.New(redis_ipc.WithURL(client.Options().Addr), redis_ipc.WithDialTimeout(time.Second))
+	id := hex.EncodeToString(nonce[:])
+	channel := "settings:route-plan"
+	replyChannel := channel + ":reply:" + id
+	deadline, _ := ctx.Deadline()
+	payload, err := json.Marshal(request)
 	if err != nil {
-		return fmt.Errorf("route-plan service unavailable: %w", err)
+		return fmt.Errorf("route-plan request: %w", err)
 	}
-	defer ipc.Close()
-	_, err = redis_ipc.CallMethod[interface{}, struct{}](ipc, "settings:route-plan", method, request, 2*time.Second)
+	envelope, err := json.Marshal(struct {
+		ID           string          `json:"id"`
+		Method       string          `json:"method"`
+		ReplyChannel string          `json:"reply_channel"`
+		Deadline     int64           `json:"deadline"`
+		Payload      json.RawMessage `json:"payload"`
+	}{id, method, replyChannel, deadline.UnixMilli(), payload})
 	if err != nil {
-		return fmt.Errorf("route-plan %s: %w", method, err)
+		return fmt.Errorf("route-plan envelope: %w", err)
+	}
+	sub := client.Subscribe(ctx, replyChannel)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil {
+		return fmt.Errorf("route-plan subscribe: %w", err)
+	}
+	if err := client.LPush(ctx, channel, envelope).Err(); err != nil {
+		return fmt.Errorf("route-plan request: %w", err)
+	}
+	msg, err := sub.ReceiveMessage(ctx)
+	if err != nil {
+		return fmt.Errorf("route-plan response: %w", err)
+	}
+	var reply struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(msg.Payload), &reply); err != nil {
+		return fmt.Errorf("route-plan response: %w", err)
+	}
+	if !reply.OK {
+		return fmt.Errorf("route-plan %s: %s", method, reply.Error)
 	}
 	return nil
 }
