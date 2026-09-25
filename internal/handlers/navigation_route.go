@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	redis_ipc "github.com/librescoot/redis-ipc"
 )
 
 type routeStop struct {
@@ -29,24 +29,26 @@ func handleNavigateRouteCommand(client *redis.Client, ctx context.Context, param
 	if err != nil {
 		return err
 	}
-	encoded, err := json.Marshal(stops)
+	return callRoutePlan(client, ctx, "plan.replace", struct {
+		Stops []routeStop `json:"stops"`
+	}{Stops: stops})
+}
+
+// callRoutePlan uses the settings-service RPC; the navigation hash is its projection.
+func callRoutePlan(client *redis.Client, ctx context.Context, method string, request interface{}) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ipc, err := redis_ipc.New(redis_ipc.WithURL(client.Options().Addr), redis_ipc.WithDialTimeout(time.Second))
 	if err != nil {
-		return err
+		return fmt.Errorf("route-plan service unavailable: %w", err)
 	}
-	first := stops[0]
-	fields := map[string]interface{}{
-		"waypoints":    string(encoded),
-		"current-step": "0",
-		"latitude":     strconv.FormatFloat(first.Lat, 'f', -1, 64),
-		"longitude":    strconv.FormatFloat(first.Lon, 'f', -1, 64),
-		"destination":  fmt.Sprintf("%.6f,%.6f", first.Lat, first.Lon),
-		"address":      first.Label,
-		"timestamp":    time.Now().UTC().Format(time.RFC3339),
+	defer ipc.Close()
+	_, err = redis_ipc.CallMethod[interface{}, struct{}](ipc, "settings:route-plan", method, request, 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("route-plan %s: %w", method, err)
 	}
-	if err := client.HSet(ctx, "navigation", fields).Err(); err != nil {
-		return err
-	}
-	return client.Publish(ctx, "navigation", "updated").Err()
+	return nil
 }
 
 func routeCapabilityAdvertised(capabilities string) bool {

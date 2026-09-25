@@ -786,73 +786,16 @@ func handleNavigateCommand(redisClient *redis.Client, ctx context.Context, param
 	lat, latOK := params["latitude"].(float64)
 	lng, lngOK := params["longitude"].(float64)
 
-	// Check if this is a clear navigation command (both latitude and longitude are nil or missing)
-	if (!latOK && !lngOK) || (params["latitude"] == nil && params["longitude"] == nil) {
-		// Empty values notify hash watchers and invalidate any active route plan.
-		fields := map[string]interface{}{
-			"latitude": "", "longitude": "", "address": "", "timestamp": "",
-			"destination": "", "waypoints": "", "current-step": "",
-		}
-		if err := redisClient.HSet(ctx, "navigation", fields).Err(); err != nil {
-			return fmt.Errorf("failed to clear navigation destination in Redis: %v", err)
-		}
-
-		// Publish notification to the navigation channel
-		if err := redisClient.Publish(ctx, "navigation", "cleared").Err(); err != nil {
-			// Log the error but don't fail the command, as the HDEL succeeded
-			log.Printf("Warning: Failed to publish navigation clear notification: %v", err)
-		}
-
-		log.Printf("Navigation target cleared")
-		return nil
+	if !latOK && !lngOK {
+		return callRoutePlan(redisClient, ctx, "plan.clear", struct{}{})
 	}
-
-	// Check if both coordinates are provided for setting a destination
 	if !latOK || !lngOK {
 		return fmt.Errorf("invalid or missing latitude/longitude parameters")
 	}
-
-	// Get optional address parameter
 	address, _ := params["address"].(string)
-
-	// Format coordinates as "latitude,longitude" string for legacy compatibility
-	coords := fmt.Sprintf("%f,%f", lat, lng)
-
-	// Get current timestamp in ISO8601 format
-	timestamp := time.Now().UTC().Format(time.RFC3339)
-
-	// Set all navigation fields in Redis
-	navFields := map[string]interface{}{
-		"latitude":     fmt.Sprintf("%f", lat),
-		"longitude":    fmt.Sprintf("%f", lng),
-		"timestamp":    timestamp,
-		"destination":  coords, // Legacy field for backward compatibility
-		"waypoints":    "",
-		"current-step": "",
-		"address":      address,
-	}
-
-	// Add address if provided
-	if address != "" {
-		navFields["address"] = address
-	}
-
-	if err := redisClient.HSet(ctx, "navigation", navFields).Err(); err != nil {
-		return fmt.Errorf("failed to set navigation destination in Redis: %v", err)
-	}
-
-	// Publish notification to the navigation channel
-	if err := redisClient.Publish(ctx, "navigation", "destination").Err(); err != nil {
-		// Log the error but don't fail the command, as the HSET succeeded
-		log.Printf("Warning: Failed to publish navigation destination update: %v", err)
-	}
-
-	if address != "" {
-		log.Printf("Navigation target set to: %s (%s)", coords, address)
-	} else {
-		log.Printf("Navigation target set to: %s", coords)
-	}
-	return nil
+	return callRoutePlan(redisClient, ctx, "plan.replace", struct {
+		Stops []routeStop `json:"stops"`
+	}{Stops: []routeStop{{Lat: lat, Lon: lng, Label: address}}})
 }
 
 // handleHibernateCommand handles the hibernate command

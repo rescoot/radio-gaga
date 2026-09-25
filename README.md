@@ -108,7 +108,7 @@ Commands arrive as JSON on the MQTT commands topic:
 {"command":"navigate:route","params":{"waypoints":[{"latitude":52.51,"longitude":13.41,"label":"Work"},{"latitude":52.52,"longitude":13.42,"label":"Home"}]},"request_id":"abc-123"}
 ```
 
-The first stop is the current navigation target. The route command requires `nav=2` in the locally advertised `system[capabilities]` registry; an absent or older registry is rejected without changing the destination. Sending a single `navigate` or clearing navigation also clears any active route plan.
+The first stop is the current navigation target. The route command requires `nav=2` in the locally advertised `system[capabilities]` registry; an absent or older registry is rejected without changing the destination. `navigate:route` calls settings-service `plan.replace` on `settings:route-plan` with the parsed stops. A single `navigate` replaces the plan with one stop; omitting both coordinates calls `plan.clear`. The cloud command receives an error if the RPC is unavailable or rejects the request. Only settings-service writes the `navigation` projection.
 
 ### System
 
