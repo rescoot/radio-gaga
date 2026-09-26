@@ -123,7 +123,7 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) 
 	}
 
 	// State directory is always auto-detected. The previous configurability
-	// (flags + config keys) only existed because LibreScoot and stock ScooterOS
+	// (flags + config keys) only existed because Librescoot and stock ScooterOS
 	// disagreed on writable paths; auto-detect handles both. Warn loudly if any
 	// deprecated input is supplied so operators know it's being ignored.
 	if flags.StateDir != "" {

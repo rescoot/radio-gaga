@@ -6,7 +6,7 @@
 make dist   # optimized ARM build for deployment
 ```
 
-Telemetry and remote control bridge for electric scooters (unu Scooter Pro / LibreScoot). Sits between the vehicle's Redis state bus and the Sunshine cloud platform via MQTT. Adapts its reporting frequency to what the scooter is actually doing: once per second while driving, once a day while hibernating.
+Telemetry and remote control bridge for electric scooters (unu Scooter Pro / Librescoot). Sits between the vehicle's Redis state bus and the Sunshine cloud platform via MQTT. Adapts its reporting frequency to what the scooter is actually doing: once per second while driving, once a day while hibernating.
 
 Part of the [Rescoot](https://github.com/rescoot) project.
 
@@ -136,7 +136,7 @@ Runtime config changes via `config:get`, `config:set`, `config:del`, `config:sav
 
 ### Location Sync
 
-`locations:merge` receives saved locations from the server and merges them into Redis with 25m deduplication. Used for the saved-locations feature on LibreScoot DBC dashboards.
+`locations:merge` receives saved locations from the server and merges them into Redis with 25m deduplication. Used for the saved-locations feature on Librescoot DBC dashboards.
 
 ### Development-Only
 
@@ -347,7 +347,7 @@ cp radio-gaga.example.yml radio-gaga.yml
 
 The repository includes an installer script (`install.sh`) that handles setup on unu Scooter Pro hardware: validates the environment, fetches scooter-specific config from the Sunshine API, downloads the binary, creates a systemd service, and starts it.
 
-Target platform is Linux ARM (ARMv7). The binary runs as a systemd service (`rescoot-radio-gaga.service` on stock, `radio-gaga` on LibreScoot).
+Target platform is Linux ARM (ARMv7). The binary runs as a systemd service (`rescoot-radio-gaga.service` on stock, `radio-gaga` on Librescoot).
 
 ## Dependencies
 

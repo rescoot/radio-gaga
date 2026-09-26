@@ -9,7 +9,7 @@ import (
 // stateDirCandidates is the ordered list of directories defaultStateDir tries.
 // Exposed as a var so tests can override it without touching the filesystem.
 var stateDirCandidates = []string{
-	"/data/radio-gaga",    // LibreScoot et al — /data is the persistent partition
+	"/data/radio-gaga",    // Librescoot et al — /data is the persistent partition
 	"/var/lib/radio-gaga", // stock Linux / FHS — root is writable
 	"/tmp/radio-gaga",     // last resort, ephemeral
 }

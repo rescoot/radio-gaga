@@ -33,7 +33,7 @@ const (
 // binary running with the staged config.
 //
 // configPath is where the live config will end up (and where the staging /
-// LKG / pending files live alongside). For LibreScoot that's typically
+// LKG / pending files live alongside). For Librescoot that's typically
 // /data/radio-gaga/config.yaml; for stock it's /etc/rescoot/radio-gaga.yml.
 // The install script passes this as -config.
 func runBootstrap(token, apiBaseURL, configPath, softwareVersion string) error {
@@ -125,7 +125,7 @@ func tryReadSerials() (mdbReal, dbcReal string) {
 }
 
 // detectPlatform reads /etc/os-release. The bootstrap endpoint uses this to
-// pick LibreScoot vs stock paths in the generated config.
+// pick Librescoot vs stock paths in the generated config.
 func detectPlatform() string {
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {

@@ -418,7 +418,7 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		}
 	}
 
-	// Get scooter temperature (LibreScoot firmware)
+	// Get scooter temperature (Librescoot firmware)
 	scooterTempStr, err := redisClient.HGet(ctx, "scooter", "temperature").Result()
 	if err != nil && err != redis.Nil {
 		log.Printf("Warning: Failed to get scooter temperature: %v", err)
