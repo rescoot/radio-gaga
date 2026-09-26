@@ -304,6 +304,8 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		DbcSerialNumberReal: system["dbc-sn-real"],
 		Platform:            runtime.GOARCH,
 		Capabilities:        system["capabilities"],
+		UptimeSeconds:       uptimeSeconds(GetPriorityDeadlines(config)[Slow]),
+		BootID:              readBootID(),
 	}
 
 	// Get internet connectivity status

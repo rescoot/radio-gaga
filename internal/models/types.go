@@ -315,6 +315,11 @@ type SystemInfo struct {
 	DbcSerialNumberReal string `json:"dbc_sn_real,omitempty"`
 	Platform            string `json:"platform,omitempty"`
 	Capabilities        string `json:"capabilities,omitempty"`
+	// Host uptime and kernel boot id. These come from the local Linux host
+	// (procfs), not from Redis, so they stay meaningful while the clock is
+	// unvalidated and across Redis-backed state being stale.
+	UptimeSeconds float64 `json:"uptime_seconds"`
+	BootID        string  `json:"boot_id"`
 }
 
 // ConnectivityStatus represents internet and modem connectivity

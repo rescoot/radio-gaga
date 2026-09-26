@@ -2,11 +2,37 @@ package telemetry
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 )
+
+func TestSysInfoFromProc(t *testing.T) {
+	if uptime := readUptimeSeconds(); uptime <= 0 {
+		t.Errorf("readUptimeSeconds() = %v, want > 0", uptime)
+	}
+
+	bootID := readBootID()
+	if bootID == "" {
+		t.Fatal("readBootID() returned empty")
+	}
+	if len(bootID) != 36 || strings.Count(bootID, "-") != 4 {
+		t.Errorf("readBootID() = %q, want a UUID", bootID)
+	}
+}
+
+func TestUptimeSecondsIsCached(t *testing.T) {
+	first := uptimeSeconds(time.Hour)
+	if first <= 0 {
+		t.Fatalf("uptimeSeconds() = %v, want > 0", first)
+	}
+	if second := uptimeSeconds(time.Hour); second != first {
+		t.Errorf("uptimeSeconds() = %v on second call, want cached %v", second, first)
+	}
+}
 
 func TestNavigationRouteSupported(t *testing.T) {
 	server := miniredis.RunT(t)
