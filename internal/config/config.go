@@ -223,17 +223,17 @@ func ValidateConfig(config *models.Config) error {
 	// its token still fails, rather than silently announcing.
 	if !config.InBootstrapState() {
 		if config.Scooter.Identifier == "" {
-			errors = append(errors, "scooter identifier is required")
+			errors = append(errors, "scooter.identifier is required")
 		}
 		if config.Scooter.Token == "" {
-			errors = append(errors, "scooter token is required")
+			errors = append(errors, "scooter.token is required")
 		}
 	}
 	if config.Environment != "" && config.Environment != "production" && config.Environment != "development" {
-		errors = append(errors, fmt.Sprintf("invalid environment: %s (must be 'production' or 'development')", config.Environment))
+		errors = append(errors, fmt.Sprintf("environment: invalid value %s (must be 'production' or 'development')", config.Environment))
 	}
 	if config.RedisURL == "" {
-		errors = append(errors, "redis URL is required")
+		errors = append(errors, "redis_url is required")
 	}
 
 	// Validate telemetry intervals
@@ -389,26 +389,28 @@ func ValidateConfig(config *models.Config) error {
 		}
 	}
 
-	// Parse and validate durations
+	// Parse and validate durations. Keys are the canonical YAML paths so error
+	// messages name the exact field an operator has to edit.
 	durations := map[string]string{
-		"mqtt.keep_alive":           config.MQTT.KeepAlive,
-		"driving":                   config.Telemetry.Intervals.Driving,
-		"standby":                   config.Telemetry.Intervals.Standby,
-		"standby_no_battery":        config.Telemetry.Intervals.StandbyNoBattery,
-		"hibernate":                 config.Telemetry.Intervals.Hibernate,
-		"buffer.retry_interval":     config.Telemetry.Buffer.RetryInterval,
-		"telemetry.transmit_period": config.Telemetry.TransmitPeriod,
-		"priorities.immediate":      config.Telemetry.Priorities.Immediate,
-		"priorities.quick":          config.Telemetry.Priorities.Quick,
-		"priorities.medium":         config.Telemetry.Priorities.Medium,
-		"priorities.slow":           config.Telemetry.Priorities.Slow,
+		"mqtt.keepalive":                         config.MQTT.KeepAlive,
+		"telemetry.intervals.driving":            config.Telemetry.Intervals.Driving,
+		"telemetry.intervals.standby":            config.Telemetry.Intervals.Standby,
+		"telemetry.intervals.standby_no_battery": config.Telemetry.Intervals.StandbyNoBattery,
+		"telemetry.intervals.hibernate":          config.Telemetry.Intervals.Hibernate,
+		"telemetry.buffer.retry_interval":        config.Telemetry.Buffer.RetryInterval,
+		"telemetry.transmit_period":              config.Telemetry.TransmitPeriod,
+		"telemetry.priorities.immediate":         config.Telemetry.Priorities.Immediate,
+		"telemetry.priorities.quick":             config.Telemetry.Priorities.Quick,
+		"telemetry.priorities.medium":            config.Telemetry.Priorities.Medium,
+		"telemetry.priorities.slow":              config.Telemetry.Priorities.Slow,
 	}
 	if config.Telegram.Enabled && config.Telegram.RateLimit != "" {
 		durations["telegram.rate_limit"] = config.Telegram.RateLimit
 	}
 
 	positiveDurations := map[string]bool{
-		"driving": true, "standby": true, "standby_no_battery": true, "hibernate": true,
+		"telemetry.intervals.driving": true, "telemetry.intervals.standby": true,
+		"telemetry.intervals.standby_no_battery": true, "telemetry.intervals.hibernate": true,
 		"telemetry.transmit_period": true, "telegram.rate_limit": true,
 	}
 	for name, value := range durations {
@@ -817,8 +819,7 @@ func convertYamlPathToStructPath(yamlPath string) string {
 		"broker_url":       "BrokerURL",
 		"ca_cert":          "CACert",
 		"ca_cert_embedded": "CACertEmbedded",
-		"keep_alive":       "KeepAlive",
-		"keepalive":        "KeepAlive", // Alternative naming
+		"keepalive":        "KeepAlive",
 
 		// NTP fields
 		"enabled": "Enabled",
@@ -916,15 +917,15 @@ func validatePriorityOrdering(config *models.Config) error {
 	}
 
 	if immediate > quick {
-		return fmt.Errorf("priorities.immediate (%s) must be <= priorities.quick (%s)",
+		return fmt.Errorf("telemetry.priorities.immediate (%s) must be <= telemetry.priorities.quick (%s)",
 			config.Telemetry.Priorities.Immediate, config.Telemetry.Priorities.Quick)
 	}
 	if quick > medium {
-		return fmt.Errorf("priorities.quick (%s) must be <= priorities.medium (%s)",
+		return fmt.Errorf("telemetry.priorities.quick (%s) must be <= telemetry.priorities.medium (%s)",
 			config.Telemetry.Priorities.Quick, config.Telemetry.Priorities.Medium)
 	}
 	if medium > slow {
-		return fmt.Errorf("priorities.medium (%s) must be <= priorities.slow (%s)",
+		return fmt.Errorf("telemetry.priorities.medium (%s) must be <= telemetry.priorities.slow (%s)",
 			config.Telemetry.Priorities.Medium, config.Telemetry.Priorities.Slow)
 	}
 

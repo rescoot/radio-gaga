@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"radio-gaga/internal/models"
@@ -260,5 +261,40 @@ func TestValidatePriorityOrdering_InvalidDuration(t *testing.T) {
 	err := validatePriorityOrdering(config)
 	if err != nil {
 		t.Errorf("Expected nil for invalid duration (handled elsewhere), got: %v", err)
+	}
+}
+
+func TestValidateConfig_MissingKeepaliveNamesCanonicalYAMLPath(t *testing.T) {
+	// radio-gaga's YAML key is `keepalive`, not `keep_alive`. A config that omits
+	// it must say so by the key an operator can actually edit.
+	config := &models.Config{
+		Scooter:  models.ScooterConfig{Identifier: "VIN", Token: "tok"},
+		RedisURL: "redis://localhost:6379",
+	}
+
+	err := ValidateConfig(config)
+	if err == nil {
+		t.Fatal("Expected validation error for empty mqtt.keepalive, got nil")
+	}
+	if !strings.Contains(err.Error(), "mqtt.keepalive") {
+		t.Errorf("validation error %q should name mqtt.keepalive", err.Error())
+	}
+	if strings.Contains(err.Error(), "keep_alive") {
+		t.Errorf("validation error %q should not use the keep_alive alias", err.Error())
+	}
+}
+
+func TestConfigField_KeepaliveUsesCanonicalKey(t *testing.T) {
+	config := &models.Config{}
+
+	if err := SetConfigField(config, "mqtt.keepalive", "45s"); err != nil {
+		t.Fatalf("SetConfigField(mqtt.keepalive) failed: %v", err)
+	}
+	if config.MQTT.KeepAlive != "45s" {
+		t.Errorf("MQTT.KeepAlive = %q, want 45s", config.MQTT.KeepAlive)
+	}
+
+	if err := SetConfigField(config, "mqtt.keep_alive", "1m"); err == nil {
+		t.Error("SetConfigField(mqtt.keep_alive) should be rejected now that the alias is gone")
 	}
 }
