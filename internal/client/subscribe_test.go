@@ -15,12 +15,13 @@ import (
 // fakeToken is a minimal mqtt.Token used to drive subscription and status
 // publishing in tests.
 type fakeToken struct {
-	err    error
-	result map[string]byte
+	err      error
+	result   map[string]byte
+	timedOut bool
 }
 
 func (t *fakeToken) Wait() bool                     { return true }
-func (t *fakeToken) WaitTimeout(time.Duration) bool { return true }
+func (t *fakeToken) WaitTimeout(time.Duration) bool { return !t.timedOut }
 func (t *fakeToken) Done() <-chan struct{} {
 	ch := make(chan struct{})
 	close(ch)
@@ -28,6 +29,31 @@ func (t *fakeToken) Done() <-chan struct{} {
 }
 func (t *fakeToken) Error() error            { return t.err }
 func (t *fakeToken) Result() map[string]byte { return t.result }
+
+func TestWaitForMQTTConnect(t *testing.T) {
+	tests := []struct {
+		name     string
+		token    *fakeToken
+		wantText string
+	}{
+		{"connected", &fakeToken{}, ""},
+		{"failed", &fakeToken{err: errors.New("broker refused connection")}, "broker refused connection"},
+		{"timed out without token error", &fakeToken{timedOut: true}, "connection timed out after 30s"},
+		{"timed out with pending error", &fakeToken{err: errors.New("pending"), timedOut: true}, "connection timed out after 30s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := waitForMQTTConnect(tt.token)
+			if tt.wantText == "" {
+				if err != nil {
+					t.Fatalf("waitForMQTTConnect() = %v, want nil", err)
+				}
+			} else if err == nil || err.Error() != tt.wantText {
+				t.Fatalf("waitForMQTTConnect() = %v, want %q", err, tt.wantText)
+			}
+		})
+	}
+}
 
 // fakeMQTTClient embeds mqtt.Client so only the methods we exercise need real
 // implementations; any other call would panic, which is fine for these tests.

@@ -499,6 +499,13 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	return client, nil
 }
 
+func waitForMQTTConnect(token mqtt.Token) error {
+	if !token.WaitTimeout(models.MQTTPublishTimeout) {
+		return fmt.Errorf("connection timed out after %s", models.MQTTPublishTimeout)
+	}
+	return token.Error()
+}
+
 // createMQTTClient creates and connects an MQTT client. The command route and
 // active-client reference are installed before Connect so queued persistent-
 // session commands can be handled safely before OnConnect re-subscribes.
@@ -511,8 +518,7 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 		activate(client)
 	}
 	token := client.Connect()
-	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
-		err := token.Error()
+	if err := waitForMQTTConnect(token); err != nil {
 		if strings.Contains(err.Error(), "certificate has expired or is not yet valid") {
 			log.Printf("Certificate validity period error, attempting NTP sync...")
 
@@ -521,8 +527,8 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 			if ntpErr == nil {
 				// Try connecting again after time sync
 				token := client.Connect()
-				if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
-					log.Printf("Connection failed after NTP sync: %v, falling back to insecure...", token.Error())
+				if err := waitForMQTTConnect(token); err != nil {
+					log.Printf("Connection failed after NTP sync: %v, falling back to insecure...", err)
 				} else {
 					return client, nil
 				}
@@ -554,8 +560,8 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 					activate(insecureClient)
 				}
 				token := insecureClient.Connect()
-				if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
-					return nil, fmt.Errorf("all connection attempts failed, last error: %v", token.Error())
+				if err := waitForMQTTConnect(token); err != nil {
+					return nil, fmt.Errorf("all connection attempts failed, last error: %w", err)
 				}
 				log.Printf("Warning: Connected with insecure TLS configuration")
 				return insecureClient, nil
@@ -563,7 +569,7 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 				return nil, fmt.Errorf("failed to create insecure TLS config: %v", err)
 			}
 		}
-		return nil, fmt.Errorf("connection failed: %v", token.Error())
+		return nil, fmt.Errorf("connection failed: %w", err)
 	}
 	return client, nil
 }
