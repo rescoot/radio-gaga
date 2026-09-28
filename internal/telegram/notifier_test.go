@@ -38,6 +38,16 @@ func testScooter() *models.ScooterConfig {
 	}
 }
 
+func TestNewNotifierRejectsNonPositiveRateLimit(t *testing.T) {
+	for _, value := range []string{"0s", "-1s"} {
+		cfg := testConfig()
+		cfg.RateLimit = value
+		if _, err := NewNotifier(cfg, testScooter()); err == nil {
+			t.Fatalf("accepted rate_limit %q", value)
+		}
+	}
+}
+
 func TestShouldNotify(t *testing.T) {
 	n, err := NewNotifier(testConfig(), testScooter())
 	if err != nil {

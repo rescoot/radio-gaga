@@ -100,8 +100,20 @@ func (s *ScooterMQTTClient) loadBufferFromRedis() (*models.TelemetryBuffer, erro
 	if err := json.Unmarshal([]byte(bufferJSON), buffer); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal buffer: %v", err)
 	}
+	if err := validateTelemetryBuffer(buffer); err != nil {
+		return nil, err
+	}
 
 	return buffer, nil
+}
+
+func validateTelemetryBuffer(buffer *models.TelemetryBuffer) error {
+	for i, event := range buffer.Events {
+		if event.Data == nil {
+			return fmt.Errorf("telemetry buffer event %d has no data", i)
+		}
+	}
+	return nil
 }
 
 // saveBufferToRedis saves the telemetry buffer to Redis
@@ -137,6 +149,9 @@ func (s *ScooterMQTTClient) loadBufferFromDisk() (*models.TelemetryBuffer, error
 	buffer := &models.TelemetryBuffer{}
 	if err := json.Unmarshal(bufferJSON, buffer); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal buffer: %v", err)
+	}
+	if err := validateTelemetryBuffer(buffer); err != nil {
+		return nil, err
 	}
 
 	return buffer, nil
@@ -181,6 +196,9 @@ func (s *ScooterMQTTClient) saveBufferToDisk(buffer *models.TelemetryBuffer) err
 
 // addTelemetryToBuffer adds a telemetry event to the buffer
 func (s *ScooterMQTTClient) addTelemetryToBuffer(data *models.TelemetryData) error {
+	if data == nil {
+		return fmt.Errorf("cannot buffer nil telemetry data")
+	}
 	// If buffer is not enabled, return
 	if !s.config.Telemetry.Buffer.Enabled {
 		return nil
@@ -318,6 +336,10 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 		s.buffer = buffer
 	}
 
+	if err := validateTelemetryBuffer(buffer); err != nil {
+		return err
+	}
+
 	// If buffer is empty, return
 	if len(buffer.Events) == 0 {
 		return nil
@@ -411,8 +433,8 @@ func (s *ScooterMQTTClient) transmitBufferPeriodically() {
 	}
 
 	transmitPeriod, err := time.ParseDuration(s.config.Telemetry.TransmitPeriod)
-	if err != nil {
-		log.Printf("Failed to parse transmit period: %v, using default of 5m", err)
+	if err != nil || transmitPeriod <= 0 {
+		log.Printf("Invalid transmit period %q, using default of 5m", s.config.Telemetry.TransmitPeriod)
 		transmitPeriod = 5 * time.Minute
 	}
 

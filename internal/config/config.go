@@ -384,8 +384,8 @@ func ValidateConfig(config *models.Config) error {
 	}
 	// Validate SMS rate_limit duration
 	if config.Notifications.SMS.Enabled && config.Notifications.SMS.RateLimit != "" {
-		if _, err := time.ParseDuration(config.Notifications.SMS.RateLimit); err != nil {
-			errors = append(errors, fmt.Sprintf("notifications.sms.rate_limit invalid: %v", err))
+		if duration, err := time.ParseDuration(config.Notifications.SMS.RateLimit); err != nil || duration <= 0 {
+			errors = append(errors, "notifications.sms.rate_limit must be a positive duration")
 		}
 	}
 
@@ -407,9 +407,16 @@ func ValidateConfig(config *models.Config) error {
 		durations["telegram.rate_limit"] = config.Telegram.RateLimit
 	}
 
+	positiveDurations := map[string]bool{
+		"driving": true, "standby": true, "standby_no_battery": true, "hibernate": true,
+		"telemetry.transmit_period": true, "telegram.rate_limit": true,
+	}
 	for name, value := range durations {
-		if _, err := time.ParseDuration(value); err != nil {
+		duration, err := time.ParseDuration(value)
+		if err != nil {
 			errors = append(errors, fmt.Sprintf("invalid %s: %v", name, err))
+		} else if positiveDurations[name] && duration <= 0 {
+			errors = append(errors, fmt.Sprintf("%s must be a positive duration", name))
 		}
 	}
 

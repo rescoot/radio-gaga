@@ -32,8 +32,8 @@ type Notifier struct {
 // NewNotifier creates a new SMS notifier
 func NewNotifier(config *models.SMSConfig, scooterConfig *models.ScooterConfig) (*Notifier, error) {
 	rateLimit, err := time.ParseDuration(config.RateLimit)
-	if err != nil {
-		return nil, fmt.Errorf("invalid sms rate_limit: %v", err)
+	if err != nil || rateLimit <= 0 {
+		return nil, fmt.Errorf("sms rate_limit must be a positive duration")
 	}
 
 	queueSize := config.QueueSize

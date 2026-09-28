@@ -33,15 +33,20 @@ type Notifier struct {
 // NewNotifier creates a new Telegram notifier
 func NewNotifier(config *models.TelegramConfig, scooterConfig *models.ScooterConfig) (*Notifier, error) {
 	rateLimit, err := time.ParseDuration(config.RateLimit)
-	if err != nil {
-		return nil, fmt.Errorf("invalid rate_limit: %v", err)
+	if err != nil || rateLimit <= 0 {
+		return nil, fmt.Errorf("telegram rate_limit must be a positive duration")
+	}
+
+	queueSize := config.QueueSize
+	if queueSize <= 0 {
+		queueSize = 20
 	}
 
 	return &Notifier{
 		config:     config,
 		identifier: scooterConfig.Identifier,
 		name:       scooterConfig.Name,
-		queue:      make(chan events.Event, config.QueueSize),
+		queue:      make(chan events.Event, queueSize),
 		client:     &http.Client{Timeout: 10 * time.Second},
 		rateLimit:  rateLimit,
 	}, nil

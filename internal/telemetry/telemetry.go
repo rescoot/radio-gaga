@@ -70,9 +70,9 @@ func GetTelemetryInterval(ctx context.Context, redisClient *redis.Client, config
 	}
 
 	interval, err := time.ParseDuration(intervalStr)
-	if err != nil {
-		log.Printf("Failed to parse interval %s: %v", intervalStr, err)
-		return time.Minute, "fallback" // Default fallback
+	if err != nil || interval <= 0 {
+		log.Printf("Invalid telemetry interval %q, using 1m fallback", intervalStr)
+		return time.Minute, "fallback"
 	}
 
 	return interval, reason

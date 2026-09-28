@@ -8,7 +8,24 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
+
+	"radio-gaga/internal/models"
 )
+
+func TestGetTelemetryIntervalRejectsZero(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	defer client.Close()
+	ctx := context.Background()
+	if err := client.HSet(ctx, "vehicle", "state", "ready-to-drive").Err(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &models.Config{}
+	cfg.Telemetry.Intervals.Driving = "0s"
+	if interval, reason := GetTelemetryInterval(ctx, client, cfg); interval != time.Minute || reason != "fallback" {
+		t.Fatalf("interval = %v (%s), want 1m fallback", interval, reason)
+	}
+}
 
 func TestSysInfoFromProc(t *testing.T) {
 	if uptime := readUptimeSeconds(); uptime <= 0 {
