@@ -306,8 +306,11 @@ func handleBlinkersCommand(redisClient *redis.Client, ctx context.Context, param
 
 // handleHonkCommand handles the honk command
 func handleHonkCommand(client CommandHandlerClient, redisClient *redis.Client, ctx context.Context) error {
-	onTime := client.GetCommandParam("honk", "on_time", "100ms")
-	duration, err := time.ParseDuration(onTime.(string))
+	onTime, ok := client.GetCommandParam("honk", "on_time", "100ms").(string)
+	if !ok {
+		return fmt.Errorf("honk on_time must be a duration string")
+	}
+	duration, err := time.ParseDuration(onTime)
 	if err != nil {
 		duration = 100 * time.Millisecond // Default value
 	}
@@ -333,15 +336,27 @@ func handleLocateCommand(client CommandHandlerClient, redisClient *redis.Client,
 	param_honk_interval := client.GetCommandParam("locate", "honk_interval", "80ms")
 	param_interval := client.GetCommandParam("locate", "interval", "4s")
 
-	honk_time, err := time.ParseDuration(param_honk_time.(string))
+	honkTimeStr, ok := param_honk_time.(string)
+	if !ok {
+		return fmt.Errorf("locate honk_time must be a duration string")
+	}
+	honkIntervalStr, ok := param_honk_interval.(string)
+	if !ok {
+		return fmt.Errorf("locate honk_interval must be a duration string")
+	}
+	intervalStr, ok := param_interval.(string)
+	if !ok {
+		return fmt.Errorf("locate interval must be a duration string")
+	}
+	honk_time, err := time.ParseDuration(honkTimeStr)
 	if err != nil {
 		honk_time = 40 * time.Millisecond // Default value
 	}
-	honk_interval, err := time.ParseDuration(param_honk_interval.(string))
+	honk_interval, err := time.ParseDuration(honkIntervalStr)
 	if err != nil {
 		honk_interval = 80 * time.Millisecond // Default value
 	}
-	interval, err := time.ParseDuration(param_interval.(string))
+	interval, err := time.ParseDuration(intervalStr)
 	if err != nil {
 		interval = 4 * time.Second
 	}
@@ -389,16 +404,41 @@ func handleAlarmCommand(client CommandHandlerClient, redisClient *redis.Client, 
 		return fmt.Errorf("invalid alarm duration: %v", err)
 	}
 
-	flashHazards := client.GetCommandParam("alarm", "hazards.flash", true).(bool)
-	honkHorn := client.GetCommandParam("alarm", "horn.honk", true).(bool)
-	hornOnTime := client.GetCommandParam("alarm", "horn.on_time", "400ms").(string)
-	hornOffTime := client.GetCommandParam("alarm", "horn.off_time", "400ms").(string)
+	flashHazards, ok := client.GetCommandParam("alarm", "hazards.flash", true).(bool)
+	if !ok {
+		return fmt.Errorf("alarm hazards.flash must be a boolean")
+	}
+	honkHorn, ok := client.GetCommandParam("alarm", "horn.honk", true).(bool)
+	if !ok {
+		return fmt.Errorf("alarm horn.honk must be a boolean")
+	}
+	hornOnTime, ok := client.GetCommandParam("alarm", "horn.on_time", "400ms").(string)
+	if !ok {
+		return fmt.Errorf("alarm horn.on_time must be a duration string")
+	}
+	hornOffTime, ok := client.GetCommandParam("alarm", "horn.off_time", "400ms").(string)
+	if !ok {
+		return fmt.Errorf("alarm horn.off_time must be a duration string")
+	}
 
 	return startAlarmWithConfig(redisClient, ctx, duration, flashHazards, honkHorn, hornOnTime, hornOffTime)
 }
 
 // startAlarmWithConfig starts the alarm with the given configuration
 func startAlarmWithConfig(redisClient *redis.Client, ctx context.Context, duration time.Duration, flashHazards, honkHornEnabled bool, hornOnTime, hornOffTime string) error {
+	var onDuration, offDuration time.Duration
+	if honkHornEnabled {
+		var err error
+		onDuration, err = time.ParseDuration(hornOnTime)
+		if err != nil || onDuration <= 0 {
+			return fmt.Errorf("alarm horn.on_time must be a positive duration")
+		}
+		offDuration, err = time.ParseDuration(hornOffTime)
+		if err != nil || offDuration <= 0 || onDuration > time.Duration(math.MaxInt64)-offDuration {
+			return fmt.Errorf("alarm horn.off_time must be a positive duration with a valid cycle")
+		}
+	}
+
 	if flashHazards {
 		if err := redisClient.LPush(ctx, "scooter:blinker", "both").Err(); err != nil {
 			return err
@@ -406,8 +446,6 @@ func startAlarmWithConfig(redisClient *redis.Client, ctx context.Context, durati
 	}
 
 	if honkHornEnabled {
-		onDuration, _ := time.ParseDuration(hornOnTime)
-		offDuration, _ := time.ParseDuration(hornOffTime)
 		ticker := time.NewTicker(onDuration + offDuration)
 		done := make(chan bool)
 
@@ -459,6 +497,21 @@ func handleRedisCommand(client CommandHandlerClient, redisClient *redis.Client, 
 
 	var result interface{}
 	var err error
+
+	// All Redis operations except publish take a string key; hget/hset also take a string field.
+	switch cmd {
+	case "get", "set", "hget", "hset", "hgetall", "lpush", "lpop":
+		if len(args) > 0 {
+			if _, ok := args[0].(string); !ok {
+				return fmt.Errorf("redis key must be a string")
+			}
+		}
+	}
+	if (cmd == "hget" || cmd == "hset") && len(args) > 1 {
+		if _, ok := args[1].(string); !ok {
+			return fmt.Errorf("redis hash field must be a string")
+		}
+	}
 
 	switch cmd {
 	case "get":
