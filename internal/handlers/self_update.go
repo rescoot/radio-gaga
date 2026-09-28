@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	selfUpdateDeadline = 60 * time.Second
-	selfUpdateMaxBytes = 64 * 1024 * 1024
+	selfUpdateDownloadTimeout = 5 * time.Minute
+	selfUpdateProbeTimeout    = 60 * time.Second
+	selfUpdateMaxBytes        = 64 * 1024 * 1024
 )
 
 var (
@@ -88,7 +89,7 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		txnID = fmt.Sprintf("self-update-%d", time.Now().UnixNano())
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), selfUpdateDeadline)
+	ctx, cancel := context.WithTimeout(context.Background(), selfUpdateProbeTimeout)
 	defer cancel()
 
 	committed, runErr := manager.Run(
@@ -120,7 +121,7 @@ func downloadSelfUpdateBinary(url, algorithm, expectedChecksum string) ([]byte, 
 	}
 
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // Device clocks may be invalid.
-	httpClient := &http.Client{Transport: transport, Timeout: selfUpdateDeadline}
+	httpClient := &http.Client{Transport: transport, Timeout: selfUpdateDownloadTimeout}
 
 	response, err := httpClient.Get(url)
 	if err != nil {

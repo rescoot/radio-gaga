@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"radio-gaga/internal/models"
 )
@@ -29,6 +30,15 @@ func (m *MockCommandHandlerClient) PublishTelemetryData(current *models.Telemetr
 }
 func (m *MockCommandHandlerClient) GetConfigPath() string { return m.configPath }
 func (m *MockCommandHandlerClient) RequestReconnect()     {}
+
+func TestSelfUpdateAllowsSlowDownloads(t *testing.T) {
+	if selfUpdateDownloadTimeout < 2*time.Minute {
+		t.Fatalf("download timeout %s is too short for cellular transfers", selfUpdateDownloadTimeout)
+	}
+	if selfUpdateProbeTimeout >= selfUpdateDownloadTimeout {
+		t.Fatalf("probe timeout %s should not consume the download window %s", selfUpdateProbeTimeout, selfUpdateDownloadTimeout)
+	}
+}
 
 func TestSelfUpdateCommitsOnlyAfterCandidateProbeSucceeds(t *testing.T) {
 	tempDir := t.TempDir()
