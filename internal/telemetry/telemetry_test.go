@@ -34,6 +34,58 @@ func TestUptimeSecondsIsCached(t *testing.T) {
 	}
 }
 
+func TestECUVersionFromHash(t *testing.T) {
+	t.Run("omits unreported firmware", func(t *testing.T) {
+		if got := ecuVersionFromHash(map[string]string{}); got != nil {
+			t.Fatalf("ECU version = %#v, want nil", got)
+		}
+	})
+
+	t.Run("decodes the identification block", func(t *testing.T) {
+		got := ecuVersionFromHash(map[string]string{
+			"fw-version":           "0445400C",
+			"fw:base-version":      "4.0",
+			"fw:app-version":       "12",
+			"motor:rated-power-kw": "4",
+			"motor:max-speed-kmh":  "45",
+			"warranty-date":        "20240101",
+		})
+		if got == nil {
+			t.Fatal("ECU version = nil, want populated version")
+		}
+		if got.FirmwareVersion != "0445400C" || got.BaseVersion != "4.0" || got.AppVersion != "12" {
+			t.Errorf("ECU version = %#v", got)
+		}
+		if got.MotorRatedPowerKW != 4 || got.MotorMaxSpeedKMH != 45 || got.WarrantyDate != "20240101" {
+			t.Errorf("ECU identification = %#v", got)
+		}
+	})
+}
+
+func TestGetECUVersion(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	defer client.Close()
+	ctx := context.Background()
+
+	got, err := GetECUVersion(ctx, client)
+	if err != nil {
+		t.Fatalf("GetECUVersion() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("GetECUVersion() = %#v, want nil before firmware is reported", got)
+	}
+
+	server.HSet("engine-ecu", "fw-version", "0445400C", "fw:base-version", "4.0")
+	got, err = GetECUVersion(ctx, client)
+	if err != nil {
+		t.Fatalf("GetECUVersion() error = %v", err)
+	}
+	if got == nil || got.FirmwareVersion != "0445400C" || got.BaseVersion != "4.0" {
+		t.Errorf("GetECUVersion() = %#v", got)
+	}
+}
+
 func TestNavigationRouteSupported(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})

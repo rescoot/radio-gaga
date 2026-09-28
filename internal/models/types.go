@@ -246,17 +246,30 @@ type VehicleState struct {
 
 // EngineData represents the engine control unit data
 type EngineData struct {
-	Speed         int    `json:"speed"`
-	Odometer      *int   `json:"odometer,omitempty"`
-	MotorVoltage  int    `json:"motor_voltage"`
-	MotorCurrent  int    `json:"motor_current"`
-	Temperature   int    `json:"temperature"`
-	EngineState   string `json:"engine_state,omitempty"`
-	KersState     string `json:"kers_state,omitempty"`
-	KersReasonOff string `json:"kers_reason_off,omitempty"`
-	MotorRPM      int    `json:"motor_rpm"`
-	ThrottleState string `json:"throttle_state,omitempty"`
-	EngineFWVer   string `json:"engine_fw_version,omitempty"`
+	Speed         int         `json:"speed"`
+	Odometer      *int        `json:"odometer,omitempty"`
+	MotorVoltage  int         `json:"motor_voltage"`
+	MotorCurrent  int         `json:"motor_current"`
+	Temperature   int         `json:"temperature"`
+	EngineState   string      `json:"engine_state,omitempty"`
+	KersState     string      `json:"kers_state,omitempty"`
+	KersReasonOff string      `json:"kers_reason_off,omitempty"`
+	MotorRPM      int         `json:"motor_rpm"`
+	ThrottleState string      `json:"throttle_state,omitempty"`
+	EngineFWVer   string      `json:"engine_fw_version,omitempty"`
+	ECUVersion    *ECUVersion `json:"ecu_version,omitempty"`
+}
+
+// ECUVersion identifies the motor controller firmware. ecu-service publishes
+// the firmware identification block from the controller's Status5 frame into
+// the engine-ecu hash.
+type ECUVersion struct {
+	FirmwareVersion   string `json:"firmware_version,omitempty"`
+	BaseVersion       string `json:"base_version,omitempty"`
+	AppVersion        string `json:"app_version,omitempty"`
+	MotorRatedPowerKW int    `json:"motor_rated_power_kw,omitempty"`
+	MotorMaxSpeedKMH  int    `json:"motor_max_speed_kmh,omitempty"`
+	WarrantyDate      string `json:"warranty_date,omitempty"`
 }
 
 // BatteryData represents data for a main battery

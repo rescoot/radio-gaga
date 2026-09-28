@@ -157,6 +157,37 @@ func cbbBatteryFromHash(cbbBattery map[string]string) *models.CBBatteryData {
 	}
 }
 
+// ecuVersionFromHash extracts the controller firmware identification block
+// that ecu-service publishes into the engine-ecu hash. It returns nil until the
+// controller has reported a firmware version.
+func ecuVersionFromHash(engineEcu map[string]string) *models.ECUVersion {
+	firmware := engineEcu["fw-version"]
+	if firmware == "" {
+		return nil
+	}
+
+	return &models.ECUVersion{
+		FirmwareVersion:   firmware,
+		BaseVersion:       engineEcu["fw:base-version"],
+		AppVersion:        engineEcu["fw:app-version"],
+		MotorRatedPowerKW: utils.ParseInt(engineEcu["motor:rated-power-kw"]),
+		MotorMaxSpeedKMH:  utils.ParseInt(engineEcu["motor:max-speed-kmh"]),
+		WarrantyDate:      engineEcu["warranty-date"],
+	}
+}
+
+// GetECUVersion reads the engine-ecu hash and returns the controller firmware
+// identification block. It returns nil when the controller has not reported a
+// firmware version yet.
+func GetECUVersion(ctx context.Context, redisClient *redis.Client) (*models.ECUVersion, error) {
+	engineEcu, err := redisClient.HGetAll(ctx, "engine-ecu").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get engine ECU data: %v", err)
+	}
+
+	return ecuVersionFromHash(engineEcu), nil
+}
+
 func navigationRouteSupported(client *redis.Client, ctx context.Context) bool {
 	value, err := client.HGet(ctx, "system", "capabilities").Result()
 	if err != nil || !strings.HasPrefix(value, "cap:ext:") {
@@ -239,6 +270,7 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 		MotorRPM:      utils.ParseInt(engineEcu["rpm"]),
 		ThrottleState: engineEcu["throttle"],
 		EngineFWVer:   engineEcu["fw-version"],
+		ECUVersion:    ecuVersionFromHash(engineEcu),
 	}
 
 	// Get battery data
