@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -39,6 +40,86 @@ func TestSelfUpdateAllowsSlowDownloads(t *testing.T) {
 	}
 	if selfUpdateProbeTimeout >= selfUpdateDownloadTimeout {
 		t.Fatalf("probe timeout %s should not consume the download window %s", selfUpdateProbeTimeout, selfUpdateDownloadTimeout)
+	}
+}
+
+func TestFindSelfUpdateMountPointUsesDeepestContainingMount(t *testing.T) {
+	mountInfo := strings.NewReader(`25 1 179:1 / / rw,relatime - ext4 /dev/mmcblk1p1 rw
+26 25 0:20 /usr /usr ro,relatime - bind /usr ro
+27 26 0:21 / /usr/share/special ro,relatime - bind special ro
+`)
+	got, err := findSelfUpdateMountPointFrom(mountInfo, "/usr/bin")
+	if err != nil {
+		t.Fatalf("findSelfUpdateMountPointFrom() error = %v", err)
+	}
+	if got != "/usr" {
+		t.Fatalf("mount point = %q, want /usr", got)
+	}
+}
+
+func TestEnsureSelfUpdateWritableRemountsExecutableFilesystemAndRechecks(t *testing.T) {
+	originalMount, originalMountPoint, originalProbe := selfUpdateMount, selfUpdateMountPoint, selfUpdateProbeWritable
+	defer func() {
+		selfUpdateMount = originalMount
+		selfUpdateMountPoint = originalMountPoint
+		selfUpdateProbeWritable = originalProbe
+	}()
+
+	probeCalls := 0
+	selfUpdateProbeWritable = func(string) error {
+		probeCalls++
+		if probeCalls == 1 {
+			return errors.New("read-only file system")
+		}
+		return nil
+	}
+	selfUpdateMountPoint = func(string) (string, error) { return "/usr", nil }
+	var mounts []string
+	selfUpdateMount = func(target, mode string) error {
+		mounts = append(mounts, target+":"+mode)
+		return nil
+	}
+
+	remountedTarget, err := ensureSelfUpdateWritable("/usr/bin")
+	if err != nil {
+		t.Fatalf("ensureSelfUpdateWritable() error = %v", err)
+	}
+	if remountedTarget != "/usr" {
+		t.Fatalf("remounted target = %q, want /usr", remountedTarget)
+	}
+	if probeCalls != 2 {
+		t.Fatalf("write probe calls = %d, want 2", probeCalls)
+	}
+	if fmt.Sprint(mounts) != "[/usr:rw]" {
+		t.Fatalf("mounts = %v, want [/usr:rw]", mounts)
+	}
+}
+
+func TestEnsureSelfUpdateWritableRejectsIneffectiveRemount(t *testing.T) {
+	originalMount, originalMountPoint, originalProbe := selfUpdateMount, selfUpdateMountPoint, selfUpdateProbeWritable
+	defer func() {
+		selfUpdateMount = originalMount
+		selfUpdateMountPoint = originalMountPoint
+		selfUpdateProbeWritable = originalProbe
+	}()
+
+	selfUpdateProbeWritable = func(string) error { return errors.New("read-only file system") }
+	selfUpdateMountPoint = func(string) (string, error) { return "/usr", nil }
+	var mounts []string
+	selfUpdateMount = func(target, mode string) error {
+		mounts = append(mounts, target+":"+mode)
+		return nil
+	}
+
+	remountedTarget, err := ensureSelfUpdateWritable("/usr/bin")
+	if err == nil || !strings.Contains(err.Error(), "still not writable") {
+		t.Fatalf("ensureSelfUpdateWritable() error = %v", err)
+	}
+	if remountedTarget != "" {
+		t.Fatalf("remounted target = %q after ineffective remount", remountedTarget)
+	}
+	if fmt.Sprint(mounts) != "[/usr:rw /usr:ro]" {
+		t.Fatalf("mounts = %v, want [/usr:rw /usr:ro]", mounts)
 	}
 }
 

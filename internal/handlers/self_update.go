@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -9,9 +10,9 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -31,6 +32,15 @@ const (
 var (
 	selfUpdateExecutable = os.Executable
 	selfUpdateRestart    = commands.HandleRestartCommand
+	selfUpdateMount      = func(target, mode string) error {
+		output, err := exec.Command("mount", "-o", "remount,"+mode, target).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("mount -o remount,%s %s: %w: %s", mode, target, err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}
+	selfUpdateMountPoint    = findSelfUpdateMountPoint
+	selfUpdateProbeWritable = probeSelfUpdateWritable
 )
 
 // handleSelfUpdateCommand downloads and verifies the candidate, executes that
@@ -72,12 +82,12 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		return fmt.Errorf("resolve current executable symlinks: %w", err)
 	}
 
-	remounted, err := ensureSelfUpdateWritable(filepath.Dir(executablePath))
+	remountedTarget, err := ensureSelfUpdateWritable(filepath.Dir(executablePath))
 	if err != nil {
 		return err
 	}
-	if remounted {
-		defer restoreSelfUpdateReadOnly()
+	if remountedTarget != "" {
+		defer restoreSelfUpdateReadOnly(remountedTarget)
 	}
 
 	manager := &txn.Manager{
@@ -169,27 +179,87 @@ func downloadSelfUpdateBinary(url, algorithm, expectedChecksum string) ([]byte, 
 	return binary, nil
 }
 
-// ensureSelfUpdateWritable remounts / read-write when the executable directory
-// is on a read-only root filesystem. It returns true only when it remounted /.
-func ensureSelfUpdateWritable(dir string) (bool, error) {
-	probe, err := os.CreateTemp(dir, ".radio-gaga-write-test-*")
-	if err == nil {
-		name := probe.Name()
-		_ = probe.Close()
-		_ = os.Remove(name)
-		return false, nil
+// ensureSelfUpdateWritable remounts the filesystem containing the executable
+// directory read-write. Stock OSTree scooters mount /usr separately from /, so
+// remounting / alone does not make /usr/bin writable. The returned mount point
+// is empty when no remount was needed.
+func ensureSelfUpdateWritable(dir string) (string, error) {
+	initialErr := selfUpdateProbeWritable(dir)
+	if initialErr == nil {
+		return "", nil
 	}
 
-	log.Printf("Self-update executable directory is not writable; remounting root read-write")
-	if mountErr := syscall.Mount("", "/", "", syscall.MS_REMOUNT, ""); mountErr != nil {
-		return false, fmt.Errorf("make executable directory writable (initial error: %v): %w", err, mountErr)
+	target, err := selfUpdateMountPoint(dir)
+	if err != nil {
+		return "", fmt.Errorf("locate executable filesystem (initial error: %v): %w", initialErr, err)
 	}
-	return true, nil
+	// Use the platform's mount helper rather than a bare mount(2) call so it
+	// supplies the existing device and filesystem details for the remount.
+	log.Printf("Self-update executable directory is not writable; remounting %s read-write", target)
+	if err := selfUpdateMount(target, "rw"); err != nil {
+		return "", fmt.Errorf("make executable directory writable (initial error: %v): %w", initialErr, err)
+	}
+	if err := selfUpdateProbeWritable(dir); err != nil {
+		// We cannot proceed, but still make a best-effort attempt to restore the
+		// original read-only state before returning the useful write error.
+		_ = selfUpdateMount(target, "ro")
+		return "", fmt.Errorf("remount of %s reported success but executable directory is still not writable: %w", target, err)
+	}
+	return target, nil
 }
 
-func restoreSelfUpdateReadOnly() {
-	log.Printf("Self-update remounting root read-only")
-	if err := syscall.Mount("", "/", "", syscall.MS_REMOUNT|syscall.MS_RDONLY, ""); err != nil {
-		log.Printf("Warning: failed to remount root read-only: %v", err)
+func findSelfUpdateMountPoint(path string) (string, error) {
+	file, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	return findSelfUpdateMountPointFrom(file, path)
+}
+
+func findSelfUpdateMountPointFrom(mountInfo io.Reader, path string) (string, error) {
+	path = filepath.Clean(path)
+	best := ""
+	scanner := bufio.NewScanner(mountInfo)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 5 {
+			continue
+		}
+		mountPoint := strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`).Replace(fields[4])
+		if path == mountPoint || (mountPoint != "/" && strings.HasPrefix(path, mountPoint+"/")) || mountPoint == "/" {
+			if len(mountPoint) > len(best) {
+				best = mountPoint
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	if best == "" {
+		return "", fmt.Errorf("no mount point found for %s", path)
+	}
+	return best, nil
+}
+
+func probeSelfUpdateWritable(dir string) error {
+	probe, err := os.CreateTemp(dir, ".radio-gaga-write-test-*")
+	if err != nil {
+		return err
+	}
+	name := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return os.Remove(name)
+}
+
+func restoreSelfUpdateReadOnly(target string) {
+	log.Printf("Self-update remounting %s read-only", target)
+	if err := selfUpdateMount(target, "ro"); err != nil {
+		// Restoring read-only is deliberately best-effort. It must never turn a
+		// successfully installed update into a failed command response.
+		log.Printf("Warning: failed to remount %s read-only: %v", target, err)
 	}
 }
