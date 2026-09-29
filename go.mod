@@ -7,6 +7,7 @@ require (
 	github.com/beevik/ntp v1.4.3
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/go-redis/redis/v8 v8.11.5
+	github.com/klauspost/compress v1.18.4
 	github.com/librescoot/redis-ipc v0.15.3
 	gopkg.in/yaml.v2 v2.4.0
 )

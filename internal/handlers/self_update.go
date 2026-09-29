@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"radio-gaga/internal/handlers/commands"
 	"radio-gaga/internal/models"
@@ -122,8 +125,13 @@ func downloadSelfUpdateBinary(url, algorithm, expectedChecksum string) ([]byte, 
 
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // Device clocks may be invalid.
 	httpClient := &http.Client{Transport: transport, Timeout: selfUpdateDownloadTimeout}
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("invalid update URL: %w", err)
+	}
+	request.Header.Set("Accept", "application/zstd, application/octet-stream")
 
-	response, err := httpClient.Get(url)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download new binary: %w", err)
 	}
@@ -133,7 +141,18 @@ func downloadSelfUpdateBinary(url, algorithm, expectedChecksum string) ([]byte, 
 		return nil, fmt.Errorf("failed to download new binary: HTTP %d", response.StatusCode)
 	}
 
-	limited := io.LimitReader(response.Body, selfUpdateMaxBytes+1)
+	reader := io.Reader(response.Body)
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err == nil && mediaType == "application/zstd" {
+		decoder, decodeErr := zstd.NewReader(response.Body, zstd.WithDecoderMaxMemory(selfUpdateMaxBytes))
+		if decodeErr != nil {
+			return nil, fmt.Errorf("open compressed update: %w", decodeErr)
+		}
+		defer decoder.Close()
+		reader = decoder
+	}
+
+	limited := io.LimitReader(reader, selfUpdateMaxBytes+1)
 	binary, err := io.ReadAll(io.TeeReader(limited, hasher))
 	if err != nil {
 		return nil, fmt.Errorf("failed to download new binary: %w", err)

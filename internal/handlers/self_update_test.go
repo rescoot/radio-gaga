@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
+
 	"radio-gaga/internal/models"
 )
 
@@ -37,6 +39,46 @@ func TestSelfUpdateAllowsSlowDownloads(t *testing.T) {
 	}
 	if selfUpdateProbeTimeout >= selfUpdateDownloadTimeout {
 		t.Fatalf("probe timeout %s should not consume the download window %s", selfUpdateProbeTimeout, selfUpdateDownloadTimeout)
+	}
+}
+
+func TestSelfUpdateDownloadsZstdAndVerifiesUncompressedChecksum(t *testing.T) {
+	binary := []byte("a verified executable candidate")
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed := encoder.EncodeAll(binary, nil)
+	encoder.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept"), "application/zstd") {
+			t.Errorf("missing zstd support in Accept: %q", r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "application/zstd")
+		_, _ = w.Write(compressed)
+	}))
+	defer server.Close()
+
+	digest := sha256.Sum256(binary)
+	got, err := downloadSelfUpdateBinary(server.URL, "sha256", fmt.Sprintf("%x", digest[:]))
+	if err != nil || string(got) != string(binary) {
+		t.Fatalf("compressed download = %q, %v", got, err)
+	}
+	_, err = downloadSelfUpdateBinary(server.URL, "sha256", strings.Repeat("0", 64))
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("compressed checksum mismatch = %v", err)
+	}
+}
+
+func TestSelfUpdateRejectsInvalidZstd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zstd")
+		_, _ = w.Write([]byte("not a zstd frame"))
+	}))
+	defer server.Close()
+	_, err := downloadSelfUpdateBinary(server.URL, "sha256", strings.Repeat("0", 64))
+	if err == nil {
+		t.Fatal("invalid compressed binary must be rejected")
 	}
 }
 
