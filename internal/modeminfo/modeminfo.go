@@ -67,19 +67,25 @@ func StartPoller(ctx context.Context) {
 	}()
 }
 
-// mmcliModemEnvelope mirrors the subset of `mmcli -J -m any` we care about.
+// mmcliModemList mirrors `mmcli -J -L`. Older ModemManager versions do not
+// support "any" as a modem selector, so callers must resolve a concrete ID.
+type mmcliModemList struct {
+	Modems []string `json:"modem-list"`
+}
+
+// mmcliModemEnvelope mirrors the subset of `mmcli -J -m ID` we care about.
 type mmcliModemEnvelope struct {
 	Modem struct {
 		Generic struct {
-			Manufacturer         string   `json:"manufacturer"`
-			Model                string   `json:"model"`
-			HardwareRevision     string   `json:"hardware-revision"`
-			FirmwareRevision     string   `json:"firmware-revision"`
-			DeviceIdentifier     string   `json:"device-identifier"`
-			EquipmentIdentifier  string   `json:"equipment-identifier"`
-			OwnNumbers           []string `json:"own-numbers"`
-			SupportedModes       []string `json:"supported-modes"`
-			CurrentModes         string   `json:"current-modes"`
+			Manufacturer        string   `json:"manufacturer"`
+			Model               string   `json:"model"`
+			HardwareRevision    string   `json:"hardware-revision"`
+			FirmwareRevision    string   `json:"firmware-revision"`
+			DeviceIdentifier    string   `json:"device-identifier"`
+			EquipmentIdentifier string   `json:"equipment-identifier"`
+			OwnNumbers          []string `json:"own-numbers"`
+			SupportedModes      []string `json:"supported-modes"`
+			CurrentModes        string   `json:"current-modes"`
 		} `json:"generic"`
 	} `json:"modem"`
 }
@@ -87,8 +93,13 @@ type mmcliModemEnvelope struct {
 // Fetch performs one attempt to read modem identity via mmcli. Returns an error
 // if no modem is present or mmcli is unavailable.
 func Fetch(ctx context.Context) (*Info, error) {
+	modemID, err := discoverModemID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	var env mmcliModemEnvelope
-	if err := runMMCLIJSON(ctx, &env, "-J", "-m", "any"); err != nil {
+	if err := runMMCLIJSON(ctx, &env, "-J", "-m", modemID); err != nil {
 		return nil, err
 	}
 	g := env.Modem.Generic
@@ -104,7 +115,7 @@ func Fetch(ctx context.Context) (*Info, error) {
 		CurrentModes:     g.CurrentModes,
 	}
 
-	if rev, err := fetchVendorFirmware(ctx); err != nil {
+	if rev, err := fetchVendorFirmware(ctx, modemID); err != nil {
 		log.Printf("modeminfo: AT+SIMCOMATI failed: %v", err)
 	} else {
 		info.VendorFirmwareRevision = rev
@@ -113,13 +124,32 @@ func Fetch(ctx context.Context) (*Info, error) {
 	return info, nil
 }
 
+func discoverModemID(ctx context.Context) (string, error) {
+	var list mmcliModemList
+	if err := runMMCLIJSON(ctx, &list, "-J", "-L"); err != nil {
+		return "", err
+	}
+	if len(list.Modems) == 0 {
+		return "", fmt.Errorf("mmcli reported no modems")
+	}
+
+	path := strings.TrimRight(list.Modems[0], "/")
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		path = path[i+1:]
+	}
+	if path == "" {
+		return "", fmt.Errorf("mmcli returned invalid modem path %q", list.Modems[0])
+	}
+	return path, nil
+}
+
 var revisionRE = regexp.MustCompile(`(?m)^\s*Revision:\s*(.+?)\s*$`)
 
 // fetchVendorFirmware runs AT+SIMCOMATI via mmcli and extracts the Revision
 // line. mmcli's `--command` always returns YAML-wrapped plain text (even with
 // `-J`), so we just regex-scrape the raw output.
-func fetchVendorFirmware(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "mmcli", "-m", "any", "--command=AT+SIMCOMATI")
+func fetchVendorFirmware(ctx context.Context, modemID string) (string, error) {
+	cmd := exec.CommandContext(ctx, "mmcli", "-m", modemID, "--command=AT+SIMCOMATI")
 	raw, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("mmcli --command=AT+SIMCOMATI: %v: %s", err, strings.TrimSpace(string(raw)))
