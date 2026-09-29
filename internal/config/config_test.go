@@ -40,6 +40,93 @@ func withFakeStateDir(t *testing.T) string {
 	return dir
 }
 
+func TestLoadConfig_AppliesDefaultsToOmittedYAMLFields(t *testing.T) {
+	withFakeStateDir(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "radio-gaga.yml")
+	yaml := `
+scooter:
+  identifier: TESTVIN
+  token: testtoken
+mqtt:
+  broker_url: ssl://example.test:8883
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadConfig(&models.CommandLineFlags{ConfigPath: path})
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if !cfg.NTP.Enabled || cfg.NTP.Server != "pool.ntp.rescoot.org" {
+		t.Errorf("NTP defaults = %+v", cfg.NTP)
+	}
+	if cfg.Environment != "production" {
+		t.Errorf("Environment = %q, want production", cfg.Environment)
+	}
+	if cfg.MQTT.KeepAlive != "30s" {
+		t.Errorf("MQTT.KeepAlive = %q, want 30s", cfg.MQTT.KeepAlive)
+	}
+	if cfg.RedisURL != "redis://127.0.0.1:6379" {
+		t.Errorf("RedisURL = %q, want default", cfg.RedisURL)
+	}
+	if cfg.Telemetry.Intervals.Driving != "30s" || cfg.Telemetry.Priorities.Immediate != "10s" {
+		t.Errorf("telemetry defaults not applied: %+v", cfg.Telemetry)
+	}
+	if cfg.Events.Enabled == nil || !*cfg.Events.Enabled || cfg.Events.MaxRetries != 10 {
+		t.Errorf("events defaults = %+v", cfg.Events)
+	}
+}
+
+func TestLoadConfig_YAMLOverridesDefaults(t *testing.T) {
+	withFakeStateDir(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "radio-gaga.yml")
+	yaml := `
+scooter:
+  identifier: TESTVIN
+  token: testtoken
+environment: development
+mqtt:
+  broker_url: ssl://example.test:8883
+  keepalive: 45s
+ntp:
+  enabled: false
+redis_url: redis://custom:6379
+telemetry:
+  intervals:
+    driving: 45s
+  buffer:
+    enabled: true
+events:
+  enabled: false
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadConfig(&models.CommandLineFlags{ConfigPath: path})
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.NTP.Enabled {
+		t.Error("explicit ntp.enabled=false was overwritten")
+	}
+	if cfg.NTP.Server != "pool.ntp.rescoot.org" {
+		t.Errorf("omitted NTP server = %q, want default", cfg.NTP.Server)
+	}
+	if cfg.Environment != "development" || cfg.MQTT.KeepAlive != "45s" || cfg.RedisURL != "redis://custom:6379" {
+		t.Errorf("explicit overrides not retained: environment=%q keepalive=%q redis=%q", cfg.Environment, cfg.MQTT.KeepAlive, cfg.RedisURL)
+	}
+	if cfg.Telemetry.Intervals.Driving != "45s" || cfg.Telemetry.Intervals.Standby != "5m" || !cfg.Telemetry.Buffer.Enabled {
+		t.Errorf("nested telemetry merge incorrect: %+v", cfg.Telemetry)
+	}
+	if cfg.Events.Enabled == nil || *cfg.Events.Enabled {
+		t.Errorf("explicit events.enabled=false was overwritten: %+v", cfg.Events)
+	}
+}
+
 func TestLoadConfig_AutoDetectFillsBufferPaths(t *testing.T) {
 	autoDir := withFakeStateDir(t)
 	configPath := writeMinimalConfig(t)

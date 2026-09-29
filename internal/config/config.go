@@ -73,53 +73,24 @@ func ParseFlags() *models.CommandLineFlags {
 
 // LoadConfig loads configuration from file and/or command line flags
 func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) {
-	var config *models.Config
+	// Unmarshal YAML over a fully initialized value so omitted keys retain their
+	// documented defaults. This is especially important for booleans, where an
+	// omitted value would otherwise be indistinguishable from explicit false.
+	config := defaultConfig()
 
-	// Try to load config file
 	configPath := flags.ConfigPath
 	if configPath == "" {
 		configPath = "radio-gaga.yml"
 	}
 
-	// Try to read the config file
 	if data, err := os.ReadFile(configPath); err == nil {
-		config = &models.Config{}
 		if err := yaml.Unmarshal(data, config); err != nil {
 			return nil, "", fmt.Errorf("failed to parse config file: %v", err)
 		}
 		log.Printf("Loaded configuration from %s", configPath)
 	} else if flags.ConfigPath != "" {
-		// Only return error if config file was explicitly specified
+		// Only return error if config file was explicitly specified.
 		return nil, "", fmt.Errorf("failed to read config file: %v", err)
-	} else {
-		// Initialize with default values
-		config = &models.Config{
-			Scooter:     models.ScooterConfig{},
-			Environment: "production",
-			MQTT: models.MQTTConfig{
-				KeepAlive: "30s",
-			},
-			NTP: models.NTPConfig{
-				Enabled: true,
-				Server:  "pool.ntp.rescoot.org",
-			},
-			RedisURL: "redis://127.0.0.1:6379",
-			Telemetry: models.TelemetryConfig{
-				Intervals: models.TelemetryIntervals{
-					Driving:          "1m",
-					Standby:          "5m",
-					StandbyNoBattery: "8h",
-					Hibernate:        "24h",
-				},
-				Buffer: models.BufferConfig{
-					Enabled:       false,
-					MaxSize:       1000,
-					MaxRetries:    5,
-					RetryInterval: "1m",
-				},
-				TransmitPeriod: "5m",
-			},
-		}
 	}
 
 	// State directory is always auto-detected. The previous configurability
@@ -210,6 +181,48 @@ func LoadConfig(flags *models.CommandLineFlags) (*models.Config, string, error) 
 	}
 
 	return config, configPath, nil
+}
+
+func defaultConfig() *models.Config {
+	eventsEnabled := true
+	return &models.Config{
+		Environment: "production",
+		MQTT: models.MQTTConfig{
+			KeepAlive: "30s",
+		},
+		NTP: models.NTPConfig{
+			Enabled: true,
+			Server:  "pool.ntp.rescoot.org",
+		},
+		RedisURL: "redis://127.0.0.1:6379",
+		Telemetry: models.TelemetryConfig{
+			Intervals: models.TelemetryIntervals{
+				Driving:          "30s",
+				Standby:          "5m",
+				StandbyNoBattery: "8h",
+				Hibernate:        "24h",
+			},
+			Priorities: models.PriorityConfig{
+				Immediate: "10s",
+				Quick:     "30s",
+				Medium:    "5m",
+				Slow:      "1h",
+			},
+			Buffer: models.BufferConfig{
+				MaxSize:       1000,
+				MaxRetries:    5,
+				RetryInterval: "1m",
+			},
+			TransmitPeriod: "5m",
+		},
+		Events: models.EventsConfig{
+			Enabled:    &eventsEnabled,
+			MaxRetries: 10,
+		},
+		API: models.APIConfig{
+			Timeout: "10s",
+		},
+	}
 }
 
 // ValidateConfig validates configuration
