@@ -926,6 +926,8 @@ func handleLocationsMergeCommand(redisClient *redis.Client, ctx context.Context,
 	nextSlot := maxSlot + 1
 	added := 0
 	skipped := 0
+	fields := make(map[string]interface{})
+	var changedRecords []string
 
 	for _, locRaw := range locationsSlice {
 		locMap, ok := locRaw.(map[string]interface{})
@@ -959,26 +961,29 @@ func handleLocationsMergeCommand(redisClient *redis.Client, ctx context.Context,
 		lastUsedAt, _ := locMap["last_used_at"].(string)
 
 		prefix := fmt.Sprintf("dashboard.saved-locations.%d", nextSlot)
-		fields := map[string]interface{}{
-			prefix + ".latitude":     fmt.Sprintf("%f", lat),
-			prefix + ".longitude":    fmt.Sprintf("%f", lng),
-			prefix + ".label":        label,
-			prefix + ".created-at":   createdAt,
-			prefix + ".last-used-at": lastUsedAt,
-		}
-
-		if err := redisClient.HSet(ctx, "settings", fields).Err(); err != nil {
-			return fmt.Errorf("failed to write location slot %d: %v", nextSlot, err)
-		}
+		fields[prefix+".latitude"] = fmt.Sprintf("%f", lat)
+		fields[prefix+".longitude"] = fmt.Sprintf("%f", lng)
+		fields[prefix+".label"] = label
+		fields[prefix+".created-at"] = createdAt
+		fields[prefix+".last-used-at"] = lastUsedAt
+		changedRecords = append(changedRecords, prefix)
 
 		existingCoords = append(existingCoords, existingLoc{lat: lat, lng: lng})
 		nextSlot++
 		added++
 	}
 
-	// Notify the dashboard
-	if err := redisClient.Publish(ctx, "settings", "dashboard.saved-locations").Err(); err != nil {
-		log.Printf("Warning: failed to publish saved-locations update: %v", err)
+	if len(fields) > 0 {
+		_, err := redisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HSet(ctx, "settings", fields)
+			for _, record := range changedRecords {
+				pipe.Publish(ctx, "settings", record)
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to write saved locations: %v", err)
+		}
 	}
 
 	log.Printf("locations:merge complete: %d added, %d skipped (duplicate or invalid)", added, skipped)
