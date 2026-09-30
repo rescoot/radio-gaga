@@ -155,6 +155,26 @@ func TestSmoothParkedGPS(t *testing.T) {
 	})
 }
 
+func TestTelemetryToMap_ServiceModeFalseTransition(t *testing.T) {
+	active := &models.TelemetryData{Version: 2, Dashboard: models.DashboardStatus{ServiceModeActive: true}}
+	inactive := &models.TelemetryData{Version: 2, Dashboard: models.DashboardStatus{ServiceModeActive: false}}
+
+	prev, err := telemetryToMap(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	curr, err := telemetryToMap(inactive)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _ := computeDelta(prev, curr)
+	dashboard := delta["dashboard"].(map[string]any)
+	if got, ok := dashboard["service_mode_active"]; !ok || got != false {
+		t.Fatalf("service_mode_active delta = %#v, want explicit false", got)
+	}
+}
+
 func TestTelemetryToMap_V2Shape(t *testing.T) {
 	td := &models.TelemetryData{Version: 2}
 	td.VehicleState = models.VehicleState{State: "stand-by"}

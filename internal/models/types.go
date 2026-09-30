@@ -409,9 +409,10 @@ type KeycardStatus struct {
 
 // DashboardStatus represents dashboard status
 type DashboardStatus struct {
-	Mode         string `json:"mode"`
-	Ready        bool   `json:"ready"`
-	SerialNumber string `json:"serial_number"`
+	Mode              string `json:"mode"`
+	Ready             bool   `json:"ready"`
+	SerialNumber      string `json:"serial_number"`
+	ServiceModeActive bool   `json:"service_mode_active"`
 }
 
 // NavigationData represents navigation data

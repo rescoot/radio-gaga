@@ -37,6 +37,9 @@ var FieldPriorities = map[string]Priority{
 	"vehicle[handlebar:lock-sensor]": Immediate,
 	"vehicle[blinker:state]":         Immediate,
 	"power-manager[state]":           Immediate,
+	// Service mode disables several safety/standby behaviours. Report both
+	// enable and disable transitions without waiting for the regular interval.
+	"dashboard[service-mode-active]": Immediate,
 
 	// Quick priority - frequently changing important data.
 	// GPS position (latitude/longitude/altitude/course) is deliberately NOT

@@ -201,6 +201,15 @@ func navigationRouteSupported(client *redis.Client, ctx context.Context) bool {
 	return false
 }
 
+func dashboardStatusFromHash(dashboard map[string]string) models.DashboardStatus {
+	return models.DashboardStatus{
+		Mode:              dashboard["mode"],
+		Ready:             dashboard["ready"] == "true",
+		SerialNumber:      dashboard["serial-number"],
+		ServiceModeActive: dashboard["service-mode-active"] == "true",
+	}
+}
+
 // GetTelemetryFromRedis retrieves telemetry data from Redis.
 // monotonicRef should be captured at process start with time.Now() (preserving monotonic reading).
 // clockValid indicates whether the system clock has been validated (e.g. via NTP).
@@ -303,11 +312,7 @@ func GetTelemetryFromRedis(ctx context.Context, redisClient *redis.Client, confi
 	if err != nil {
 		return nil, fmt.Errorf("failed to get dashboard status: %v", err)
 	}
-	telemetry.Dashboard = models.DashboardStatus{
-		Mode:         dashboard["mode"],
-		Ready:        dashboard["ready"] == "true",
-		SerialNumber: dashboard["serial-number"],
-	}
+	telemetry.Dashboard = dashboardStatusFromHash(dashboard)
 
 	// Get system information
 	system, err := redisClient.HGetAll(ctx, "system").Result()

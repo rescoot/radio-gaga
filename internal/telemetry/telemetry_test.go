@@ -122,6 +122,23 @@ func TestNavigationRouteSupported(t *testing.T) {
 	}
 }
 
+func TestDashboardStatusFromHash(t *testing.T) {
+	active := dashboardStatusFromHash(map[string]string{
+		"mode":                "speedometer",
+		"ready":               "true",
+		"serial-number":       "DBC123",
+		"service-mode-active": "true",
+	})
+	if active.Mode != "speedometer" || !active.Ready || active.SerialNumber != "DBC123" || !active.ServiceModeActive {
+		t.Fatalf("dashboard status = %#v", active)
+	}
+
+	inactive := dashboardStatusFromHash(map[string]string{"service-mode-active": "false"})
+	if inactive.ServiceModeActive {
+		t.Fatalf("dashboard status = %#v, want service mode inactive", inactive)
+	}
+}
+
 func TestAuxBatteryFromHash(t *testing.T) {
 	t.Run("omits missing startup data", func(t *testing.T) {
 		if got := auxBatteryFromHash(map[string]string{}); got != nil {

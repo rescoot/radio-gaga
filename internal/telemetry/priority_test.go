@@ -17,6 +17,7 @@ func TestGetFieldPriority_ExactMatch(t *testing.T) {
 		{"vehicle", "handlebar:lock-sensor", Immediate},
 		{"vehicle", "blinker:state", Immediate},
 		{"power-manager", "state", Immediate},
+		{"dashboard", "service-mode-active", Immediate},
 		{"gps", "speed", Quick},
 		{"gps", "state", Quick},
 		{"battery:0", "charge", Quick},
