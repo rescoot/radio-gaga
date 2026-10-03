@@ -1,115 +1,58 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 error_exit() {
   echo "Error: $1" >&2
   exit 1
 }
 
+SUNSHINE_URL="${SUNSHINE_URL:-https://sunshine.rescoot.org}"
+SUNSHINE_URL="${SUNSHINE_URL%/}"
 FORCE=false
 for arg in "$@"; do
-  [[ "$arg" == "--force" ]] && FORCE=true
+  case "$arg" in
+    --force) FORCE=true ;;
+    --help|-h)
+      echo "Usage: BOOTSTRAP_TOKEN=<token> [SUNSHINE_URL=https://sunshine.rescoot.org] bash install.sh [--force]"
+      echo "Generate an installer link in Sunshine Account settings; developer mode is not required."
+      echo "If BOOTSTRAP_TOKEN is unset, the script prompts for it."
+      echo "--force skips root and platform checks; the installer still needs permission to write system files."
+      exit 0
+      ;;
+    *) error_exit "Unknown option: $arg" ;;
+  esac
 done
 
-if [[ $EUID -ne 0 ]] && [[ "$FORCE" != true ]]; then
+if [[ $EUID -ne 0 && "$FORCE" != true ]]; then
   error_exit "This script must be run as root."
 fi
 
-if [[ ! "$(hostname)" =~ ^mdb-.*[0-9]+$ ]] && [[ "$FORCE" != true ]]; then
-  error_exit "This script must be run on an unu Scooter Pro MDB."
+if [[ "$FORCE" != true ]] && ! grep -Eq '^ID="?librescoot' /etc/os-release && ! grep -q 'scooterOS' /etc/issue; then
+  error_exit "Run this installer on a Librescoot or ScooterOS scooter."
 fi
 
-if ! grep -q "scooterOS" /etc/issue && [[ "$FORCE" != true ]]; then
-  error_exit "This script must be run on an unu Scooter Pro (scooterOS)."
-fi
+[[ "$SUNSHINE_URL" == https://* ]] || error_exit "SUNSHINE_URL must use HTTPS."
 
-if [[ "$FORCE" != true ]]; then
-  cd || error_exit "Failed to change to home directory."
-fi
-
-if [[ "$(pwd)" != "/var/rootdirs/home/root" ]] && [[ "$FORCE" != true ]]; then
-  error_exit "Current working directory is not '/var/rootdirs/home/root'. This does not look like an unu Scooter Pro MDB environment."
-fi
-
-if [[ -z "$USER_TOKEN" ]]; then
-  echo "Please enter a user-scope token from the Sunshine cloud to generate the scooter config."
-  echo "You can create a token at https://sunshine.rescoot.org/account"
-  read -rsp "Token: " USER_TOKEN
+if [[ -z "${BOOTSTRAP_TOKEN:-}" ]]; then
+  if [[ -n "${USER_TOKEN:-}" ]]; then
+    error_exit "Use BOOTSTRAP_TOKEN from Sunshine Account settings, not a user API token."
+  fi
+  echo "Generate an installer link at ${SUNSHINE_URL}/account/security#bootstrap-tokens."
+  echo "Copy its bootstrap token. Developer mode is not required."
+  read -rsp "Bootstrap token: " BOOTSTRAP_TOKEN </dev/tty || error_exit "Set BOOTSTRAP_TOKEN when no interactive terminal is available."
   echo
 fi
 
-if [[ -z "$USER_TOKEN" ]]; then
-  error_exit "Token cannot be empty."
-fi
+[[ "$BOOTSTRAP_TOKEN" =~ ^[A-Za-z0-9_-]{43}$ || "$BOOTSTRAP_TOKEN" =~ ^[A-Za-z0-9]{6}$ ]] ||
+  error_exit "Paste only the bootstrap token or six-character installer code."
 
-if [[ -z "$VIN" ]]; then
+SCRIPT=$(mktemp)
+trap 'rm -f "$SCRIPT"' EXIT
 
-  echo "Fetching scooter information..."
-  SCOOTERS_RESPONSE=$(curl -s -H "Authorization: Bearer ${USER_TOKEN}" "https://sunshine.rescoot.org/api/v1/scooters/")
+# Sunshine owns distro detection, binary installation and bootstrap configuration.
+curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+  "${SUNSHINE_URL}/install/u/${BOOTSTRAP_TOKEN}" -o "$SCRIPT" ||
+  error_exit "Could not download the Sunshine installer."
 
-  if [[ "$SCOOTERS_RESPONSE" == "[]" || -z "$SCOOTERS_RESPONSE" ]]; then
-    error_exit "No scooters found. Please create a scooter at https://sunshine.rescoot.org first."
-  fi
-
-  SCOOTER_COUNT=$(echo "$SCOOTERS_RESPONSE" | grep -o '"vin"' | wc -l)
-
-  if [[ "$SCOOTER_COUNT" -eq 1 ]]; then
-    VIN=$(echo "$SCOOTERS_RESPONSE" | grep -o '"vin":"[^"]*"' | cut -d'"' -f4)
-    NAME=$(echo "$SCOOTERS_RESPONSE" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
-    echo "Found scooter: $NAME (VIN: $VIN)"
-    read -rp "Continue with this scooter? [Y/n] " CONFIRM
-    if [[ "$CONFIRM" =~ ^[Nn] ]]; then
-      error_exit "Installation cancelled by user."
-    fi
-  else
-    echo "Multiple scooters found. Please choose a VIN from the following list:"
-    VIN_ENTRY=""
-    NAME_ENTRY=""
-    echo "$SCOOTERS_RESPONSE" | grep -oE '"(vin|name)":"[^"]*"' | while read -r line; do
-      if [[ "$line" == *'"name":"'* ]]; then NAME_ENTRY=$(echo $line | cut -d'"' -f4); fi
-      if [[ "$line" == *'"vin":"'* ]]; then VIN_ENTRY=$(echo $line | cut -d'"' -f4); fi
-      if [[ -n "$VIN_ENTRY" && -n "$NAME_ENTRY" ]]; then
-        echo "- $NAME_ENTRY: $VIN_ENTRY"
-        VIN_ENTRY=""
-        NAME_ENTRY=""
-      fi
-    done
-    
-    read -rp "Enter VIN: " VIN
-    
-    if ! echo "$SCOOTERS_RESPONSE" | grep -q "\"vin\":\"$VIN\""; then
-      error_exit "Invalid VIN. Please enter a VIN from the list above."
-    fi
-  fi
-fi
-
-echo "Creating 'radio-gaga' directory..."
-mkdir -p radio-gaga
-cd radio-gaga
-
-echo "Downloading config for scooter ${VIN}..."
-curl -s -H "Authorization: Bearer ${USER_TOKEN}" "https://sunshine.rescoot.org/api/v1/scooters/${VIN}/config.yml" > config.yml
-
-echo "Downloading supplemental files..."
-curl -s -L -o radio-whats-new.sh https://raw.githubusercontent.com/teal-bauer/reunu-radio-gaga/refs/heads/main/radio-whats-new.sh
-curl -s -L -o rescoot-radio-gaga.service https://raw.githubusercontent.com/teal-bauer/reunu-radio-gaga/refs/heads/main/rescoot-radio-gaga.service
-
-echo "Creating systemd service unit..."
-SYSTEMD_EDITOR=tee systemctl edit rescoot-radio-gaga.service --force --full < ./rescoot-radio-gaga.service
-
-echo "Fetching telemetry client..."
-chmod +x radio-whats-new.sh
-bash -e radio-whats-new.sh
-
-echo "Enabling the service unit..."
-systemctl enable rescoot-radio-gaga
-
-echo "Checking the service..."
-systemctl restart rescoot-radio-gaga
-if systemctl is-active --quiet rescoot-radio-gaga; then
-  echo "Service 'rescoot-radio-gaga' started successfully."
-else
-  error_exit "Failed to start the service 'rescoot-radio-gaga'."
-fi
-
-echo "Installation completed successfully."
+sh "$SCRIPT"
+echo "Installation completed. Accept any pending scooter claim in Sunshine to finish setup."

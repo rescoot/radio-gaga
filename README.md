@@ -345,9 +345,21 @@ cp radio-gaga.example.yml radio-gaga.yml
 
 ### On a Scooter
 
-The repository includes an installer script (`install.sh`) that handles setup on unu Scooter Pro hardware: validates the environment, fetches scooter-specific config from the Sunshine API, downloads the binary, creates a systemd service, and starts it.
+Generate an installer link in [Sunshine Account settings](https://sunshine.rescoot.org/account/security#bootstrap-tokens), then copy its bootstrap token. Developer mode, a user API token and manual VIN selection are not required.
 
-Target platform is Linux ARM (ARMv7). The binary runs as a systemd service (`rescoot-radio-gaga.service` on stock, `radio-gaga` on Librescoot).
+Run the installer as root on the scooter:
+
+```bash
+bash install.sh  # prompts for the bootstrap token
+# Or supply the token explicitly:
+BOOTSTRAP_TOKEN='<bootstrap-token>' bash install.sh
+```
+
+`install.sh` downloads Sunshine's shared installer over HTTPS. That installer detects the distro, installs the binary and `radio-gaga.service` where needed, and uses radio-gaga's bootstrap mode to identify the scooter and fetch its configuration. Accept any pending scooter claim in Sunshine to complete setup. `SUNSHINE_URL` selects a different HTTPS Sunshine instance.
+
+You can also run the online installer command shown in Account settings, or paste the same token or online installer URL into LSD's Cloud page on Librescoot. If the scooter cannot reach Sunshine yet, use the separate offline claim command in Account settings; the scooter waits for its configuration after you accept the claim.
+
+Target platform is Linux ARM (ARMv7). To test the installer wrapper without network or scooter access, run `bash tests/install_test.sh`.
 
 ## Dependencies
 
