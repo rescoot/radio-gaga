@@ -152,6 +152,7 @@ func postBootstrap(baseURL, token, imei, mdbSerial, dbcSerial, softwareVersion s
 		"dbc_serial":       dbcSerial,
 		"software_version": softwareVersion,
 		"platform":         detectPlatform(),
+		"config_format":    "radio-gaga",
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
