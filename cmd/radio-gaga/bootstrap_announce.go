@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/txn"
-	"radio-gaga/internal/utils"
 )
 
 // The deferred half of the bootstrap flow.
@@ -117,8 +115,9 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 	if configPath == "" {
 		return fmt.Errorf("config path is required: the applied config is written there")
 	}
-	if cfg.MQTT.BrokerURL == "" {
-		return fmt.Errorf("mqtt.broker_url is required to announce")
+	tlsConfig, err := bootstrapTLSConfig(cfg.MQTT)
+	if err != nil {
+		return err
 	}
 
 	username := bootstrapBrokerUsername(code)
@@ -157,20 +156,7 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 		// one would be claiming an identity it does not have yet.
 		SetCleanSession(true)
 
-	if utils.IsTLSURL(cfg.MQTT.BrokerURL) {
-		tlsConfig := &tls.Config{}
-		var err error
-		switch {
-		case cfg.MQTT.CACertEmbedded != "":
-			tlsConfig, err = utils.CreateInsecureTLSConfigWithEmbeddedCert(cfg.MQTT.CACertEmbedded)
-		case cfg.MQTT.CACert != "":
-			tlsConfig, err = utils.CreateInsecureTLSConfig(cfg.MQTT.CACert)
-		}
-		if err != nil {
-			return fmt.Errorf("build TLS config: %w", err)
-		}
-		opts.SetTLSConfig(tlsConfig)
-	}
+	opts.SetTLSConfig(tlsConfig)
 
 	configs := make(chan []byte, 1)
 
