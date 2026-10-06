@@ -51,9 +51,10 @@ type CommandLineFlags struct {
 	// Bootstrap runs the per-user-token install flow: read hardware IDs,
 	// POST to Sunshine, receive config YAML, hand to the txn machinery,
 	// probe-then-commit. Used by the install script as a one-shot.
-	Bootstrap         bool
-	BootstrapToken    string
-	BootstrapIdentity bool
+	Bootstrap             bool
+	BootstrapToken        string
+	BootstrapIdentity     bool
+	BootstrapCapabilities bool
 }
 
 // Config represents the application configuration
@@ -113,10 +114,11 @@ type ScooterConfig struct {
 
 // MQTTConfig contains MQTT configuration
 type MQTTConfig struct {
-	BrokerURL      string `yaml:"broker_url"`
-	CACert         string `yaml:"ca_cert"`
-	CACertEmbedded string `yaml:"ca_cert_embedded,omitempty"`
-	KeepAlive      string `yaml:"keepalive"`
+	BrokerURL          string `yaml:"broker_url"`
+	CACert             string `yaml:"ca_cert"`
+	CACertEmbedded     string `yaml:"ca_cert_embedded,omitempty"`
+	KeepAlive          string `yaml:"keepalive"`
+	RequireVerifiedTLS bool   `yaml:"require_verified_tls,omitempty"`
 }
 
 // NTPConfig contains NTP time synchronization configuration

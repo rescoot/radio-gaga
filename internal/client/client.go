@@ -536,6 +536,10 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 				log.Printf("NTP sync failed: %v, falling back to insecure...", ntpErr)
 			}
 
+			if config.MQTT.RequireVerifiedTLS {
+				return nil, fmt.Errorf("verified TLS connection failed; certificate verification is required")
+			}
+
 			// If we get here, both normal connection and NTP sync failed
 			// Create new client with insecure TLS
 			insecureOpts := opts

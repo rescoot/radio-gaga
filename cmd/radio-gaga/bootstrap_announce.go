@@ -257,6 +257,11 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 	for {
 		select {
 		case payload := <-configs:
+			var delivery txnReplaceEnvelope
+			if err := json.Unmarshal(payload, &delivery); err != nil || delivery.Params.TxnID == "" {
+				log.Printf("bootstrap-announce: configuration has no transaction identifier")
+				continue
+			}
 			committed, err := applyPushedConfig(payload, configPath)
 			status, reason := "success", ""
 			if err != nil {
@@ -266,7 +271,7 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 				status, reason = "rollback", "transaction did not commit"
 			}
 
-			result := map[string]string{"status": status}
+			result := map[string]string{"status": status, "txn_id": delivery.Params.TxnID}
 			if reason != "" {
 				result["reason"] = reason
 			}
