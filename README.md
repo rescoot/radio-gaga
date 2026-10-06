@@ -357,6 +357,14 @@ BOOTSTRAP_TOKEN='<bootstrap-token>' bash install.sh
 
 `install.sh` downloads Sunshine's shared installer over HTTPS. That installer detects the distro, installs the binary and `radio-gaga.service` where needed, and uses radio-gaga's bootstrap mode to identify the scooter and fetch its configuration. Accept any pending scooter claim in Sunshine to complete setup. `SUNSHINE_URL` selects a different HTTPS Sunshine instance.
 
+For laptop enrollment, `-bootstrap-capabilities` reports `{"enrollment_protocol":1}`
+and `-bootstrap-identity` reads IMEI, ICCID and optional IMSI from the local modem.
+The laptop uses an individual 256-bit `bootstrap.token`, not its OAuth token.
+Bootstrap MQTT requires TLS with a valid certificate chain, hostname and clock;
+plaintext brokers and malformed configured CAs are rejected. Config deliveries
+and results carry a `txn_id`. Enrollment configs set `mqtt.require_verified_tls`
+to prevent insecure certificate/time fallback after switching to normal operation.
+
 You can also run the online installer command shown in Account settings, or paste the same token or online installer URL into LSD's Cloud page on Librescoot. If the scooter cannot reach Sunshine yet, use the separate offline claim command in Account settings; the scooter waits for its configuration after you accept the claim.
 
 Target platform is Linux ARM (ARMv7). To test the installer wrapper without network or scooter access, run `bash tests/install_test.sh`.

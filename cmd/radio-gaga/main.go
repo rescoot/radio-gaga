@@ -43,6 +43,19 @@ func main() {
 		os.Exit(0)
 	}
 
+	if flags.BootstrapCapabilities {
+		fmt.Fprintln(os.Stdout, `{"enrollment_protocol":1}`)
+		os.Exit(0)
+	}
+
+	if flags.BootstrapIdentity {
+		if err := printBootstrapIdentity(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "bootstrap identity unavailable")
+			os.Exit(probeFailExitCode)
+		}
+		os.Exit(0)
+	}
+
 	// Create logger
 	if os.Getenv("INVOCATION_ID") != "" {
 		log.SetOutput(os.Stdout)
@@ -65,19 +78,6 @@ func main() {
 	// txn machinery, exits. Used as a one-shot during install — outside the
 	// systemd lifecycle. Skips LoadConfig entirely; the bootstrap handler
 	// only needs the -api-base-url and -config (write target) flags.
-	if flags.BootstrapCapabilities {
-		fmt.Fprintln(os.Stdout, `{"enrollment_protocol":1}`)
-		os.Exit(0)
-	}
-
-	if flags.BootstrapIdentity {
-		if err := printBootstrapIdentity(os.Stdout); err != nil {
-			log.Printf("bootstrap identity unavailable")
-			os.Exit(probeFailExitCode)
-		}
-		os.Exit(0)
-	}
-
 	if flags.Bootstrap {
 		if err := runBootstrap(flags.BootstrapToken, flags.APIBaseURL, flags.ConfigPath, version); err != nil {
 			log.Printf("bootstrap failed: %v", err)
@@ -114,13 +114,13 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Bootstrap-announce mode: the config holds only a short code, so the scooter
+	// Bootstrap-announce mode: the config holds only a bootstrap credential, so the scooter
 	// has no identity yet. Announce on MQTT and wait for the config Sunshine
 	// pushes once the account owner accepts the claim, then apply it and exit so
 	// systemd respawns into it. Selected by the stanza itself, so the installer
 	// needs no separate unit.
 	if cfg.InBootstrapState() {
-		log.Printf("bootstrap-announce: no scooter token, announcing with the bootstrap code")
+		log.Printf("bootstrap-announce: no scooter token, announcing with a bootstrap credential")
 		if err := runBootstrapAnnounce(cfg, configPath, version); err != nil {
 			log.Printf("bootstrap-announce: %v", err)
 			os.Exit(probeFailExitCode)
