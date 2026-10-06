@@ -97,6 +97,16 @@ func runBootstrap(token, apiBaseURL, configPath, softwareVersion string) error {
 
 // tryReadIMEI fetches the modem's IMEI via mmcli with a timeout. Returns "" if
 // the modem is unavailable; the caller falls back to MDB serial.
+func printBootstrapIdentity(out io.Writer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), bootstrapModemTimeout)
+	defer cancel()
+	identity, err := modeminfo.FetchIdentity(ctx)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(identity)
+}
+
 func tryReadIMEI(timeout time.Duration) string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

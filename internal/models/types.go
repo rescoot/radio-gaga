@@ -51,8 +51,9 @@ type CommandLineFlags struct {
 	// Bootstrap runs the per-user-token install flow: read hardware IDs,
 	// POST to Sunshine, receive config YAML, hand to the txn machinery,
 	// probe-then-commit. Used by the install script as a one-shot.
-	Bootstrap      bool
-	BootstrapToken string
+	Bootstrap         bool
+	BootstrapToken    string
+	BootstrapIdentity bool
 }
 
 // Config represents the application configuration
@@ -88,7 +89,8 @@ type BootstrapConfig struct {
 	// Code is the installer short code, and doubles as the broker password. The
 	// broker username is derived from it (see BootstrapBrokerUsername) so the
 	// code itself never appears in a topic or in a broker log.
-	Code string `yaml:"code,omitempty"`
+	Code  string `yaml:"code,omitempty"`
+	Token string `yaml:"token,omitempty"`
 	// APIBaseURL is retained for the one-shot HTTP flow and for error reporting.
 	APIBaseURL string `yaml:"api_base_url,omitempty"`
 }
@@ -99,7 +101,7 @@ type BootstrapConfig struct {
 // that merely lost its token should fail loudly, not quietly start announcing
 // itself to Sunshine.
 func (c *Config) InBootstrapState() bool {
-	return c.Bootstrap.Code != "" && c.Scooter.Token == ""
+	return (c.Bootstrap.Code != "" || c.Bootstrap.Token != "") && c.Scooter.Token == ""
 }
 
 // ScooterConfig contains scooter-specific configuration

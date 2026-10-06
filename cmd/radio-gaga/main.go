@@ -65,6 +65,14 @@ func main() {
 	// txn machinery, exits. Used as a one-shot during install — outside the
 	// systemd lifecycle. Skips LoadConfig entirely; the bootstrap handler
 	// only needs the -api-base-url and -config (write target) flags.
+	if flags.BootstrapIdentity {
+		if err := printBootstrapIdentity(os.Stdout); err != nil {
+			log.Printf("bootstrap identity unavailable")
+			os.Exit(probeFailExitCode)
+		}
+		os.Exit(0)
+	}
+
 	if flags.Bootstrap {
 		if err := runBootstrap(flags.BootstrapToken, flags.APIBaseURL, flags.ConfigPath, version); err != nil {
 			log.Printf("bootstrap failed: %v", err)
