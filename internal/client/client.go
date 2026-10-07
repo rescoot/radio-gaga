@@ -107,6 +107,7 @@ type ScooterMQTTClient struct {
 	commandSubscriptionClient     mqtt.Client
 	commandSubscriptionReady      bool
 	commandSubscriptionGeneration uint64
+	commandQueue                  chan queuedCommand
 
 	// Delta telemetry state. The server ingests type:"delta" messages and
 	// deep-merges them into current_telemetry_state, so we send only changed
@@ -341,6 +342,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		SetConnectTimeout(models.MQTTPublishTimeout).
 		SetWriteTimeout(models.MQTTPublishTimeout).
 		SetPingTimeout(models.MQTTPublishTimeout).
+		SetAutoAckDisabled(true).
 		SetCleanSession(false).                           // Maintain session for message queueing
 		SetWill(willTopic, string(willMessage), 1, true). // QoS 1 and retained
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
@@ -434,6 +436,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		monotonicRef:     monotonicRef,
 		sessionID:        sessionID,
 		tlsConfig:        activeTLSConfig,
+		commandQueue:     make(chan queuedCommand, commandQueueCapacity),
 	}
 	if clockIsValid {
 		client.clockValid.Store(true)
@@ -496,6 +499,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		log.Printf("Location pusher initialized (API: %s, scooter: %s)", config.API.BaseURL, config.API.ScooterID)
 	}
 
+	client.startCommandWorker()
 	return client, nil
 }
 
@@ -1630,6 +1634,7 @@ func (s *ScooterMQTTClient) buildMQTTOptions() *mqtt.ClientOptions {
 		SetConnectTimeout(models.MQTTPublishTimeout).
 		SetWriteTimeout(models.MQTTPublishTimeout).
 		SetPingTimeout(models.MQTTPublishTimeout).
+		SetAutoAckDisabled(true).
 		SetCleanSession(false).
 		SetWill(willTopic, willMessage, 1, true).
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
