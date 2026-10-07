@@ -417,7 +417,7 @@ func TestCommandSubscriptionReadiness_IgnoresDelayedLifecycleCallback(t *testing
 	})
 }
 
-func TestHandleCommandUsesCallbackClient(t *testing.T) {
+func TestProcessCommandUsesCallbackClient(t *testing.T) {
 	message := &fakeMessage{
 		topic:   "scooters/test-scooter/commands",
 		payload: []byte(`{"command":"ping","request_id":"request-1"}`),
@@ -427,7 +427,7 @@ func TestHandleCommandUsesCallbackClient(t *testing.T) {
 		s, _ := newTestClient(t)
 		callbackClient := &fakeMQTTClient{}
 
-		s.handleCommand(callbackClient, message)
+		s.processCommand(callbackClient, message)
 		if callbackClient.publishCalls != 1 {
 			t.Fatalf("callback client publishes = %d, want 1", callbackClient.publishCalls)
 		}
@@ -442,7 +442,7 @@ func TestHandleCommandUsesCallbackClient(t *testing.T) {
 		callbackClient := &fakeMQTTClient{}
 		s.setActiveMQTTClient(oldClient)
 
-		s.handleCommand(callbackClient, message)
+		s.processCommand(callbackClient, message)
 		if callbackClient.publishCalls != 1 {
 			t.Fatalf("callback client publishes = %d, want 1", callbackClient.publishCalls)
 		}

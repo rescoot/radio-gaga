@@ -10,8 +10,49 @@ import (
 	"radio-gaga/internal/models"
 )
 
-// handleCommand processes incoming MQTT commands
+const commandQueueCapacity = 64
+
+type queuedCommand struct {
+	client  mqtt.Client
+	message mqtt.Message
+}
+
+// MQTT callbacks must return without waiting for packets on the same connection.
+// Unacknowledged commands remain in the broker's persistent session on overflow.
 func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) {
+	if s.ctx.Err() != nil {
+		return
+	}
+	select {
+	case s.commandQueue <- queuedCommand{client: client, message: msg}:
+	default:
+		log.Printf("Command queue full; leaving MQTT message %d unacknowledged", msg.MessageID())
+	}
+}
+
+func (s *ScooterMQTTClient) startCommandWorker() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case command := <-s.commandQueue:
+				if s.ctx.Err() != nil {
+					return
+				}
+				if command.client != s.activeMQTTClient() {
+					continue
+				}
+				s.processCommand(command.client, command.message)
+				command.message.Ack()
+			}
+		}
+	}()
+}
+
+func (s *ScooterMQTTClient) processCommand(client mqtt.Client, msg mqtt.Message) {
 	// Update cloud status since we successfully received an MQTT message
 	s.updateCloudStatus()
 
