@@ -61,7 +61,7 @@ func RunProbe(cfg *models.Config, probeTimeout, stickinessWait time.Duration) er
 	opts := mqtt.NewClientOptions().
 		AddBroker(cfg.MQTT.BrokerURL).
 		SetClientID(probeID).
-		SetUsername(cfg.Scooter.Identifier).
+		SetUsername(cfg.MQTTUsername()).
 		SetPassword(cfg.Scooter.Token).
 		SetKeepAlive(keepAlive).
 		SetAutoReconnect(false).

@@ -105,6 +105,13 @@ func (c *Config) InBootstrapState() bool {
 	return (c.Bootstrap.Code != "" || c.Bootstrap.Token != "") && c.Scooter.Token == ""
 }
 
+func (c *Config) MQTTUsername() string {
+	if c.MQTT.Username != "" {
+		return c.MQTT.Username
+	}
+	return c.Scooter.Identifier
+}
+
 // ScooterConfig contains scooter-specific configuration
 type ScooterConfig struct {
 	Identifier string `yaml:"identifier"`
@@ -115,6 +122,7 @@ type ScooterConfig struct {
 // MQTTConfig contains MQTT configuration
 type MQTTConfig struct {
 	BrokerURL          string `yaml:"broker_url"`
+	Username           string `yaml:"username,omitempty"`
 	CACert             string `yaml:"ca_cert"`
 	CACertEmbedded     string `yaml:"ca_cert_embedded,omitempty"`
 	KeepAlive          string `yaml:"keepalive"`
