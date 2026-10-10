@@ -77,6 +77,9 @@ mqtt:
 	if cfg.Events.Enabled == nil || !*cfg.Events.Enabled || cfg.Events.MaxRetries != 10 {
 		t.Errorf("events defaults = %+v", cfg.Events)
 	}
+	if cfg.RideGroup.Enabled {
+		t.Error("ride-group sharing must default to disabled")
+	}
 }
 
 func TestLoadConfig_YAMLOverridesDefaults(t *testing.T) {
@@ -101,6 +104,8 @@ telemetry:
     enabled: true
 events:
   enabled: false
+ride_group:
+  enabled: true
 `
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -124,6 +129,9 @@ events:
 	}
 	if cfg.Events.Enabled == nil || *cfg.Events.Enabled {
 		t.Errorf("explicit events.enabled=false was overwritten: %+v", cfg.Events)
+	}
+	if !cfg.RideGroup.Enabled {
+		t.Error("explicit ride_group.enabled=true was not loaded")
 	}
 }
 

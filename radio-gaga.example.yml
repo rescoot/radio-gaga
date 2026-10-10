@@ -57,6 +57,11 @@ ntp:
 
 redis_url: redis://localhost:6379   # on-board Redis (default: redis://127.0.0.1:6379)
 
+# Opt-in MQTT adapter for consented ride-group live position sharing.
+# Requires the server-side capability and per-scooter MQTT ACL to be ready.
+ride_group:
+  enabled: false
+
 telemetry:
   # Periodic full-snapshot cadence, chosen by the vehicle's power state.
   intervals:

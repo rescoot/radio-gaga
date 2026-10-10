@@ -23,6 +23,7 @@ import (
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/modeminfo"
 	"radio-gaga/internal/redisbus"
+	"radio-gaga/internal/ridegroup"
 	"radio-gaga/internal/sms"
 	locsync "radio-gaga/internal/sync"
 	"radio-gaga/internal/telegram"
@@ -95,6 +96,8 @@ type ScooterMQTTClient struct {
 
 	// Location pusher
 	locationPusher *locsync.LocationPusher
+
+	rideGroupAdapter *ridegroup.Adapter
 
 	consecutivePublishFailures int32       // atomic counter for publish failure tracking
 	tlsConfig                  *tls.Config // reference to active TLS config (for insecure fallback)
@@ -442,6 +445,14 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		client.clockValid.Store(true)
 	}
 
+	if config.RideGroup.Enabled && config.Scooter.Identifier != "" {
+		client.rideGroupAdapter, err = ridegroup.NewAdapter(ctx, ridegroup.Config{Enabled: true, Identifier: config.Scooter.Identifier}, redisClient)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to initialize ride-group adapter: %w", err)
+		}
+	}
+
 	_, err = createMQTTClient(config, opts, commandTopic, client.handleCommand, client.setActiveMQTTClient)
 	if err != nil {
 		cancel()
@@ -784,11 +795,17 @@ func (s *ScooterMQTTClient) isCommandSubscriptionReady() bool {
 func (s *ScooterMQTTClient) handleMQTTConnectionLost(c mqtt.Client, err error) {
 	log.Printf("Connection lost: %v", err)
 	s.clearCommandSubscriptionReadinessForClient(s.ctx, c)
+	if s.rideGroupAdapter != nil {
+		s.rideGroupAdapter.OnDisconnected(c)
+	}
 }
 
 func (s *ScooterMQTTClient) handleMQTTReconnectStart(c mqtt.Client) {
 	log.Printf("MQTT auto-reconnect attempting...")
 	s.clearCommandSubscriptionReadinessForClient(s.ctx, c)
+	if s.rideGroupAdapter != nil {
+		s.rideGroupAdapter.OnDisconnected(c)
+	}
 }
 
 func (s *ScooterMQTTClient) handleMQTTConnected(c mqtt.Client) {
@@ -802,6 +819,9 @@ func (s *ScooterMQTTClient) handleMQTTConnected(c mqtt.Client) {
 		return
 	}
 	s.publishConnectedStatus(c)
+	if s.rideGroupAdapter != nil {
+		s.rideGroupAdapter.OnConnected(c)
+	}
 }
 
 func (s *ScooterMQTTClient) reconnectAfterCommandSubscriptionFailure(c mqtt.Client) {
@@ -854,6 +874,12 @@ func (s *ScooterMQTTClient) publishConnectedStatus(c mqtt.Client) {
 // which runs on the first connect and every reconnect, so there is no explicit
 // subscribe here.
 func (s *ScooterMQTTClient) Start() error {
+	if s.rideGroupAdapter != nil {
+		s.rideGroupAdapter.Start()
+		if c := s.activeMQTTClient(); c != nil && c.IsConnected() {
+			s.rideGroupAdapter.OnConnected(c)
+		}
+	}
 	// Fetch static modem identity in the background — the USB modem may not
 	// have enumerated yet at this point.
 	modeminfo.StartPoller(s.ctx)
@@ -983,6 +1009,10 @@ func (s *ScooterMQTTClient) Stop() {
 		if token := mqttClient.Unsubscribe(commandTopic); token.WaitTimeout(2*time.Second) && token.Error() != nil {
 			log.Printf("Error unsubscribing from command topic: %v", token.Error())
 		}
+	}
+
+	if s.rideGroupAdapter != nil {
+		s.rideGroupAdapter.Stop()
 	}
 
 	log.Println("Cancelling client context...")

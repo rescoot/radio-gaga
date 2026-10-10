@@ -70,6 +70,7 @@ type Config struct {
 	Notifications NotificationsConfig `yaml:"notifications,omitempty"`
 	API           APIConfig           `yaml:"api,omitempty"`
 	UnuUplink     UnuUplinkConfig     `yaml:"unu_uplink,omitempty"`
+	RideGroup     RideGroupConfig     `yaml:"ride_group,omitempty"`
 	ServiceName   string              `yaml:"service_name,omitempty"`
 	Debug         bool                `yaml:"debug,omitempty"`
 
@@ -121,6 +122,11 @@ type MQTTConfig struct {
 type NTPConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Server  string `yaml:"server"`
+}
+
+// RideGroupConfig keeps the dedicated live-sharing adapter disabled by default.
+type RideGroupConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // APIConfig contains Sunshine HTTP API configuration
