@@ -36,12 +36,18 @@ type mqttPublication struct {
 	positionEpoch      int64
 	positionGeneration uint64
 	positionCapturedAt time.Time
+	stopChallenge      string
+	sourceState        string
+	sourceSequence     int64
+	sourceCapturedAt   time.Time
+	sourceGeneration   uint64
 }
 
 type redisPublication struct {
 	channel   string
 	payload   []byte
 	expiresAt time.Time
+	queuedAt  time.Time
 }
 
 func (a *Adapter) startWorkers() {
@@ -103,12 +109,57 @@ func (a *Adapter) queueMQTTPublication(publication mqttPublication) {
 func (a *Adapter) dropPendingPosition() {
 	a.egressMu.Lock()
 	delete(a.mqttPending, "position")
+	delete(a.mqttPending, "v2_position")
+	a.egressMu.Unlock()
+}
+
+func (a *Adapter) dropPendingV2Source() {
+	a.egressMu.Lock()
+	delete(a.mqttPending, "v2_source_status")
 	a.egressMu.Unlock()
 }
 
 func (a *Adapter) mqttPublicationAuthorizedLocked(publication mqttPublication) bool {
 	now := a.currentTime()
 	switch publication.kind {
+	case "v2_hello":
+		return a.settingsReady && a.protocolVersion == v2ProtocolVersion && a.mqtt != nil && a.mqtt.IsConnected()
+	case "v2_activity":
+		if !a.settingsReady || !a.journalReady || a.blocked || a.journalBlockedV2 || a.journalStateV2 == nil || a.journalStateV2.Phase != "idle" || a.activityV2 == nil || a.mqtt == nil || !a.mqtt.IsConnected() {
+			return false
+		}
+		if a.activityV2.BootNonce != publication.activityBootNonce || a.activityV2.Sequence != publication.activitySequence || a.activityV2.Active != publication.activityActive {
+			return false
+		}
+		return now.Sub(a.activityAt) >= 0 && now.Sub(a.activityAt) < leaseDuration
+	case "v2_position":
+		if !a.grantCurrentV2Locked(now) || a.grantV2 == nil || a.grantV2.SessionID == nil || a.grantV2.MemberID == nil || a.grantV2.StreamID == nil || a.activityV2 == nil || a.activityV2.SessionID == nil || a.activityV2.MemberID == nil || a.noFixClosedV2 {
+			return false
+		}
+		age := now.Sub(publication.positionCapturedAt)
+		return publication.positionGeneration == a.positionGeneration && *a.activityV2.SessionID == *a.grantV2.SessionID && *a.activityV2.MemberID == *a.grantV2.MemberID && *a.grantV2.SessionID == publication.positionSessionID && *a.grantV2.MemberID == publication.positionMemberID && *a.grantV2.StreamID == publication.positionStreamID && a.grantV2.Revision == publication.positionRevision && a.grantV2.TransportEpoch == publication.positionEpoch && age >= 0 && age <= 5*time.Second
+	case "v2_source_status":
+		if !a.grantCurrentV2Locked(now) || a.grantV2 == nil || a.grantV2.SessionID == nil || a.grantV2.MemberID == nil || a.grantV2.StreamID == nil || a.lastSourceStatusV2 == nil || a.activityV2 == nil || a.activityV2.SessionID == nil || a.activityV2.MemberID == nil {
+			return false
+		}
+		status := a.lastSourceStatusV2
+		if publication.sourceGeneration != a.sourceStatusGeneration || publication.sourceSequence != status.Sequence || publication.sourceState != status.State || status.SessionID != *a.grantV2.SessionID || status.MemberID != *a.grantV2.MemberID || status.StreamID != *a.grantV2.StreamID || status.Revision != a.grantV2.Revision || status.TransportEpoch != a.grantV2.TransportEpoch || status.ConnectionNonce != a.connection || *a.activityV2.SessionID != status.SessionID || *a.activityV2.MemberID != status.MemberID {
+			return false
+		}
+		if status.State == "no_fix" {
+			return a.noFixClosedV2
+		}
+		age := now.Sub(publication.sourceCapturedAt)
+		return status.CapturedAtMS != nil && age >= 0 && age <= 5*time.Second
+	case "v2_stop":
+		attempt := a.localAttemptsV2[publication.stopChallenge]
+		if attempt == nil || attempt.consumed || attempt.ConnectionNonce != a.connection || attempt.ipcEpoch != a.journalIPCEpochV2 || now.Before(attempt.StartedAt) || now.After(attempt.deadline) || a.journalStateV2 == nil || a.journalStateV2.OperationID == nil || *a.journalStateV2.OperationID != attempt.OperationID || a.journalStateV2.JournalRevision != attempt.JournalRevision {
+			return false
+		}
+		if attempt.mode == "apply" {
+			return a.journalStateV2.Phase == "prepared" && sameIntPtr(a.journalStateV2.ExpectedGeneration, attempt.fence) && a.journalStateV2.CommittedGeneration == nil
+		}
+		return (a.journalStateV2.Phase == "prepared" || a.journalStateV2.Phase == "uncertain") && sameIntPtr(a.journalStateV2.ExpectedGeneration, attempt.fence)
 	case "position":
 		if !a.settingsReady || a.blocked || a.localStopPending || a.mqtt == nil || a.grant == nil || !a.grantActive || a.grantAt.IsZero() || now.Sub(a.grantAt) < 0 || now.Sub(a.grantAt) >= a.grantTTL || a.activity == nil || !a.activity.Active || a.activity.LocalStop || now.Sub(a.activityAt) < 0 || now.Sub(a.activityAt) >= leaseDuration || a.grant.SessionID == nil || a.grant.MemberID == nil || a.grant.StreamID == nil || a.activity.SessionID == nil || a.activity.MemberID == nil {
 			return false
@@ -219,7 +270,7 @@ func (a *Adapter) startRedisWorker() {
 func (a *Adapter) queueRedisPublication(channel string, payload []byte, maxAge time.Duration) {
 	a.startRedisWorker()
 	now := time.Now()
-	publication := redisPublication{channel: channel, payload: append([]byte(nil), payload...)}
+	publication := redisPublication{channel: channel, payload: append([]byte(nil), payload...), queuedAt: a.currentTime()}
 	if maxAge > 0 {
 		publication.expiresAt = now.Add(maxAge)
 	}
@@ -247,8 +298,14 @@ func (a *Adapter) runRedisWorker() {
 			if (!publication.expiresAt.IsZero() && !time.Now().Before(publication.expiresAt)) || a.redis == nil {
 				continue
 			}
+			a.mu.Lock()
+			payload, valid := a.finalRedisPayloadV2Locked(publication)
+			a.mu.Unlock()
+			if !valid {
+				continue
+			}
 			ctx, cancel := context.WithTimeout(a.ctx, redisPublishTimeout)
-			_, _ = a.redis.Publish(ctx, publication.channel, publication.payload).Result()
+			_, _ = a.redis.Publish(ctx, publication.channel, payload).Result()
 			cancel()
 		}
 	}

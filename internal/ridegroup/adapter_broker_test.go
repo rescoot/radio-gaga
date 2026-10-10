@@ -21,7 +21,7 @@ func TestRedisSubscriptionRecoversAfterStartupOutage(t *testing.T) {
 	r.server.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1"}, r.client)
+	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1", ProtocolVersion: 1}, r.client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestRedisRecoveryRequiresNewActivitySequence(t *testing.T) {
 	r := newTestRedis(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1"}, r.client)
+	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1", ProtocolVersion: 1}, r.client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestRedisReconnectRereadsPersistedBlockWithoutNotification(t *testing.T) {
 	r := newTestRedis(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1"}, r.client)
+	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1", ProtocolVersion: 1}, r.client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestAdapterLocalBrokerHandshakeActivityAndPosition(t *testing.T) {
 	r := newTestRedis(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1"}, r.client)
+	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1", ProtocolVersion: 1}, r.client)
 	if err != nil {
 		t.Fatal(err)
 	}

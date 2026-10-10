@@ -26,8 +26,9 @@ const (
 )
 
 type Config struct {
-	Enabled    bool
-	Identifier string
+	Enabled         bool
+	Identifier      string
+	ProtocolVersion int
 }
 
 type peerReplayState struct {
@@ -45,6 +46,7 @@ type peerReplayScope struct {
 
 type Adapter struct {
 	config          Config
+	protocolVersion int
 	redis           *redis.Client
 	clock           func() time.Time
 	ctx             context.Context
@@ -94,6 +96,28 @@ type Adapter struct {
 	peerStreams        map[string]peerReplayState
 	peerScope          peerReplayScope
 	estimator          MotionEstimator
+
+	activityV2             *ActivityV2
+	grantV2                *ControlV2
+	lastClearedV2          *ControlV2
+	lastAuthorityV2        *ControlV2
+	journalReady           bool
+	journalStateV2         *LocalStopV2
+	journalBlockedV2       bool
+	journalIPCEpochV2      uint64
+	journalProbesV2        map[string]*localProbeV2
+	localAttemptsV2        map[string]*localStopAttemptV2
+	usedLocalChallenges    map[string][]byte
+	pendingQueryV2         *preparedQueryV2
+	lastSourceStatusV2     *SourceStatusV2
+	sourceSequenceV2       int64
+	noFixClosedV2          bool
+	sourceStatusRetryAt    time.Time
+	probeTimesV2           []time.Time
+	offerPermitV2          *localProbeV2
+	fixAvailablePendingV2  bool
+	recoveryFixAfterV2     time.Time
+	sourceStatusGeneration uint64
 }
 
 func NewAdapter(parent context.Context, cfg Config, client *redis.Client) (*Adapter, error) {
@@ -103,7 +127,14 @@ func NewAdapter(parent context.Context, cfg Config, client *redis.Client) (*Adap
 		cancel()
 		return nil, err
 	}
-	return &Adapter{config: cfg, redis: client, ctx: ctx, cancel: cancel, bootNonce: bootNonce, challenges: make(map[string]time.Time), peerStreams: make(map[string]peerReplayState), cadence: defaultCadence}, nil
+	if cfg.ProtocolVersion == 0 {
+		cfg.ProtocolVersion = v2ProtocolVersion
+	}
+	if cfg.ProtocolVersion != 1 && cfg.ProtocolVersion != v2ProtocolVersion {
+		cancel()
+		return nil, fmt.Errorf("unsupported ride-group protocol version %d", cfg.ProtocolVersion)
+	}
+	return &Adapter{config: cfg, protocolVersion: cfg.ProtocolVersion, redis: client, ctx: ctx, cancel: cancel, bootNonce: bootNonce, challenges: make(map[string]time.Time), peerStreams: make(map[string]peerReplayState), cadence: defaultCadence, journalProbesV2: make(map[string]*localProbeV2), localAttemptsV2: make(map[string]*localStopAttemptV2), usedLocalChallenges: make(map[string][]byte)}, nil
 }
 
 func (a *Adapter) Start() {
@@ -178,9 +209,16 @@ func (a *Adapter) OnConnected(client mqtt.Client) {
 	a.connecting = false
 	a.resetConnectionLocked(client, connection)
 	a.lastCleared = nil
-	a.publishHelloLocked()
-	if a.blocked || a.localStopPending {
-		a.publishLocalStopLocked()
+	if a.protocolVersion == v2ProtocolVersion {
+		a.publishHelloV2Locked("")
+		if a.settingsReady {
+			a.issueLocalProbeV2Locked(probeReconcileV2, nil)
+		}
+	} else {
+		a.publishHelloLocked()
+		if a.blocked || a.localStopPending {
+			a.publishLocalStopLocked()
+		}
 	}
 }
 
@@ -210,6 +248,17 @@ func (a *Adapter) resetConnectionLocked(client mqtt.Client, connection string) {
 	a.activity = nil
 	a.activityAt = time.Time{}
 	a.challenges = make(map[string]time.Time)
+	a.invalidateLocalAttemptsV2Locked()
+	a.offerPermitV2 = nil
+	a.journalReady = false
+	a.journalIPCEpochV2++
+	a.activityV2 = nil
+	a.grantV2 = nil
+	a.lastClearedV2 = nil
+	a.lastAuthorityV2 = nil
+	a.journalStateV2 = nil
+	a.journalBlockedV2 = false
+	a.pendingQueryV2 = nil
 	a.clearGrantLocked()
 }
 
@@ -226,6 +275,7 @@ func (a *Adapter) clearGrantLocked() {
 	a.grantActive = false
 	a.lastPositionAt = time.Time{}
 	a.estimator.Reset()
+	a.clearGrantV2Locked()
 }
 
 func (a *Adapter) run() {
@@ -321,6 +371,11 @@ func (a *Adapter) completeRedisRecovery(events <-chan interface{}) error {
 			return err
 		}
 		if !settingsChanged {
+			a.mu.Lock()
+			if a.protocolVersion == v2ProtocolVersion {
+				a.issueLocalProbeV2Locked(probeReconcileV2, nil)
+			}
+			a.mu.Unlock()
 			return nil
 		}
 	}
@@ -355,9 +410,17 @@ func (a *Adapter) refreshBlockedWithTimeout() error {
 func (a *Adapter) handleRedisMessage(message *redis.Message) bool {
 	switch message.Channel {
 	case activityChannel:
-		a.handleActivity([]byte(message.Payload))
+		if a.protocolVersion == v2ProtocolVersion {
+			a.handleActivityV2([]byte(message.Payload))
+		} else {
+			a.handleActivity([]byte(message.Payload))
+		}
 	case gpsChannel:
-		a.handleGPS([]byte(message.Payload))
+		if a.protocolVersion == v2ProtocolVersion {
+			a.handleGPSV2([]byte(message.Payload))
+		} else {
+			a.handleGPS([]byte(message.Payload))
+		}
 	case settingsChannel:
 		return strings.Contains(message.Payload, "ride-group.blocked")
 	}
@@ -375,6 +438,15 @@ func (a *Adapter) refreshBlocked(ctx context.Context) error {
 	wasBlocked := a.blocked
 	a.blocked = blocked
 	a.settingsReady = true
+	if a.protocolVersion == v2ProtocolVersion {
+		if blocked || wasBlocked {
+			a.inhibitJournalV2Locked()
+			a.invalidateLocalAttemptsV2Locked()
+			a.journalIPCEpochV2++
+			a.maybeIssueReconciliationProbeV2Locked()
+		}
+		return nil
+	}
 	if blocked {
 		a.localStopPending = true
 		a.activity = nil
@@ -481,6 +553,17 @@ func (a *Adapter) handleDownlink(_ mqtt.Client, message mqtt.Message) {
 		Type string `json:"type"`
 	}
 	if json.Unmarshal(payload, &envelope) != nil {
+		return
+	}
+	if a.protocolVersion == v2ProtocolVersion {
+		switch envelope.Type {
+		case v2ControlType:
+			a.handleControlV2(payload)
+		case v2PeerType:
+			a.handlePeerV2(payload)
+		case v2PeerStatusType:
+			a.handlePeerStatusV2(payload)
+		}
 		return
 	}
 	switch envelope.Type {
@@ -674,9 +757,16 @@ func (a *Adapter) handleGPS(payload []byte) {
 }
 
 func (a *Adapter) expireLease() {
-	now := a.currentTime()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := a.currentTime()
+	if a.protocolVersion == v2ProtocolVersion {
+		a.expireV2LeaseLocked(now)
+		a.retryNoFixStatusV2Locked(now)
+	}
+	if a.activity != nil && a.protocolVersion == v2ProtocolVersion {
+		return
+	}
 	if a.activity != nil && (now.Sub(a.activityAt) >= leaseDuration || now.Before(a.activityAt)) {
 		a.activity = nil
 		a.activityAt = time.Time{}
@@ -816,10 +906,13 @@ func (a *Adapter) setPeerReplayScopeLocked(control Control) {
 }
 
 func (a *Adapter) peerInGrantLocked(peerID string) bool {
-	if a.grant == nil {
-		return false
+	var peers []PeerDescriptor
+	if a.protocolVersion == v2ProtocolVersion && a.grantV2 != nil {
+		peers = a.grantV2.Peers
+	} else if a.grant != nil {
+		peers = a.grant.Peers
 	}
-	for _, peer := range a.grant.Peers {
+	for _, peer := range peers {
 		if peer.PeerID == peerID {
 			return true
 		}
@@ -834,8 +927,17 @@ func (a *Adapter) failClosed() {
 	}
 	a.settingsReady = false
 	a.activity = nil
+	a.activityV2 = nil
 	a.activityAt = time.Time{}
 	a.challenges = make(map[string]time.Time)
+	if a.protocolVersion == v2ProtocolVersion {
+		a.invalidateLocalAttemptsV2Locked()
+		a.offerPermitV2 = nil
+		a.journalReady = false
+		a.journalBlockedV2 = true
+		a.journalStateV2 = nil
+		a.journalIPCEpochV2++
+	}
 	a.clearGrantLocked()
 	a.mu.Unlock()
 }

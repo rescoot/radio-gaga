@@ -446,7 +446,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	}
 
 	if config.RideGroup.Enabled && config.Scooter.Identifier != "" {
-		client.rideGroupAdapter, err = ridegroup.NewAdapter(ctx, ridegroup.Config{Enabled: true, Identifier: config.Scooter.Identifier}, redisClient)
+		client.rideGroupAdapter, err = ridegroup.NewAdapter(ctx, ridegroup.Config{Enabled: true, Identifier: config.Scooter.Identifier, ProtocolVersion: 2}, redisClient)
 		if err != nil {
 			cancel()
 			return nil, fmt.Errorf("failed to initialize ride-group adapter: %w", err)
