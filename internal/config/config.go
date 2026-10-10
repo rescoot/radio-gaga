@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"radio-gaga/internal/cellular"
 	"radio-gaga/internal/models"
 
 	"gopkg.in/yaml.v2"
@@ -228,6 +229,12 @@ func defaultConfig() *models.Config {
 // ValidateConfig validates configuration
 func ValidateConfig(config *models.Config) error {
 	var errors []string
+
+	if config.Cellular != nil {
+		if err := cellular.Validate(*config.Cellular); err != nil {
+			errors = append(errors, err.Error())
+		}
+	}
 
 	// A scooter in bootstrap state holds only a short code: the identifier and
 	// token do not exist until its claim is accepted, so requiring them here would
@@ -655,6 +662,35 @@ func GetConfigField(config *models.Config, field string) (interface{}, error) {
 
 // SetConfigField sets a specific field in the configuration using YAML dot syntax
 func SetConfigField(config *models.Config, field string, value interface{}) error {
+	if strings.HasPrefix(field, "cellular.") {
+		candidate := models.CellularConfig{}
+		if config.Cellular != nil {
+			candidate = *config.Cellular
+		}
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("cellular fields must be strings")
+		}
+		switch strings.TrimPrefix(field, "cellular.") {
+		case "apn":
+			candidate.APN = text
+		case "username":
+			candidate.Username = text
+		case "password":
+			candidate.Password = text
+		case "auth":
+			candidate.Auth = text
+		case "connection":
+			candidate.Connection = text
+		default:
+			return fmt.Errorf("unknown cellular field")
+		}
+		if err := cellular.Validate(candidate); err != nil {
+			return err
+		}
+		config.Cellular = &candidate
+		return nil
+	}
 	structPath := convertYamlPathToStructPath(field)
 	parts := strings.Split(structPath, ".")
 	return setNestedFieldUnrestricted(config, parts, value)

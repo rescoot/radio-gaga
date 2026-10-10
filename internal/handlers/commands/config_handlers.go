@@ -76,7 +76,11 @@ func HandleConfigGetCommand(client ConfigCommandHandlerClient, mqttClient mqtt.C
 		return fmt.Errorf("failed to publish response: %v", token.Error())
 	}
 
-	log.Printf("Config get response sent: %s", string(responseJSON))
+	if config.Cellular != nil && config.Cellular.Password != "" {
+		log.Printf("Config get response sent (cellular credentials redacted)")
+	} else {
+		log.Printf("Config get response sent: %s", string(responseJSON))
+	}
 	return nil
 }
 
@@ -98,7 +102,11 @@ func HandleConfigSetCommand(client ConfigCommandHandlerClient, mqttClient mqtt.C
 		return fmt.Errorf("failed to set field '%s': %v", field, err)
 	}
 
-	log.Printf("Set config field '%s' to: %v", field, value)
+	if field == "cellular.password" {
+		log.Printf("Set config field '%s' (redacted)", field)
+	} else {
+		log.Printf("Set config field '%s' to: %v", field, value)
+	}
 
 	// Send success response
 	response := map[string]interface{}{
@@ -123,7 +131,11 @@ func HandleConfigSetCommand(client ConfigCommandHandlerClient, mqttClient mqtt.C
 		return nil // Don't fail the command if response publishing fails
 	}
 
-	log.Printf("Config set response sent: %s", string(responseJSON))
+	if field == "cellular.password" {
+		log.Printf("Config set response sent for '%s'", field)
+	} else {
+		log.Printf("Config set response sent: %s", string(responseJSON))
+	}
 	return nil
 }
 

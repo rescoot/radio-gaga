@@ -62,6 +62,7 @@ type Config struct {
 	Environment   string              `yaml:"environment"`
 	MQTT          MQTTConfig          `yaml:"mqtt"`
 	NTP           NTPConfig           `yaml:"ntp"`
+	Cellular      *CellularConfig     `yaml:"cellular,omitempty"`
 	RedisURL      string              `yaml:"redis_url"`
 	Telemetry     TelemetryConfig     `yaml:"telemetry"`
 	Events        EventsConfig        `yaml:"events,omitempty"`
@@ -79,6 +80,16 @@ type Config struct {
 	// not loaded from yaml. Consumers (e.g. journal upload) read it instead
 	// of hardcoding paths.
 	StateDir string `yaml:"-"`
+}
+
+// CellularConfig configures the data bearer and LTE attachment context.
+// A nil configuration leaves the platform's cellular configuration untouched.
+type CellularConfig struct {
+	APN        string `yaml:"apn"`
+	Username   string `yaml:"username,omitempty"`
+	Password   string `yaml:"password,omitempty"`
+	Auth       string `yaml:"auth,omitempty"`
+	Connection string `yaml:"connection,omitempty"`
 }
 
 // BootstrapConfig is the pre-claim state: the scooter holds nothing but a short

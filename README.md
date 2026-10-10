@@ -132,7 +132,26 @@ The first stop is the current navigation target. The route command requires `nav
 
 ### Configuration
 
-Runtime config changes via `config:get`, `config:set`, `config:del`, `config:save`. Changes from `config:set` take effect immediately; call `config:save` to persist them to disk. Fields use dot notation (`telemetry.intervals.driving`). Save creates a backup of the previous config file.
+Runtime config changes via `config:get`, `config:set`, `config:del`, `config:save`. Changes from `config:set` take effect immediately except startup-only cellular settings; call `config:save` to persist them to disk. Fields use dot notation (`telemetry.intervals.driving`). Save creates a backup of the previous config file.
+
+### Cellular APN
+
+An optional `cellular` block configures both the data connection and LTE attachment:
+
+```yaml
+cellular:
+  apn: internet.example
+  username: ""
+  password: ""
+  auth: none # none, pap, or chap
+  connection: wwan # stock NetworkManager profile name
+```
+
+Settings are applied at startup, with retries while the modem or platform services are unavailable. Omit the block to leave cellular configuration untouched. On stock systems, radio-gaga updates NetworkManager, ModemManager's initial EPS bearer, and the SIM7100E's CID 1 attach APN/authentication, then re-registers and activates the data connection. This interrupts cellular connectivity. An explicitly empty APN uses the SIM's default attach APN.
+
+On Librescoot, radio-gaga fills missing or empty `cellular.apn`, `cellular.username`, `cellular.password`, and `cellular.auth` fields in LS's `settings` hash and notifies the settings watchers. Existing nonempty values take precedence. The LS modem service owns modem configuration; radio-gaga does not run modem or NetworkManager commands on Librescoot. To replace an existing LS setting, edit that setting directly.
+
+Cellular configuration changes require saving the config and restarting radio-gaga. Protect the configuration file because it contains credentials. On stock systems, credentials are also briefly visible in command arguments. Quotes, commas, NUL, and line breaks in APN or credentials are rejected because of the AT/mmcli property syntax.
 
 ### Location Sync
 

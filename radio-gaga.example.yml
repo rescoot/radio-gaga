@@ -51,6 +51,15 @@ mqtt:
     -----END CERTIFICATE-----
   keepalive: 30s                    # default: 30s
 
+# Optional cellular configuration, applied at service startup.
+# Omit this block to leave cellular settings untouched.
+# cellular:
+#   apn: internet.example
+#   username: ""
+#   password: ""
+#   auth: none                       # none | pap | chap (default: none)
+#   connection: wwan                 # stock NetworkManager profile
+
 ntp:
   enabled: true                     # default: true
   server: pool.ntp.rescoot.org      # default: pool.ntp.rescoot.org
