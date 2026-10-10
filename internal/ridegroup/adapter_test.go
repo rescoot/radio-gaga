@@ -49,6 +49,13 @@ type blockedPublishMQTT struct {
 	calls   int
 }
 
+type firstPublishGateMQTT struct {
+	*mqttFake
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
 func (m *blockedPublishMQTT) Publish(string, byte, bool, interface{}) mqtt.Token {
 	m.calls++
 	select {
@@ -57,6 +64,14 @@ func (m *blockedPublishMQTT) Publish(string, byte, bool, interface{}) mqtt.Token
 	}
 	<-m.release
 	return newTokenResult()
+}
+
+func (m *firstPublishGateMQTT) Publish(topic string, qos byte, retained bool, payload interface{}) mqtt.Token {
+	m.once.Do(func() {
+		close(m.entered)
+		<-m.release
+	})
+	return m.mqttFake.Publish(topic, qos, retained, payload)
 }
 
 type mqttMessageFake struct {
@@ -175,7 +190,7 @@ func TestActiveDiscoveryRefreshesExpiredCapabilityWithoutIdleWakeups(t *testing.
 	client := &mqttFake{connected: true}
 	a.OnConnected(client)
 	waitForPublished(t, client, 1)
-	now = now.Add(31 * time.Second)
+	setAdapterTestClock(a, &now, now.Add(31*time.Second))
 	time.Sleep(20 * time.Millisecond)
 	client.mu.Lock()
 	idleCount := len(client.published)
@@ -255,20 +270,153 @@ func TestClearingGrantDropsQueuedPositions(t *testing.T) {
 	}
 }
 
+func TestQueuedPositionIsDroppedWhenGrantExpiresBeforePublish(t *testing.T) {
+	client := &firstPublishGateMQTT{mqttFake: &mqttFake{connected: true}, entered: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := newTestRedis(t)
+	id, member, stream := testSession, testMember, testStream
+	now := time.Now()
+	a := &Adapter{ctx: ctx, cancel: cancel, config: Config{Enabled: true, Identifier: "vehicle-1"}, redis: r.client, mqtt: client, connection: testConnection, settingsReady: true, activity: &Activity{Active: true, SessionID: &id, MemberID: &member}, activityAt: now, grant: &Control{SessionID: &id, MemberID: &member, StreamID: &stream, Revision: 1, TransportEpoch: 1}, grantAt: now, grantTTL: 100 * time.Millisecond, grantActive: true, cadence: time.Second, peerStreams: map[string]peerReplayState{}}
+	cleanupAdapter(t, a)
+	a.mu.Lock()
+	a.publishHelloLocked()
+	a.mu.Unlock()
+	select {
+	case <-client.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first MQTT publish did not block")
+	}
+	fix, _ := json.Marshal(testGPSFix("52.000000", "13.000000", now, 3))
+	a.handleGPS(fix)
+	if a.positionSeq != 1 {
+		t.Fatal("fresh authorized position was not queued")
+	}
+	time.Sleep(150 * time.Millisecond)
+	a.mu.Lock()
+	a.publishHelloLocked()
+	a.mu.Unlock()
+	close(client.release)
+	waitForPublished(t, client.mqttFake, 2)
+	a.Stop()
+	a.egressMu.Lock()
+	done := a.mqttWorkerDone
+	a.egressMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("MQTT worker did not stop")
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for _, publication := range client.published {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(publication.payload, &envelope) == nil && envelope.Type == "ride_group_position" {
+			t.Fatal("expired grant position reached MQTT Publish")
+		}
+	}
+}
+
+func TestMQTTPositionEgressRechecksCurrentAuthority(t *testing.T) {
+	r := newTestRedis(t)
+	client := &mqttFake{connected: true}
+	id, member, stream := testSession, testMember, testStream
+	now := time.Now()
+	a := &Adapter{ctx: context.Background(), config: Config{Enabled: true, Identifier: "vehicle-1"}, redis: r.client, mqtt: client, connection: testConnection, settingsReady: true, activity: &Activity{Active: true, SessionID: &id, MemberID: &member}, activityAt: now, grant: &Control{SessionID: &id, MemberID: &member, StreamID: &stream, Revision: 1, TransportEpoch: 1}, grantAt: now, grantTTL: 10 * time.Second, grantActive: true, peerStreams: map[string]peerReplayState{}, clock: func() time.Time { return now }}
+	publication := mqttPublication{kind: "position", positionSessionID: id, positionMemberID: member, positionStreamID: stream, positionRevision: 1, positionEpoch: 1, positionCapturedAt: now}
+	if !a.mqttPublicationAuthorizedLocked(publication) {
+		t.Fatal("current position authority was rejected")
+	}
+	a.blocked = true
+	if a.mqttPublicationAuthorizedLocked(publication) {
+		t.Fatal("blocked position remained authorized")
+	}
+	a.blocked = false
+	a.localStopPending = true
+	if a.mqttPublicationAuthorizedLocked(publication) {
+		t.Fatal("locally stopped position remained authorized")
+	}
+	a.localStopPending = false
+	now = now.Add(11 * time.Second)
+	if a.mqttPublicationAuthorizedLocked(publication) {
+		t.Fatal("expired lease position remained authorized")
+	}
+	now = time.Now()
+	a.mu.Lock()
+	a.activityAt = now
+	a.clearGrantLocked()
+	a.grant = &Control{SessionID: &id, MemberID: &member, StreamID: &stream, Revision: 1, TransportEpoch: 1}
+	a.grantAt = now
+	a.grantTTL = 10 * time.Second
+	a.grantActive = true
+	a.mu.Unlock()
+	if a.mqttPublicationAuthorizedLocked(publication) {
+		t.Fatal("position from a prior authority generation was reauthorized")
+	}
+}
+
+func TestMQTTActivityEgressRechecksSequenceAndLease(t *testing.T) {
+	now := time.Now()
+	a := &Adapter{settingsReady: true, activity: &Activity{Active: true}, activityAt: now, activityBootNonce: testBoot, activitySequence: 2, clock: func() time.Time { return now }}
+	publication := mqttPublication{kind: "activity", activityBootNonce: testBoot, activitySequence: 2, activityActive: true}
+	if !a.mqttPublicationAuthorizedLocked(publication) {
+		t.Fatal("current activity was rejected")
+	}
+	a.activitySequence = 3
+	if a.mqttPublicationAuthorizedLocked(publication) {
+		t.Fatal("stale activity sequence remained authorized")
+	}
+	a.activitySequence = 2
+	a.localStopPending = true
+	if a.mqttPublicationAuthorizedLocked(publication) {
+		t.Fatal("activity remained authorized after local stop")
+	}
+	a.localStopPending = false
+	now = now.Add(leaseDuration)
+	if a.mqttPublicationAuthorizedLocked(publication) {
+		t.Fatal("expired activity remained authorized")
+	}
+}
+
+func TestPeerReplayTombstonesSurviveLocalGrantExpiry(t *testing.T) {
+	now := time.Now()
+	peerID := "00000000-0000-4000-8000-000000000009"
+	scope := peerReplayScope{sessionID: testSession}
+	a := &Adapter{peerScope: scope, peerStreams: map[string]peerReplayState{peerID: {streamID: testStream, epoch: 2, sequence: 4, closed: true}}, grant: &Control{SessionID: stringPointer(testSession), MemberID: stringPointer(testMember), StreamID: stringPointer(testStream)}, grantAt: now.Add(-2 * time.Second), grantTTL: time.Second, clock: func() time.Time { return now }}
+	a.expireLease()
+	if a.grant != nil || !a.peerStreams[peerID].closed || a.peerStreams[peerID].sequence != 4 {
+		t.Fatal("local grant expiry erased peer replay tombstone")
+	}
+	a.setPeerReplayScopeLocked(Control{SessionID: stringPointer(testSession), MemberID: stringPointer(testMember), StreamID: stringPointer(testStream), Revision: 1, TransportEpoch: 1, Peers: []PeerDescriptor{{PeerID: peerID}}})
+	if !a.peerStreams[peerID].closed {
+		t.Fatal("same control stream reset peer replay tombstone")
+	}
+	a.setPeerReplayScopeLocked(Control{SessionID: stringPointer(testSession), MemberID: stringPointer(testMember), StreamID: stringPointer(testStream), Revision: 2, TransportEpoch: 2, Peers: []PeerDescriptor{{PeerID: peerID}}})
+	if !a.peerStreams[peerID].closed {
+		t.Fatal("same session recipient renewal reset peer replay tombstone")
+	}
+	a.setPeerReplayScopeLocked(Control{SessionID: stringPointer("00000000-0000-4000-8000-000000000008"), MemberID: stringPointer(testMember), StreamID: stringPointer(testStream), Revision: 1, TransportEpoch: 1, Peers: []PeerDescriptor{{PeerID: peerID}}})
+	if len(a.peerStreams) != 0 {
+		t.Fatal("new session retained old peer replay state")
+	}
+}
+
 func TestBlockedPublishDoesNotHoldStateOrSpawnWriters(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &blockedPublishMQTT{mqttFake: &mqttFake{connected: true}, entered: make(chan struct{}, 1), release: make(chan struct{})}
 	now := time.Now()
 	a := &Adapter{ctx: ctx, cancel: cancel, config: Config{Enabled: true, Identifier: "vehicle-1"}, mqtt: client, connection: testConnection, settingsReady: true, challenges: map[string]time.Time{}, peerStreams: map[string]peerReplayState{}, clock: func() time.Time { return now }}
 	cleanupAdapter(t, a)
-	a.queueMQTTPublication(mqttPublication{client: client, connection: testConnection, topic: "scooters/vehicle-1/ride_group/up", payload: []byte("position"), kind: "position", priority: 1})
+	a.queueMQTTPublication(mqttPublication{client: client, connection: testConnection, topic: "scooters/vehicle-1/ride_group/up", payload: []byte("hello"), kind: "hello", priority: 1})
 	select {
 	case <-client.entered:
 	case <-time.After(time.Second):
 		t.Fatal("publisher did not enter blocked Publish")
 	}
 	for i := 0; i < 100; i++ {
-		a.queueMQTTPublication(mqttPublication{client: client, connection: testConnection, topic: "scooters/vehicle-1/ride_group/up", payload: []byte("latest-position"), kind: "position", priority: 1})
+		a.queueMQTTPublication(mqttPublication{client: client, connection: testConnection, topic: "scooters/vehicle-1/ride_group/up", payload: []byte("latest-hello"), kind: "hello", priority: 1})
 	}
 	a.egressMu.Lock()
 	pendingCount := len(a.mqttPending)
@@ -540,7 +688,7 @@ func TestSteadyHeartbeatAndPositionCadencePreservesSameStream(t *testing.T) {
 	sequence := int64(0)
 	challenge := testChallenge
 	for second := 0; second <= 42; second++ {
-		now = start.Add(time.Duration(second) * time.Second)
+		setAdapterTestClock(a, &now, start.Add(time.Duration(second)*time.Second))
 		if second%3 == 0 {
 			sequence++
 			challenge, _ = newUUID()
@@ -596,14 +744,14 @@ func TestSameStreamSequenceContinuesAfterLocalLeaseExpiry(t *testing.T) {
 	grantPayload, _ := json.Marshal(grant)
 	a.handleControl(grantPayload)
 	for i := 0; i < 2; i++ {
-		now = now.Add(time.Second)
+		setAdapterTestClock(a, &now, now.Add(time.Second))
 		payload, _ := json.Marshal(testGPSFix("52.000000", "13.000000", now, 3))
 		a.handleGPS(payload)
 	}
 	if a.positionSeq != 2 {
 		t.Fatalf("initial sequence = %d", a.positionSeq)
 	}
-	now = now.Add(11 * time.Second)
+	setAdapterTestClock(a, &now, now.Add(11*time.Second))
 	a.expireLease()
 	if a.grant != nil {
 		t.Fatal("expired local grant remained active")
@@ -616,7 +764,7 @@ func TestSameStreamSequenceContinuesAfterLocalLeaseExpiry(t *testing.T) {
 	grant.Action = "grant"
 	grantPayload, _ = json.Marshal(grant)
 	a.handleControl(grantPayload)
-	now = now.Add(time.Second)
+	setAdapterTestClock(a, &now, now.Add(time.Second))
 	payload, _ := json.Marshal(testGPSFix("52.000000", "13.000000", now, 3))
 	a.handleGPS(payload)
 	if a.positionSeq != 3 {
@@ -632,7 +780,7 @@ func TestPositionCadenceIsServerClampedAndNewFixesOnly(t *testing.T) {
 	a := &Adapter{ctx: context.Background(), config: Config{Enabled: true, Identifier: "vehicle-1"}, redis: r.client, mqtt: client, connection: testConnection, settingsReady: true, activity: &Activity{Active: true, SessionID: &id, MemberID: &member}, activityAt: now, grant: &Control{SessionID: &id, MemberID: &member, StreamID: &stream, Revision: 1, TransportEpoch: 1}, grantAt: now, grantTTL: 10 * time.Second, grantActive: true, cadence: 2 * time.Second, peerStreams: map[string]peerReplayState{}, clock: func() time.Time { return now }}
 	cleanupAdapter(t, a)
 	for index, offset := range []time.Duration{0, time.Second, 2 * time.Second} {
-		now = time.Date(2026, 10, 10, 5, 30, 0, 0, time.UTC).Add(offset)
+		setAdapterTestClock(a, &now, time.Date(2026, 10, 10, 5, 30, 0, 0, time.UTC).Add(offset))
 		fix := testGPSFix("52.000000", "13.000000", now, 4.2)
 		payload, _ := json.Marshal(fix)
 		a.handleGPS(payload)
@@ -662,7 +810,7 @@ func TestGPSObservationHighWaterSurvivesNoFixEstimatorReset(t *testing.T) {
 	first := testGPSFix("52.000000", "13.000000", now, 3)
 	firstPayload, _ := json.Marshal(first)
 	a.handleGPS(firstPayload)
-	now = now.Add(time.Second)
+	setAdapterTestClock(a, &now, now.Add(time.Second))
 	noFix := `{"latitude":"52.000000","longitude":"13.000000","timestamp":"` + now.Format(time.RFC3339) + `","active":true,"connected":true,"state":"searching","fix":"none","eph":null}`
 	a.handleGPS([]byte(noFix))
 	replayed := testGPSFix("52.000100", "13.000000", now, 3)
@@ -676,6 +824,67 @@ func TestGPSObservationHighWaterSurvivesNoFixEstimatorReset(t *testing.T) {
 	defer client.mu.Unlock()
 	if len(client.published) > 1 {
 		t.Fatalf("replayed source timestamp was published after no-fix reset: %d", len(client.published))
+	}
+}
+
+func TestFutureInvalidGPSTimestampDoesNotAdvanceHighWater(t *testing.T) {
+	r := newTestRedis(t)
+	client := &mqttFake{connected: true}
+	id, member, stream := testSession, testMember, testStream
+	now := time.Date(2026, 10, 10, 5, 30, 0, 0, time.UTC)
+	a := &Adapter{ctx: context.Background(), config: Config{Enabled: true, Identifier: "vehicle-1"}, redis: r.client, mqtt: client, connection: testConnection, settingsReady: true, activity: &Activity{Active: true, SessionID: &id, MemberID: &member}, activityAt: now, grant: &Control{SessionID: &id, MemberID: &member, StreamID: &stream, Revision: 1, TransportEpoch: 1}, grantAt: now, grantTTL: 10 * time.Second, grantActive: true, cadence: time.Second, peerStreams: map[string]peerReplayState{}, clock: func() time.Time { return now }}
+	cleanupAdapter(t, a)
+	first, _ := json.Marshal(testGPSFix("52.000000", "13.000000", now, 3))
+	a.handleGPS(first)
+	if a.positionSeq != 1 {
+		t.Fatal("initial fresh fix was not published")
+	}
+	future := `{"latitude":"52.000000","longitude":"13.000000","timestamp":"` + now.Add(24*time.Hour).Format(time.RFC3339) + `","active":true,"connected":true,"state":"searching","fix":"none","eph":null}`
+	a.handleGPS([]byte(future))
+	if !a.gpsObservedAt.Equal(now) {
+		t.Fatal("future invalid GPS timestamp advanced observation high-water")
+	}
+	setAdapterTestClock(a, &now, now.Add(2*time.Second))
+	fresh, _ := json.Marshal(testGPSFix("52.000100", "13.000000", now, 3))
+	a.handleGPS(fresh)
+	if a.positionSeq != 2 || !a.gpsObservedAt.Equal(now) {
+		t.Fatalf("fresh fix after future invalid input rejected: seq=%d high-water=%s", a.positionSeq, a.gpsObservedAt)
+	}
+}
+
+func TestClosedPeerCannotResurrectAfterSameSessionGrantExpiry(t *testing.T) {
+	r := newTestRedis(t)
+	client := &mqttFake{connected: true}
+	id, member, stream := testSession, testMember, testStream
+	peerID := "00000000-0000-4000-8000-000000000007"
+	peerStream := "00000000-0000-4000-8000-000000000009"
+	now := time.Date(2026, 10, 10, 5, 30, 0, 0, time.UTC)
+	a := &Adapter{ctx: context.Background(), config: Config{Enabled: true, Identifier: "vehicle-1"}, redis: r.client, mqtt: client, connection: testConnection, settingsReady: true, activity: &Activity{Active: true, SessionID: &id, MemberID: &member}, activityAt: now, grant: &Control{SessionID: &id, MemberID: &member, StreamID: &stream, Revision: 1, TransportEpoch: 1, Peers: []PeerDescriptor{{PeerID: peerID}}}, grantAt: now, grantTTL: time.Second, grantActive: true, challenges: map[string]time.Time{}, peerStreams: map[string]peerReplayState{}, clock: func() time.Time { return now }}
+	cleanupAdapter(t, a)
+	status := PeerStatus{Version: 1, Type: "ride_group_peer_status", SessionID: id, Revision: 1, TransportEpoch: 1, StreamID: stream, PeerID: peerID, PeerStreamID: peerStream, PeerTransportEpoch: 2, Status: "inactive"}
+	statusPayload, _ := json.Marshal(status)
+	a.handlePeerStatus(statusPayload)
+	if !a.peerStreams[peerID].closed {
+		t.Fatal("inactive peer status did not tombstone its source stream")
+	}
+	a.grantTTL = time.Millisecond
+	setAdapterTestClock(a, &now, now.Add(2*time.Millisecond))
+	a.expireLease()
+	activity := Activity{Version: 1, Type: "ride_group_activity", BootNonce: testBoot, Sequence: 2, Active: true, SessionID: &id, MemberID: &member, Challenge: testChallenge}
+	a.activityAt = time.Time{}
+	activityPayload, _ := json.Marshal(activity)
+	a.handleActivity(activityPayload)
+	grant := Control{Version: 1, Type: "ride_group_control", ConnectionNonce: testConnection, Action: "grant", SessionID: &id, MemberID: &member, Revision: 1, TransportEpoch: 1, StreamID: &stream, Challenge: testChallenge, ServerTimeMS: now.UnixMilli(), LeaseTTLMS: 10000, CadenceMS: durationPointer(1000), Peers: []PeerDescriptor{{PeerID: peerID, Label: "Peer", PaletteIndex: 1}}}
+	grantPayload, _ := json.Marshal(grant)
+	a.handleControl(grantPayload)
+	if a.grant == nil || !a.grantCurrentLocked(now) {
+		t.Fatal("fresh same-session grant did not resume")
+	}
+	position := PeerPosition{Version: 1, Type: "ride_group_peer", SessionID: id, Revision: 1, TransportEpoch: 1, StreamID: stream, PeerStreamID: peerStream, PeerTransportEpoch: 2, Sequence: 99, PeerID: peerID, Label: "Peer", PaletteIndex: 1, CapturedAtMS: now.UnixMilli(), TimestampSource: "producer_fix", MotionSource: "unknown", ReceivedAtMS: now.UnixMilli(), ServerTimeMS: now.UnixMilli(), ValidForMS: 9000}
+	positionPayload, _ := json.Marshal(position)
+	a.handlePeer(positionPayload)
+	if !a.peerStreams[peerID].closed || a.peerStreams[peerID].sequence == 99 {
+		t.Fatal("delayed point resurrected a closed peer after local lease expiry")
 	}
 }
 
@@ -746,6 +955,12 @@ func TestGPSPublishesOnlyFreshSourceFixAndIgnoresRetainedMotion(t *testing.T) {
 	if strings.Contains(string(got.payload), "updated") || strings.Contains(string(got.payload), "31.0") {
 		t.Fatal("producer metadata or retained speed leaked to wire")
 	}
+}
+
+func setAdapterTestClock(adapter *Adapter, clock *time.Time, now time.Time) {
+	adapter.mu.Lock()
+	*clock = now
+	adapter.mu.Unlock()
 }
 
 func cleanupAdapter(t *testing.T, adapter *Adapter) {

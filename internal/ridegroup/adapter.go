@@ -39,6 +39,10 @@ type peerReplayState struct {
 	closed   bool
 }
 
+type peerReplayScope struct {
+	sessionID string
+}
+
 type Adapter struct {
 	config          Config
 	redis           *redis.Client
@@ -58,36 +62,38 @@ type Adapter struct {
 	redisQueue      chan redisPublication
 	ackQueue        chan mqtt.Message
 
-	mu                sync.Mutex
-	mqtt              mqtt.Client
-	connecting        bool
-	connectAttempt    uint64
-	connection        string
-	lastHelloAt       time.Time
-	bootNonce         string
-	stopSequence      int64
-	activity          *Activity
-	activityAt        time.Time
-	activityBootNonce string
-	activitySequence  int64
-	challenges        map[string]time.Time
-	grant             *Control
-	grantAt           time.Time
-	grantTTL          time.Duration
-	grantActive       bool
-	lastCleared       *Control
-	cadence           time.Duration
-	positionSeq       int64
-	positionStreamID  string
-	positionSessionID string
-	positionEpoch     int64
-	lastPositionAt    time.Time
-	gpsObservedAt     time.Time
-	blocked           bool
-	localStopPending  bool
-	settingsReady     bool
-	peerStreams       map[string]peerReplayState
-	estimator         MotionEstimator
+	mu                 sync.Mutex
+	mqtt               mqtt.Client
+	connecting         bool
+	connectAttempt     uint64
+	connection         string
+	lastHelloAt        time.Time
+	bootNonce          string
+	stopSequence       int64
+	activity           *Activity
+	activityAt         time.Time
+	activityBootNonce  string
+	activitySequence   int64
+	challenges         map[string]time.Time
+	grant              *Control
+	grantAt            time.Time
+	grantTTL           time.Duration
+	grantActive        bool
+	lastCleared        *Control
+	cadence            time.Duration
+	positionSeq        int64
+	positionStreamID   string
+	positionSessionID  string
+	positionEpoch      int64
+	positionGeneration uint64
+	lastPositionAt     time.Time
+	gpsObservedAt      time.Time
+	blocked            bool
+	localStopPending   bool
+	settingsReady      bool
+	peerStreams        map[string]peerReplayState
+	peerScope          peerReplayScope
+	estimator          MotionEstimator
 }
 
 func NewAdapter(parent context.Context, cfg Config, client *redis.Client) (*Adapter, error) {
@@ -207,14 +213,18 @@ func (a *Adapter) resetConnectionLocked(client mqtt.Client, connection string) {
 	a.clearGrantLocked()
 }
 
-func (a *Adapter) clearGrantLocked() {
+func (a *Adapter) invalidatePositionPublicationsLocked() {
+	a.positionGeneration++
 	a.dropPendingPosition()
+}
+
+func (a *Adapter) clearGrantLocked() {
+	a.invalidatePositionPublicationsLocked()
 	a.grant = nil
 	a.grantAt = time.Time{}
 	a.grantTTL = 0
 	a.grantActive = false
 	a.lastPositionAt = time.Time{}
-	a.peerStreams = make(map[string]peerReplayState)
 	a.estimator.Reset()
 }
 
@@ -544,6 +554,11 @@ func (a *Adapter) handleControl(payload []byte) {
 			a.positionSessionID = *control.SessionID
 			a.positionEpoch = control.TransportEpoch
 		}
+		if a.grant == nil || *a.grant.SessionID != *control.SessionID || *a.grant.MemberID != *control.MemberID || *a.grant.StreamID != *control.StreamID || a.grant.Revision != control.Revision || a.grant.TransportEpoch != control.TransportEpoch {
+			a.positionGeneration++
+			a.dropPendingPosition()
+		}
+		a.setPeerReplayScopeLocked(control)
 		a.grant = &control
 		a.lastCleared = nil
 		a.grantAt = a.currentTime()
@@ -564,9 +579,10 @@ func (a *Adapter) handlePeer(payload []byte) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.grantCurrentLocked(a.currentTime()) || a.grant.SessionID == nil || a.grant.StreamID == nil || peer.SessionID != *a.grant.SessionID || peer.Revision != a.grant.Revision || peer.TransportEpoch != a.grant.TransportEpoch || peer.StreamID != *a.grant.StreamID || !a.peerInGrantLocked(peer.PeerID) {
+	if !a.grantCurrentLocked(a.currentTime()) || a.grant.SessionID == nil || a.grant.MemberID == nil || a.grant.StreamID == nil || peer.SessionID != *a.grant.SessionID || peer.Revision != a.grant.Revision || peer.TransportEpoch != a.grant.TransportEpoch || peer.StreamID != *a.grant.StreamID || !a.peerInGrantLocked(peer.PeerID) {
 		return
 	}
+	a.setPeerReplayScopeLocked(*a.grant)
 	previous, exists := a.peerStreams[peer.PeerID]
 	if exists && peer.PeerTransportEpoch < previous.epoch {
 		return
@@ -587,9 +603,10 @@ func (a *Adapter) handlePeerStatus(payload []byte) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.grantCurrentLocked(a.currentTime()) || a.grant.SessionID == nil || a.grant.StreamID == nil || status.SessionID != *a.grant.SessionID || status.Revision != a.grant.Revision || status.TransportEpoch != a.grant.TransportEpoch || status.StreamID != *a.grant.StreamID || !a.peerInGrantLocked(status.PeerID) {
+	if !a.grantCurrentLocked(a.currentTime()) || a.grant.SessionID == nil || a.grant.MemberID == nil || a.grant.StreamID == nil || status.SessionID != *a.grant.SessionID || status.Revision != a.grant.Revision || status.TransportEpoch != a.grant.TransportEpoch || status.StreamID != *a.grant.StreamID || !a.peerInGrantLocked(status.PeerID) {
 		return
 	}
+	a.setPeerReplayScopeLocked(*a.grant)
 	previous, exists := a.peerStreams[status.PeerID]
 	if exists && (status.PeerTransportEpoch < previous.epoch || (status.PeerTransportEpoch == previous.epoch && status.PeerStreamID != previous.streamID)) {
 		return
@@ -610,8 +627,14 @@ func (a *Adapter) handleGPS(payload []byte) {
 	fix, err := ParseGPSFix(payload)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := a.currentTime()
+	if hasTimestamp && capturedAt.After(now) {
+		a.invalidatePositionPublicationsLocked()
+		a.estimator.Reset()
+		return
+	}
 	if !hasTimestamp {
-		a.dropPendingPosition()
+		a.invalidatePositionPublicationsLocked()
 		if err != nil {
 			a.estimator.Reset()
 		}
@@ -619,21 +642,20 @@ func (a *Adapter) handleGPS(payload []byte) {
 	}
 	if !capturedAt.After(a.gpsObservedAt) {
 		if err != nil {
-			a.dropPendingPosition()
+			a.invalidatePositionPublicationsLocked()
 			a.estimator.Reset()
 		}
 		return
 	}
 	a.gpsObservedAt = capturedAt
 	if err != nil {
-		a.dropPendingPosition()
+		a.invalidatePositionPublicationsLocked()
 		a.estimator.Reset()
 		return
 	}
-	now := a.currentTime()
 	sample, valid := a.estimator.Observe(fix, now)
 	if !valid {
-		a.dropPendingPosition()
+		a.invalidatePositionPublicationsLocked()
 		a.estimator.Reset()
 		return
 	}
@@ -646,7 +668,7 @@ func (a *Adapter) handleGPS(payload []byte) {
 		return
 	}
 	topic := fmt.Sprintf("scooters/%s/ride_group/up", a.config.Identifier)
-	a.queueMQTTPublication(mqttPublication{client: a.mqtt, connection: a.connection, topic: topic, payload: encoded, expiresAt: time.Now().Add(5 * time.Second), priority: 1, kind: "position"})
+	a.queueMQTTPublication(mqttPublication{client: a.mqtt, connection: a.connection, topic: topic, payload: encoded, expiresAt: time.Now().Add(5 * time.Second), priority: 1, kind: "position", positionSessionID: *a.grant.SessionID, positionMemberID: *a.grant.MemberID, positionStreamID: *a.grant.StreamID, positionRevision: a.grant.Revision, positionEpoch: a.grant.TransportEpoch, positionGeneration: a.positionGeneration, positionCapturedAt: sample.CapturedAt})
 	a.positionSeq++
 	a.lastPositionAt = now
 }
@@ -723,10 +745,8 @@ func (a *Adapter) publishActivityQoSLocked(activity Activity, qos byte) {
 		priority := 2
 		if activity.LocalStop {
 			priority = 4
-		} else if !activity.Active {
-			priority = 3
 		}
-		a.queueMQTTPublication(mqttPublication{client: a.mqtt, connection: a.connection, topic: topic, qos: qos, payload: encoded, expiresAt: time.Now().Add(leaseDuration), priority: priority, kind: "activity"})
+		a.queueMQTTPublication(mqttPublication{client: a.mqtt, connection: a.connection, topic: topic, qos: qos, payload: encoded, expiresAt: time.Now().Add(leaseDuration), priority: priority, kind: "activity", activityBootNonce: activity.BootNonce, activitySequence: activity.Sequence, activityActive: activity.Active, activityLocalStop: activity.LocalStop})
 	}
 }
 
@@ -772,6 +792,26 @@ func (a *Adapter) pruneChallengesLocked(now time.Time) {
 			}
 		}
 		delete(a.challenges, oldest)
+	}
+}
+
+func (a *Adapter) setPeerReplayScopeLocked(control Control) {
+	scope := peerReplayScope{sessionID: *control.SessionID}
+	if a.peerScope != scope {
+		a.peerStreams = make(map[string]peerReplayState)
+		a.peerScope = scope
+	}
+	if a.peerStreams == nil {
+		a.peerStreams = make(map[string]peerReplayState)
+	}
+	authorized := make(map[string]struct{}, len(control.Peers))
+	for _, peer := range control.Peers {
+		authorized[peer.PeerID] = struct{}{}
+	}
+	for peerID := range a.peerStreams {
+		if _, exists := authorized[peerID]; !exists {
+			delete(a.peerStreams, peerID)
+		}
 	}
 }
 
