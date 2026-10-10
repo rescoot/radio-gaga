@@ -436,9 +436,14 @@ func (a *Adapter) refreshBlocked(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	wasBlocked := a.blocked
+	wasReady := a.settingsReady
 	a.blocked = blocked
 	a.settingsReady = true
 	if a.protocolVersion == v2ProtocolVersion {
+		if !wasReady && a.mqtt != nil && a.mqtt.IsConnected() {
+			a.publishHelloV2Locked("")
+			a.issueLocalProbeV2Locked(probeReconcileV2, nil)
+		}
 		if blocked || wasBlocked {
 			a.inhibitJournalV2Locked()
 			a.invalidateLocalAttemptsV2Locked()
