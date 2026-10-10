@@ -13,7 +13,142 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-redis/redis/v8"
+	"radio-gaga/internal/models"
 )
+
+func TestRedisSubscriptionRecoversAfterStartupOutage(t *testing.T) {
+	r := newTestRedis(t)
+	r.server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1"}, r.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer adapter.Stop()
+	adapter.Start()
+	time.Sleep(100 * time.Millisecond)
+	adapter.mu.Lock()
+	readyWhileDown := adapter.settingsReady
+	adapter.mu.Unlock()
+	if readyWhileDown {
+		t.Fatal("settings were marked ready while Redis was unavailable")
+	}
+	if err := r.server.Restart(); err != nil {
+		t.Fatal(err)
+	}
+	waitForRedis(t, func() bool { adapter.mu.Lock(); defer adapter.mu.Unlock(); return adapter.settingsReady })
+	client := &mqttFake{connected: true}
+	adapter.mu.Lock()
+	adapter.mqtt = client
+	adapter.connection = testConnection
+	adapter.mu.Unlock()
+	publishJSON(t, r.client, activityChannel, Activity{Version: 1, Type: "ride_group_activity", BootNonce: testBoot, Sequence: 1, Active: true, Challenge: testChallenge})
+	waitForRedis(t, func() bool {
+		adapter.mu.Lock()
+		defer adapter.mu.Unlock()
+		return adapter.activity != nil && adapter.activity.Sequence == 1
+	})
+}
+
+func TestRedisRecoveryRequiresNewActivitySequence(t *testing.T) {
+	r := newTestRedis(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1"}, r.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer adapter.Stop()
+	adapter.Start()
+	waitForRedis(t, func() bool { adapter.mu.Lock(); defer adapter.mu.Unlock(); return adapter.settingsReady })
+	client := &mqttFake{connected: true}
+	adapter.mu.Lock()
+	adapter.mqtt = client
+	adapter.connection = testConnection
+	adapter.mu.Unlock()
+	activity := Activity{Version: 1, Type: "ride_group_activity", BootNonce: testBoot, Sequence: 1, Active: true, Challenge: testChallenge}
+	publishJSON(t, r.client, activityChannel, activity)
+	waitForRedis(t, func() bool {
+		adapter.mu.Lock()
+		defer adapter.mu.Unlock()
+		return adapter.activity != nil && adapter.activity.Sequence == 1
+	})
+	r.server.Close()
+	if err := r.server.Restart(); err != nil {
+		t.Fatal(err)
+	}
+	waitForRedis(t, func() bool {
+		adapter.mu.Lock()
+		defer adapter.mu.Unlock()
+		return adapter.settingsReady && adapter.activity == nil
+	})
+	activity.Challenge = "00000000-0000-4000-8000-000000000007"
+	publishJSON(t, r.client, activityChannel, activity)
+	time.Sleep(50 * time.Millisecond)
+	adapter.mu.Lock()
+	replayAccepted := adapter.activity != nil
+	adapter.mu.Unlock()
+	if replayAccepted {
+		t.Fatal("pre-recovery activity sequence was accepted")
+	}
+	activity.Sequence = 2
+	activity.Challenge = "00000000-0000-4000-8000-000000000008"
+	publishJSON(t, r.client, activityChannel, activity)
+	waitForRedis(t, func() bool {
+		adapter.mu.Lock()
+		defer adapter.mu.Unlock()
+		return adapter.activity != nil && adapter.activity.Sequence == 2
+	})
+}
+
+func TestRedisReconnectRereadsPersistedBlockWithoutNotification(t *testing.T) {
+	r := newTestRedis(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	adapter, err := NewAdapter(ctx, Config{Enabled: true, Identifier: "vehicle-1"}, r.client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer adapter.Stop()
+	adapter.Start()
+	waitForRedis(t, func() bool { adapter.mu.Lock(); defer adapter.mu.Unlock(); return adapter.settingsReady })
+	client := &mqttFake{connected: true}
+	adapter.mu.Lock()
+	adapter.mqtt = client
+	adapter.connection = testConnection
+	adapter.mu.Unlock()
+	publishJSON(t, r.client, activityChannel, Activity{Version: 1, Type: "ride_group_activity", BootNonce: testBoot, Sequence: 1, Active: true, Challenge: testChallenge})
+	waitForRedis(t, func() bool {
+		adapter.mu.Lock()
+		defer adapter.mu.Unlock()
+		return adapter.activity != nil && adapter.activity.Sequence == 1
+	})
+	if err := r.client.HSet(ctx, "settings", "ride-group.blocked", "true").Err(); err != nil {
+		t.Fatal(err)
+	}
+	r.server.Close()
+	if err := r.server.Restart(); err != nil {
+		t.Fatal(err)
+	}
+	waitForRedis(t, func() bool {
+		adapter.mu.Lock()
+		defer adapter.mu.Unlock()
+		return adapter.settingsReady && adapter.blocked && adapter.activity == nil
+	})
+}
+
+func waitForRedis(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for Redis ride-group recovery")
+}
 
 func TestAdapterLocalBrokerHandshakeActivityAndPosition(t *testing.T) {
 	brokerPath, err := exec.LookPath("mosquitto")
@@ -150,7 +285,10 @@ func connectTestMQTT(t *testing.T, address, clientID string) mqtt.Client {
 	deadline := time.Now().Add(3 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		options := mqtt.NewClientOptions().AddBroker(address).SetClientID(clientID).SetAutoReconnect(false).SetConnectRetry(false).SetConnectTimeout(500 * time.Millisecond)
+		options := mqtt.NewClientOptions().AddBroker(address).SetClientID(clientID).SetAutoReconnect(false).SetConnectRetry(false).SetConnectTimeout(500 * time.Millisecond).SetWriteTimeout(models.MQTTPublishTimeout).SetAutoAckDisabled(true).SetCleanSession(false)
+		if !options.AutoAckDisabled || options.WriteTimeout != models.MQTTPublishTimeout || options.CleanSession {
+			t.Fatal("local broker client options do not match production MQTT acknowledgment and timeout settings")
+		}
 		client := mqtt.NewClient(options)
 		token := client.Connect()
 		if token.WaitTimeout(750*time.Millisecond) && token.Error() == nil {

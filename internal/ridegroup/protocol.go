@@ -11,7 +11,7 @@ import (
 
 const MaxEnvelopeBytes = 1024
 
-var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$`)
 
 type Activity struct {
 	Version   int     `json:"v"`
@@ -166,6 +166,10 @@ func jsonFieldsHaveTypes(data []byte, expected map[string]string) bool {
 			if len(trimmed) == 0 || (trimmed[0] != '-' && (trimmed[0] < '0' || trimmed[0] > '9')) {
 				return false
 			}
+		case "integer":
+			if len(trimmed) == 0 || (trimmed[0] != '-' && (trimmed[0] < '0' || trimmed[0] > '9')) || bytes.ContainsAny(trimmed, ".eE") {
+				return false
+			}
 		}
 	}
 	return true
@@ -228,7 +232,7 @@ func uniqueJSONValue(decoder *json.Decoder) error {
 
 func ParseWireActivity(data []byte) (WireActivity, error) {
 	var value WireActivity
-	if err := decodeExact(data, &value, "v", "type", "connection_nonce", "boot_nonce", "seq", "active", "local_stop", "session_id", "member_id", "challenge"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"active": "bool", "local_stop": "bool", "type": "string", "boot_nonce": "string", "challenge": "string"}) {
+	if err := decodeExact(data, &value, "v", "type", "connection_nonce", "boot_nonce", "seq", "active", "local_stop", "session_id", "member_id", "challenge"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"v": "integer", "seq": "integer", "active": "bool", "local_stop": "bool", "type": "string", "boot_nonce": "string", "challenge": "string"}) {
 		return value, fmt.Errorf("invalid ride-group envelope")
 	}
 	activityJSON, err := json.Marshal(value.Activity)
@@ -243,7 +247,7 @@ func ParseWireActivity(data []byte) (WireActivity, error) {
 
 func ParsePosition(data []byte) (Position, error) {
 	var value Position
-	if err := decodeExact(data, &value, "v", "type", "session_id", "revision", "transport_epoch", "stream_id", "seq", "captured_at_ms", "timestamp_source", "lat", "lon", "accuracy_m", "heading_deg", "speed_mps", "motion_source"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"type": "string", "session_id": "string", "stream_id": "string", "timestamp_source": "string", "lat": "number", "lon": "number", "motion_source": "string"}) {
+	if err := decodeExact(data, &value, "v", "type", "session_id", "revision", "transport_epoch", "stream_id", "seq", "captured_at_ms", "timestamp_source", "lat", "lon", "accuracy_m", "heading_deg", "speed_mps", "motion_source"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"v": "integer", "revision": "integer", "transport_epoch": "integer", "seq": "integer", "captured_at_ms": "integer", "type": "string", "session_id": "string", "stream_id": "string", "timestamp_source": "string", "lat": "number", "lon": "number", "motion_source": "string"}) {
 		return value, fmt.Errorf("invalid ride-group envelope")
 	}
 	if value.Version != 1 || value.Type != "ride_group_position" || !validUUID(value.SessionID) || !validUUID(value.StreamID) || !safePositive(value.Revision) || !safePositive(value.TransportEpoch) || !safePositive(value.Sequence) || !safePositive(value.CapturedAtMS) || value.TimestampSource != "producer_fix" || !validCoordinates(value.Latitude, value.Longitude) || !validAccuracy(value.AccuracyM) || !validMotion(value.HeadingDeg, value.SpeedMPS, value.MotionSource) {
@@ -254,7 +258,7 @@ func ParsePosition(data []byte) (Position, error) {
 
 func ParseActivity(data []byte) (Activity, error) {
 	var value Activity
-	if err := decodeExact(data, &value, "v", "type", "boot_nonce", "seq", "active", "local_stop", "session_id", "member_id", "challenge"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"active": "bool", "local_stop": "bool", "type": "string", "boot_nonce": "string", "challenge": "string"}) {
+	if err := decodeExact(data, &value, "v", "type", "boot_nonce", "seq", "active", "local_stop", "session_id", "member_id", "challenge"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"v": "integer", "seq": "integer", "active": "bool", "local_stop": "bool", "type": "string", "boot_nonce": "string", "challenge": "string"}) {
 		return value, fmt.Errorf("invalid ride-group envelope")
 	}
 	if value.Version != 1 || value.Type != "ride_group_activity" || !validUUID(value.BootNonce) || !validUUID(value.Challenge) || value.Sequence <= 0 || value.Sequence > maxSafeInteger || (value.SessionID == nil) != (value.MemberID == nil) || (value.SessionID != nil && (!validUUID(*value.SessionID) || !validUUID(*value.MemberID))) || (value.Active && value.LocalStop) {
@@ -265,7 +269,7 @@ func ParseActivity(data []byte) (Activity, error) {
 
 func ParseControl(data []byte) (Control, error) {
 	var value Control
-	if err := decodeExact(data, &value, "v", "type", "connection_nonce", "action", "session_id", "member_id", "revision", "transport_epoch", "stream_id", "challenge", "server_time_ms", "lease_ttl_ms", "cadence_ms", "peers"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"type": "string", "connection_nonce": "string", "action": "string", "challenge": "string", "lease_ttl_ms": "number", "peers": "array"}) {
+	if err := decodeExact(data, &value, "v", "type", "connection_nonce", "action", "session_id", "member_id", "revision", "transport_epoch", "stream_id", "challenge", "server_time_ms", "lease_ttl_ms", "cadence_ms", "peers"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"v": "integer", "revision": "integer", "transport_epoch": "integer", "server_time_ms": "integer", "lease_ttl_ms": "integer", "type": "string", "connection_nonce": "string", "action": "string", "challenge": "string", "peers": "array"}) {
 		return value, fmt.Errorf("invalid ride-group envelope")
 	}
 	if err := validateControlPeers(data, value.Peers); err != nil {
@@ -288,7 +292,7 @@ func validateControlPeers(data []byte, peers []PeerDescriptor) error {
 	}
 	for _, raw := range encodedPeers {
 		var peer PeerDescriptor
-		if err := decodeExact(raw, &peer, "peer_id", "label", "palette_index"); err != nil || !jsonFieldsHaveTypes(raw, map[string]string{"peer_id": "string", "label": "string"}) {
+		if err := decodeExact(raw, &peer, "peer_id", "label", "palette_index"); err != nil || !jsonFieldsHaveTypes(raw, map[string]string{"peer_id": "string", "label": "string", "palette_index": "integer"}) {
 			return fmt.Errorf("invalid ride-group control")
 		}
 	}
@@ -300,7 +304,7 @@ func (c Control) Validate() error {
 		return fmt.Errorf("invalid ride-group control")
 	}
 	for _, peer := range c.Peers {
-		if !validUUID(peer.PeerID) || peer.PaletteIndex < 0 || peer.PaletteIndex > 5 || utf8.RuneCountInString(peer.Label) > 32 || len([]byte(peer.Label)) > 32 {
+		if !validUUID(peer.PeerID) || peer.PaletteIndex < 0 || peer.PaletteIndex > 5 || utf8.RuneCountInString(peer.Label) > 32 || jsonStringContentBytes(peer.Label) > 32 {
 			return fmt.Errorf("invalid ride-group control")
 		}
 	}
@@ -325,10 +329,10 @@ func (c Control) Validate() error {
 
 func ParsePeerPosition(data []byte) (PeerPosition, error) {
 	var value PeerPosition
-	if err := decodeExact(data, &value, "v", "type", "session_id", "revision", "transport_epoch", "stream_id", "peer_stream_id", "peer_transport_epoch", "seq", "peer_id", "label", "palette_index", "captured_at_ms", "timestamp_source", "lat", "lon", "accuracy_m", "heading_deg", "speed_mps", "motion_source", "received_at_ms", "server_time_ms", "valid_for_ms"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"type": "string", "session_id": "string", "stream_id": "string", "peer_stream_id": "string", "peer_id": "string", "label": "string", "timestamp_source": "string", "lat": "number", "lon": "number", "motion_source": "string", "valid_for_ms": "number"}) {
+	if err := decodeExact(data, &value, "v", "type", "session_id", "revision", "transport_epoch", "stream_id", "peer_stream_id", "peer_transport_epoch", "seq", "peer_id", "label", "palette_index", "captured_at_ms", "timestamp_source", "lat", "lon", "accuracy_m", "heading_deg", "speed_mps", "motion_source", "received_at_ms", "server_time_ms", "valid_for_ms"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"v": "integer", "revision": "integer", "transport_epoch": "integer", "peer_transport_epoch": "integer", "seq": "integer", "palette_index": "integer", "captured_at_ms": "integer", "received_at_ms": "integer", "server_time_ms": "integer", "valid_for_ms": "integer", "type": "string", "session_id": "string", "stream_id": "string", "peer_stream_id": "string", "peer_id": "string", "label": "string", "timestamp_source": "string", "lat": "number", "lon": "number", "motion_source": "string"}) {
 		return value, fmt.Errorf("invalid ride-group envelope")
 	}
-	if value.Version != 1 || value.Type != "ride_group_peer" || !validUUID(value.SessionID) || !validUUID(value.StreamID) || !validUUID(value.PeerStreamID) || !validUUID(value.PeerID) || !safePositive(value.Revision) || !safePositive(value.TransportEpoch) || !safePositive(value.PeerTransportEpoch) || !safePositive(value.Sequence) || !safePositive(value.CapturedAtMS) || !safePositive(value.ReceivedAtMS) || !safePositive(value.ServerTimeMS) || value.ValidForMS < 0 || value.ValidForMS > 10000 || value.TimestampSource != "producer_fix" || value.PaletteIndex < 0 || value.PaletteIndex > 5 || utf8.RuneCountInString(value.Label) > 32 || len([]byte(value.Label)) > 32 || !validCoordinates(value.Latitude, value.Longitude) || !validMotion(value.HeadingDeg, value.SpeedMPS, value.MotionSource) || !validAccuracy(value.AccuracyM) {
+	if value.Version != 1 || value.Type != "ride_group_peer" || !validUUID(value.SessionID) || !validUUID(value.StreamID) || !validUUID(value.PeerStreamID) || !validUUID(value.PeerID) || !safePositive(value.Revision) || !safePositive(value.TransportEpoch) || !safePositive(value.PeerTransportEpoch) || !safePositive(value.Sequence) || !safePositive(value.CapturedAtMS) || !safePositive(value.ReceivedAtMS) || !safePositive(value.ServerTimeMS) || value.ValidForMS < 0 || value.ValidForMS > 10000 || value.TimestampSource != "producer_fix" || value.PaletteIndex < 0 || value.PaletteIndex > 5 || utf8.RuneCountInString(value.Label) > 32 || jsonStringContentBytes(value.Label) > 32 || !validCoordinates(value.Latitude, value.Longitude) || !validMotion(value.HeadingDeg, value.SpeedMPS, value.MotionSource) || !validAccuracy(value.AccuracyM) {
 		return PeerPosition{}, fmt.Errorf("invalid ride-group peer")
 	}
 	return value, nil
@@ -336,7 +340,7 @@ func ParsePeerPosition(data []byte) (PeerPosition, error) {
 
 func ParsePeerStatus(data []byte) (PeerStatus, error) {
 	var value PeerStatus
-	if err := decodeExact(data, &value, "v", "type", "session_id", "revision", "transport_epoch", "stream_id", "peer_id", "peer_stream_id", "peer_transport_epoch", "status"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"type": "string", "session_id": "string", "stream_id": "string", "peer_id": "string", "peer_stream_id": "string", "status": "string"}) {
+	if err := decodeExact(data, &value, "v", "type", "session_id", "revision", "transport_epoch", "stream_id", "peer_id", "peer_stream_id", "peer_transport_epoch", "status"); err != nil || !jsonFieldsHaveTypes(data, map[string]string{"v": "integer", "revision": "integer", "transport_epoch": "integer", "peer_transport_epoch": "integer", "type": "string", "session_id": "string", "stream_id": "string", "peer_id": "string", "peer_stream_id": "string", "status": "string"}) {
 		return value, fmt.Errorf("invalid ride-group envelope")
 	}
 	if value.Version != 1 || value.Type != "ride_group_peer_status" || !validUUID(value.SessionID) || !validUUID(value.StreamID) || !validUUID(value.PeerID) || !validUUID(value.PeerStreamID) || !safePositive(value.Revision) || !safePositive(value.TransportEpoch) || !safePositive(value.PeerTransportEpoch) || (value.Status != "no_fix" && value.Status != "inactive" && value.Status != "cleared") {
@@ -346,6 +350,23 @@ func ParsePeerStatus(data []byte) (PeerStatus, error) {
 }
 
 const maxSafeInteger int64 = 1<<53 - 1
+
+func jsonStringContentBytes(value string) int {
+	encodedBytes := 0
+	for _, character := range value {
+		switch character {
+		case '"', '\\', '\b', '\f', '\n', '\r', '\t':
+			encodedBytes += 2
+		default:
+			if character < 0x20 {
+				encodedBytes += 6
+			} else {
+				encodedBytes += utf8.RuneLen(character)
+			}
+		}
+	}
+	return encodedBytes
+}
 
 func validUUID(value string) bool     { return uuidPattern.MatchString(value) }
 func validUUIDPtr(value *string) bool { return value != nil && validUUID(*value) }

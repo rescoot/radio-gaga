@@ -1,8 +1,11 @@
 package ridegroup
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,6 +99,58 @@ func TestPositionEnvelopeBoundsAndExactKeys(t *testing.T) {
 	}
 }
 
+func TestProtocolRejectsNullScalarsEscapedLabelOverflowAndCanonicalUUID(t *testing.T) {
+	control, err := os.ReadFile("testdata/v1/control-grant.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := os.ReadFile("testdata/v1/peer-position.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fivePeers, err := os.ReadFile("testdata/v1/control-grant-five-peers.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := os.ReadFile("testdata/v1/peer-status.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, input := range map[string][]byte{
+		"control revision":  bytes.Replace(control, []byte(`"revision":1`), []byte(`"revision":null`), 1),
+		"control palette":   bytes.Replace(fivePeers, []byte(`"palette_index":0`), []byte(`"palette_index":null`), 1),
+		"peer palette":      bytes.Replace(peer, []byte(`"palette_index":2`), []byte(`"palette_index":null`), 1),
+		"peer status epoch": bytes.Replace(status, []byte(`"transport_epoch":1`), []byte(`"transport_epoch":null`), 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var parseErr error
+			switch name {
+			case "control revision", "control palette":
+				_, parseErr = ParseControl(input)
+			case "peer palette":
+				_, parseErr = ParsePeerPosition(input)
+			case "peer status epoch":
+				_, parseErr = ParsePeerStatus(input)
+			}
+			if parseErr == nil {
+				t.Fatal("null integer accepted")
+			}
+		})
+	}
+	label := strings.Repeat("\n", 17)
+	encoded, err := json.Marshal(Control{Version: 1, Type: "ride_group_control", ConnectionNonce: testConnection, Action: "grant", SessionID: stringPointer(testSession), MemberID: stringPointer(testMember), Revision: 1, TransportEpoch: 1, StreamID: stringPointer(testStream), Challenge: testChallenge, ServerTimeMS: 1781731200000, LeaseTTLMS: 10000, CadenceMS: durationPointer(2000), Peers: []PeerDescriptor{{PeerID: testBoot, Label: label, PaletteIndex: 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseControl(encoded); err == nil {
+		t.Fatal("label with overlong JSON-encoded content accepted")
+	}
+	canonical := "00000000-0000-0000-0000-000000000000"
+	if !validUUID(canonical) {
+		t.Fatal("canonical UUID was rejected by non-normative version/variant restriction")
+	}
+}
+
 func TestParseGPSFixRequiresProcessedActiveFixAndSourceTime(t *testing.T) {
 	valid := `{"latitude":"0.000000","longitude":"0.000000","timestamp":"2026-10-10T05:30:00Z","active":true,"connected":true,"state":"fix-established","fix":"3d","eph":4.2,"speed":"27.0","course":"90.0","updated":"2026-10-10T05:30:01Z"}`
 	if _, err := ParseGPSFix([]byte(valid)); err != nil {
@@ -152,6 +207,8 @@ func TestMotionEstimatorTimestampAndDateline(t *testing.T) {
 		t.Fatalf("dateline eastward heading incorrect: %+v", sample)
 	}
 }
+
+func stringPointer(value string) *string { return &value }
 
 func testGPSFix(lat, lon string, timestamp time.Time, eph float64) GPSFix {
 	return GPSFix{Latitude: lat, Longitude: lon, Timestamp: timestamp.Format(time.RFC3339Nano), Active: true, Connected: true, State: "fix-established", Fix: "3d", Eph: &eph}

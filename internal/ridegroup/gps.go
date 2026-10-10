@@ -40,6 +40,17 @@ type GPSFixPoint struct {
 	AccuracyM  *float64
 }
 
+func parseGPSTimestamp(data []byte) (time.Time, bool) {
+	var timestamp struct {
+		Timestamp string `json:"timestamp"`
+	}
+	if json.Unmarshal(data, &timestamp) != nil {
+		return time.Time{}, false
+	}
+	capturedAt, err := time.Parse(time.RFC3339Nano, timestamp.Timestamp)
+	return capturedAt, err == nil
+}
+
 func ParseGPSFix(data []byte) (GPSFix, error) {
 	if len(data) == 0 || len(data) > MaxEnvelopeBytes*4 {
 		return GPSFix{}, fmt.Errorf("invalid GPS fix")
