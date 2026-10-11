@@ -19,6 +19,7 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-redis/redis/v8"
 
+	"radio-gaga/internal/cellular"
 	"radio-gaga/internal/events"
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/modeminfo"
@@ -451,6 +452,17 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 			cancel()
 			return nil, fmt.Errorf("failed to initialize ride-group adapter: %w", err)
 		}
+	}
+
+	// Cellular setup must run before the first cloud connection: it may be
+	// needed to establish that connection in the first place.
+	if config.Cellular != nil {
+		cellularConfig := *config.Cellular
+		client.wg.Add(1)
+		go func() {
+			defer client.wg.Done()
+			cellular.Run(ctx, redisClient, cellularConfig, mdbFlavor == "librescoot")
+		}()
 	}
 
 	_, err = createMQTTClient(config, opts, commandTopic, client.handleCommand, client.setActiveMQTTClient)
