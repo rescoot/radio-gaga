@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -17,8 +17,8 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"radio-gaga/internal/models"
+	"radio-gaga/internal/modeminfo"
 	"radio-gaga/internal/txn"
-	"radio-gaga/internal/utils"
 )
 
 // The deferred half of the bootstrap flow.
@@ -45,6 +45,22 @@ const (
 // revoke the credential later without holding the code's plaintext. It also keeps
 // the code out of topics and out of broker logs — mosquitto logs the username,
 // not the password.
+func bootstrapCredential(config models.BootstrapConfig) (credential, username string, err error) {
+	if config.Token != "" {
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(config.Token)
+		if config.Code != "" || decodeErr != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != config.Token {
+			return "", "", fmt.Errorf("bootstrap requires one canonical 256-bit enrollment token")
+		}
+		sum := sha256.Sum256([]byte(config.Token))
+		return config.Token, hex.EncodeToString(sum[:])[:16], nil
+	}
+	code := normalizeShortCode(config.Code)
+	if len(code) != 6 {
+		return "", "", fmt.Errorf("bootstrap requires a token or six-character code")
+	}
+	return code, bootstrapBrokerUsername(code), nil
+}
+
 func bootstrapBrokerUsername(code string) string {
 	sum := sha256.Sum256([]byte(normalizeShortCode(code)))
 	return hex.EncodeToString(sum[:])[:16]
@@ -76,7 +92,7 @@ func normalizeShortCode(code string) string {
 // announcePayload is what the device tells Sunshine about itself. One identifier
 // is required; the nonce lets the server (and support) tell two devices holding
 // one code apart.
-func announcePayload(imei, mdbSerial, dbcSerial, softwareVersion, platform, name, nonce string) []byte {
+func announcePayload(imei, mdbSerial, dbcSerial, softwareVersion, platform, name, nonce string, sim modeminfo.Identity) []byte {
 	payload := map[string]string{
 		"nonce":      nonce,
 		"os_version": softwareVersion,
@@ -84,6 +100,7 @@ func announcePayload(imei, mdbSerial, dbcSerial, softwareVersion, platform, name
 	}
 	for key, value := range map[string]string{
 		"imei": imei, "mdb_serial": mdbSerial, "dbc_serial": dbcSerial, "name": name,
+		"iccid": sim.ICCID, "imsi": sim.IMSI,
 	} {
 		if value != "" {
 			payload[key] = value
@@ -110,18 +127,18 @@ type txnReplaceEnvelope struct {
 //
 // Returns nil only when a config was committed and the process should exit.
 func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string) error {
-	code := normalizeShortCode(cfg.Bootstrap.Code)
-	if code == "" {
-		return fmt.Errorf("bootstrap state without a code")
+	credential, username, err := bootstrapCredential(cfg.Bootstrap)
+	if err != nil {
+		return err
 	}
 	if configPath == "" {
 		return fmt.Errorf("config path is required: the applied config is written there")
 	}
-	if cfg.MQTT.BrokerURL == "" {
-		return fmt.Errorf("mqtt.broker_url is required to announce")
+	tlsConfig, err := bootstrapTLSConfig(cfg.MQTT)
+	if err != nil {
+		return err
 	}
 
-	username := bootstrapBrokerUsername(code)
 	nonce := randomNonce()
 	platform := detectPlatform()
 
@@ -142,7 +159,7 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 		AddBroker(cfg.MQTT.BrokerURL).
 		SetClientID("radio-gaga-bootstrap-" + nonce).
 		SetUsername(username).
-		SetPassword(code).
+		SetPassword(credential).
 		SetKeepAlive(30 * time.Second).
 		SetAutoReconnect(true).
 		SetConnectTimeout(announceConnectTO).
@@ -157,20 +174,7 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 		// one would be claiming an identity it does not have yet.
 		SetCleanSession(true)
 
-	if utils.IsTLSURL(cfg.MQTT.BrokerURL) {
-		tlsConfig := &tls.Config{}
-		var err error
-		switch {
-		case cfg.MQTT.CACertEmbedded != "":
-			tlsConfig, err = utils.CreateInsecureTLSConfigWithEmbeddedCert(cfg.MQTT.CACertEmbedded)
-		case cfg.MQTT.CACert != "":
-			tlsConfig, err = utils.CreateInsecureTLSConfig(cfg.MQTT.CACert)
-		}
-		if err != nil {
-			return fmt.Errorf("build TLS config: %w", err)
-		}
-		opts.SetTLSConfig(tlsConfig)
-	}
+	opts.SetTLSConfig(tlsConfig)
 
 	configs := make(chan []byte, 1)
 
@@ -188,7 +192,17 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 			// a dead session only produces a token error.
 			return
 		}
-		payload := announcePayload(imei, serial, dbcSerial, softwareVersion, platform, cfg.Scooter.Name, nonce)
+		ctx, cancel := context.WithTimeout(context.Background(), bootstrapModemTimeout)
+		sim, identityErr := modeminfo.FetchIdentity(ctx)
+		cancel()
+		if identityErr != nil && cfg.Bootstrap.Token != "" {
+			log.Printf("bootstrap-announce: waiting for modem/SIM identity")
+			return
+		}
+		if sim.IMEI != "" {
+			imei = sim.IMEI
+		}
+		payload := announcePayload(imei, serial, dbcSerial, softwareVersion, platform, cfg.Scooter.Name, nonce, sim)
 		token := client.Publish(announceTopic, 1, false, payload)
 		token.WaitTimeout(announceConnectTO)
 		if token.Error() != nil {
@@ -243,6 +257,11 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 	for {
 		select {
 		case payload := <-configs:
+			var delivery txnReplaceEnvelope
+			if err := json.Unmarshal(payload, &delivery); err != nil || delivery.Params.TxnID == "" {
+				log.Printf("bootstrap-announce: configuration has no transaction identifier")
+				continue
+			}
 			committed, err := applyPushedConfig(payload, configPath)
 			status, reason := "success", ""
 			if err != nil {
@@ -252,7 +271,7 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 				status, reason = "rollback", "transaction did not commit"
 			}
 
-			result := map[string]string{"status": status}
+			result := map[string]string{"status": status, "txn_id": delivery.Params.TxnID}
 			if reason != "" {
 				result["reason"] = reason
 			}

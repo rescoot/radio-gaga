@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
+	"radio-gaga/internal/models"
+	"radio-gaga/internal/modeminfo"
 	"testing"
 )
 
@@ -75,7 +77,7 @@ func TestBrokerUsernameDoesNotLeakTheCode(t *testing.T) {
 }
 
 func TestAnnouncePayloadOmitsEmptyIdentifiers(t *testing.T) {
-	payload := announcePayload("866802022030847", "", "", "v0.3.44", "librescoot", "", "nonce1")
+	payload := announcePayload("866802022030847", "", "", "v0.3.44", "librescoot", "", "nonce1", modeminfo.Identity{ICCID: "8949000000000000001", IMSI: "901280000000001"})
 
 	var decoded map[string]string
 	if err := json.Unmarshal(payload, &decoded); err != nil {
@@ -88,11 +90,41 @@ func TestAnnouncePayloadOmitsEmptyIdentifiers(t *testing.T) {
 	if _, present := decoded["mdb_serial"]; present {
 		t.Fatalf("an empty identifier must be omitted, not sent as an empty string: %v", decoded)
 	}
+	if decoded["iccid"] != "8949000000000000001" || decoded["imsi"] != "901280000000001" {
+		t.Fatalf("SIM identity missing: %v", decoded)
+	}
 	if decoded["nonce"] != "nonce1" {
 		t.Fatalf("nonce missing: %v", decoded)
 	}
 	if decoded["platform"] != "librescoot" {
 		t.Fatalf("platform missing: %v", decoded)
+	}
+}
+
+func TestBootstrapEnrollmentCredential(t *testing.T) {
+	const token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+	credential, username, err := bootstrapCredential(models.BootstrapConfig{Token: token})
+	if err != nil || credential != token || username != "ea866a757e4c38ba" {
+		t.Fatalf("credential derivation: %q %q %v", credential, username, err)
+	}
+	for _, config := range []models.BootstrapConfig{
+		{Token: token, Code: "FGHX7A"}, {Token: "secret"}, {Token: token + "="}, {},
+	} {
+		if _, _, err := bootstrapCredential(config); err == nil {
+			t.Fatal("invalid credential accepted")
+		}
+	}
+	credential, username, err = bootstrapCredential(models.BootstrapConfig{Code: "fghx7a"})
+	if err != nil || credential != "FGHX7A" || username != "186856c4dd2e60a0" {
+		t.Fatal("legacy code derivation failed")
+	}
+	config := &models.Config{Bootstrap: models.BootstrapConfig{Token: token}}
+	if !config.InBootstrapState() {
+		t.Fatal("enrollment token must select bootstrap state")
+	}
+	config.Scooter.Token = "device-token"
+	if config.InBootstrapState() {
+		t.Fatal("configured device must not bootstrap")
 	}
 }
 

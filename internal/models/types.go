@@ -51,8 +51,10 @@ type CommandLineFlags struct {
 	// Bootstrap runs the per-user-token install flow: read hardware IDs,
 	// POST to Sunshine, receive config YAML, hand to the txn machinery,
 	// probe-then-commit. Used by the install script as a one-shot.
-	Bootstrap      bool
-	BootstrapToken string
+	Bootstrap             bool
+	BootstrapToken        string
+	BootstrapIdentity     bool
+	BootstrapCapabilities bool
 }
 
 // Config represents the application configuration
@@ -100,7 +102,8 @@ type BootstrapConfig struct {
 	// Code is the installer short code, and doubles as the broker password. The
 	// broker username is derived from it (see BootstrapBrokerUsername) so the
 	// code itself never appears in a topic or in a broker log.
-	Code string `yaml:"code,omitempty"`
+	Code  string `yaml:"code,omitempty"`
+	Token string `yaml:"token,omitempty"`
 	// APIBaseURL is retained for the one-shot HTTP flow and for error reporting.
 	APIBaseURL string `yaml:"api_base_url,omitempty"`
 }
@@ -111,7 +114,14 @@ type BootstrapConfig struct {
 // that merely lost its token should fail loudly, not quietly start announcing
 // itself to Sunshine.
 func (c *Config) InBootstrapState() bool {
-	return c.Bootstrap.Code != "" && c.Scooter.Token == ""
+	return (c.Bootstrap.Code != "" || c.Bootstrap.Token != "") && c.Scooter.Token == ""
+}
+
+func (c *Config) MQTTUsername() string {
+	if c.MQTT.Username != "" {
+		return c.MQTT.Username
+	}
+	return c.Scooter.Identifier
 }
 
 // ScooterConfig contains scooter-specific configuration
@@ -123,10 +133,12 @@ type ScooterConfig struct {
 
 // MQTTConfig contains MQTT configuration
 type MQTTConfig struct {
-	BrokerURL      string `yaml:"broker_url"`
-	CACert         string `yaml:"ca_cert"`
-	CACertEmbedded string `yaml:"ca_cert_embedded,omitempty"`
-	KeepAlive      string `yaml:"keepalive"`
+	BrokerURL          string `yaml:"broker_url"`
+	Username           string `yaml:"username,omitempty"`
+	CACert             string `yaml:"ca_cert"`
+	CACertEmbedded     string `yaml:"ca_cert_embedded,omitempty"`
+	KeepAlive          string `yaml:"keepalive"`
+	RequireVerifiedTLS bool   `yaml:"require_verified_tls,omitempty"`
 }
 
 // NTPConfig contains NTP time synchronization configuration

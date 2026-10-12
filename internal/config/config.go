@@ -67,6 +67,8 @@ func ParseFlags() *models.CommandLineFlags {
 	// through the txn machinery (probe-then-commit), exit 0/non-zero.
 	flag.BoolVar(&flags.Bootstrap, "bootstrap", false, "run the per-user install bootstrap flow and exit")
 	flag.StringVar(&flags.BootstrapToken, "bootstrap-token", "", "BootstrapToken plaintext (paired with -bootstrap)")
+	flag.BoolVar(&flags.BootstrapIdentity, "bootstrap-identity", false, "print local modem/SIM identity as JSON without connecting to the cloud")
+	flag.BoolVar(&flags.BootstrapCapabilities, "bootstrap-capabilities", false, "print supported laptop enrollment protocol version")
 
 	flag.Parse()
 	return flags
@@ -229,6 +231,9 @@ func defaultConfig() *models.Config {
 // ValidateConfig validates configuration
 func ValidateConfig(config *models.Config) error {
 	var errors []string
+	if config.Bootstrap.Token != "" && config.Bootstrap.Code != "" {
+		errors = append(errors, "bootstrap.token and bootstrap.code are mutually exclusive")
+	}
 
 	if config.Cellular != nil {
 		if err := cellular.Validate(*config.Cellular); err != nil {
@@ -248,6 +253,9 @@ func ValidateConfig(config *models.Config) error {
 		if config.Scooter.Token == "" {
 			errors = append(errors, "scooter.token is required")
 		}
+	}
+	if config.MQTT.RequireVerifiedTLS && !(strings.HasPrefix(config.MQTT.BrokerURL, "ssl://") || strings.HasPrefix(config.MQTT.BrokerURL, "tls://")) {
+		errors = append(errors, "mqtt.require_verified_tls requires a TLS broker URL")
 	}
 	if config.Environment != "" && config.Environment != "production" && config.Environment != "development" {
 		errors = append(errors, fmt.Sprintf("environment: invalid value %s (must be 'production' or 'development')", config.Environment))

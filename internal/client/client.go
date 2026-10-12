@@ -338,7 +338,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	opts := mqtt.NewClientOptions().
 		AddBroker(config.MQTT.BrokerURL).
 		SetClientID(clientID).
-		SetUsername(config.Scooter.Identifier).
+		SetUsername(config.MQTTUsername()).
 		SetPassword(config.Scooter.Token).
 		SetKeepAlive(keepAlive).
 		SetAutoReconnect(true).
@@ -561,6 +561,10 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 				}
 			} else {
 				log.Printf("NTP sync failed: %v, falling back to insecure...", ntpErr)
+			}
+
+			if config.MQTT.RequireVerifiedTLS {
+				return nil, fmt.Errorf("verified TLS connection failed; certificate verification is required")
 			}
 
 			// If we get here, both normal connection and NTP sync failed
@@ -1668,7 +1672,7 @@ func (s *ScooterMQTTClient) buildMQTTOptions() *mqtt.ClientOptions {
 	opts := mqtt.NewClientOptions().
 		AddBroker(s.config.MQTT.BrokerURL).
 		SetClientID(clientID).
-		SetUsername(s.config.Scooter.Identifier).
+		SetUsername(s.config.MQTTUsername()).
 		SetPassword(s.config.Scooter.Token).
 		SetKeepAlive(keepAlive).
 		SetAutoReconnect(true).
