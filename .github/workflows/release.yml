@@ -24,7 +24,17 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
+
+      - name: Install MQTT test broker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mosquitto
+
+      - name: Test
+        run: |
+          go test ./...
+          go test -race ./cmd/radio-gaga ./internal/config ./internal/models
 
       - name: Determine Version
         id: get_version

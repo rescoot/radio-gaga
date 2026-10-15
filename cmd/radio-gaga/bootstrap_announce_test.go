@@ -77,7 +77,7 @@ func TestBrokerUsernameDoesNotLeakTheCode(t *testing.T) {
 }
 
 func TestAnnouncePayloadOmitsEmptyIdentifiers(t *testing.T) {
-	payload := announcePayload("866802022030847", "", "", "v0.3.44", "librescoot", "", "nonce1", modeminfo.Identity{ICCID: "8949000000000000001", IMSI: "901280000000001"})
+	payload := announcePayload("866802022030847", "", "", "v0.3.44", "librescoot", "", "nonce1", "", modeminfo.Identity{ICCID: "8949000000000000001", IMSI: "901280000000001"})
 
 	var decoded map[string]string
 	if err := json.Unmarshal(payload, &decoded); err != nil {
@@ -86,6 +86,9 @@ func TestAnnouncePayloadOmitsEmptyIdentifiers(t *testing.T) {
 
 	if decoded["imei"] != "866802022030847" {
 		t.Fatalf("imei missing from payload: %v", decoded)
+	}
+	if _, present := decoded["installation_id"]; present {
+		t.Fatal("unbound announcement must omit installation_id")
 	}
 	if _, present := decoded["mdb_serial"]; present {
 		t.Fatalf("an empty identifier must be omitted, not sent as an empty string: %v", decoded)

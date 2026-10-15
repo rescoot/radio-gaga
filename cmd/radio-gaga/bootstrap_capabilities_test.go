@@ -25,7 +25,7 @@ func TestBootstrapCapabilitiesCLI(t *testing.T) {
 	if err := json.Unmarshal(output, &capabilities); err != nil {
 		t.Fatalf("stdout must contain only JSON: %q: %v", output, err)
 	}
-	if capabilities["enrollment_protocol"] != 1 {
+	if capabilities["enrollment_protocol"] != 1 || capabilities["installation_binding"] != 1 {
 		t.Fatalf("unexpected capabilities: %v", capabilities)
 	}
 }

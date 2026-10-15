@@ -46,6 +46,9 @@ const (
 // the code out of topics and out of broker logs — mosquitto logs the username,
 // not the password.
 func bootstrapCredential(config models.BootstrapConfig) (credential, username string, err error) {
+	if err := config.ValidateInstallationID(); err != nil {
+		return "", "", err
+	}
 	if config.Token != "" {
 		decoded, decodeErr := base64.RawURLEncoding.DecodeString(config.Token)
 		if config.Code != "" || decodeErr != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != config.Token {
@@ -92,7 +95,7 @@ func normalizeShortCode(code string) string {
 // announcePayload is what the device tells Sunshine about itself. One identifier
 // is required; the nonce lets the server (and support) tell two devices holding
 // one code apart.
-func announcePayload(imei, mdbSerial, dbcSerial, softwareVersion, platform, name, nonce string, sim modeminfo.Identity) []byte {
+func announcePayload(imei, mdbSerial, dbcSerial, softwareVersion, platform, name, nonce, installationID string, sim modeminfo.Identity) []byte {
 	payload := map[string]string{
 		"nonce":      nonce,
 		"os_version": softwareVersion,
@@ -100,7 +103,7 @@ func announcePayload(imei, mdbSerial, dbcSerial, softwareVersion, platform, name
 	}
 	for key, value := range map[string]string{
 		"imei": imei, "mdb_serial": mdbSerial, "dbc_serial": dbcSerial, "name": name,
-		"iccid": sim.ICCID, "imsi": sim.IMSI,
+		"iccid": sim.ICCID, "imsi": sim.IMSI, "installation_id": installationID,
 	} {
 		if value != "" {
 			payload[key] = value
@@ -114,10 +117,12 @@ func announcePayload(imei, mdbSerial, dbcSerial, softwareVersion, platform, name
 type txnReplaceEnvelope struct {
 	Command string `json:"command"`
 	Params  struct {
-		TxnID      string `json:"txn_id"`
-		Kind       string `json:"kind"`
-		ConfigYAML string `json:"config_yaml"`
-		Restart    bool   `json:"restart"`
+		TxnID          string `json:"txn_id"`
+		Kind           string `json:"kind"`
+		ConfigYAML     string `json:"config_yaml"`
+		Restart        bool   `json:"restart"`
+		InstallationID string `json:"installation_id"`
+		Nonce          string `json:"nonce"`
 	} `json:"params"`
 }
 
@@ -127,6 +132,22 @@ type txnReplaceEnvelope struct {
 //
 // Returns nil only when a config was committed and the process should exit.
 func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string) error {
+	return runBootstrapSession(context.Background(), cfg, configPath, softwareVersion, bootstrapDependencies{
+		readIMEI:      func() string { return tryReadIMEI(bootstrapModemTimeout) },
+		readSerials:   tryReadSerials,
+		fetchIdentity: modeminfo.FetchIdentity,
+		applyConfig:   applyPushedConfig,
+	})
+}
+
+type bootstrapDependencies struct {
+	readIMEI      func() string
+	readSerials   func() (string, string)
+	fetchIdentity func(context.Context) (modeminfo.Identity, error)
+	applyConfig   func([]byte, string) (bool, error)
+}
+
+func runBootstrapSession(ctx context.Context, cfg *models.Config, configPath, softwareVersion string, deps bootstrapDependencies) error {
 	credential, username, err := bootstrapCredential(cfg.Bootstrap)
 	if err != nil {
 		return err
@@ -142,8 +163,8 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 	nonce := randomNonce()
 	platform := detectPlatform()
 
-	imei := tryReadIMEI(bootstrapModemTimeout)
-	mdbSerial, dbcSerial := tryReadSerials()
+	imei := deps.readIMEI()
+	mdbSerial, dbcSerial := deps.readSerials()
 	if imei == "" && mdbSerial == "" {
 		// Not fatal: the modem may still be enumerating, and the announce timer
 		// will pick it up on a later tick.
@@ -151,9 +172,8 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 	}
 	log.Printf("bootstrap-announce: username=%s nonce=%s imei=%q mdb_sn=%q", username, nonce, imei, mdbSerial)
 
-	configTopic := fmt.Sprintf("claim/%s/config", username)
-	announceTopic := fmt.Sprintf("claim/%s/announce", username)
-	resultTopic := fmt.Sprintf("claim/%s/result", username)
+	binding := bootstrapBinding{installationID: cfg.Bootstrap.InstallationID, nonce: nonce}
+	announceTopic, configTopic, resultTopic := binding.topics(username)
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(cfg.MQTT.BrokerURL).
@@ -181,28 +201,28 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 	announce := func(client mqtt.Client) {
 		imei := imei
 		if imei == "" {
-			imei = tryReadIMEI(bootstrapModemTimeout)
+			imei = deps.readIMEI()
 		}
 		serial := mdbSerial
 		if serial == "" {
-			serial, _ = tryReadSerials()
+			serial, _ = deps.readSerials()
 		}
 		if !client.IsConnected() {
 			// The reconnect handler announces again on reconnect; publishing into
 			// a dead session only produces a token error.
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), bootstrapModemTimeout)
-		sim, identityErr := modeminfo.FetchIdentity(ctx)
+		identityCtx, cancel := context.WithTimeout(ctx, bootstrapModemTimeout)
+		sim, identityErr := deps.fetchIdentity(identityCtx)
 		cancel()
-		if identityErr != nil && cfg.Bootstrap.Token != "" {
+		if identityErr != nil && (cfg.Bootstrap.Token != "" || binding.installationID != "") {
 			log.Printf("bootstrap-announce: waiting for modem/SIM identity")
 			return
 		}
 		if sim.IMEI != "" {
 			imei = sim.IMEI
 		}
-		payload := announcePayload(imei, serial, dbcSerial, softwareVersion, platform, cfg.Scooter.Name, nonce, sim)
+		payload := announcePayload(imei, serial, dbcSerial, softwareVersion, platform, cfg.Scooter.Name, nonce, binding.installationID, sim)
 		token := client.Publish(announceTopic, 1, false, payload)
 		token.WaitTimeout(announceConnectTO)
 		if token.Error() != nil {
@@ -218,6 +238,10 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 	opts.SetOnConnectHandler(func(client mqtt.Client) {
 		token := client.Subscribe(configTopic, 1, func(_ mqtt.Client, message mqtt.Message) {
 			payload := append([]byte(nil), message.Payload()...)
+			if _, err := binding.delivery(payload); err != nil {
+				log.Printf("bootstrap-announce: ignoring delivery: %v", err)
+				return
+			}
 			select {
 			case configs <- payload:
 			default:
@@ -256,13 +280,14 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 
 	for {
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case payload := <-configs:
-			var delivery txnReplaceEnvelope
-			if err := json.Unmarshal(payload, &delivery); err != nil || delivery.Params.TxnID == "" {
-				log.Printf("bootstrap-announce: configuration has no transaction identifier")
+			delivery, err := binding.delivery(payload)
+			if err != nil {
 				continue
 			}
-			committed, err := applyPushedConfig(payload, configPath)
+			committed, err := deps.applyConfig(payload, configPath)
 			status, reason := "success", ""
 			if err != nil {
 				status, reason = "rollback", err.Error()
@@ -271,14 +296,8 @@ func runBootstrapAnnounce(cfg *models.Config, configPath, softwareVersion string
 				status, reason = "rollback", "transaction did not commit"
 			}
 
-			result := map[string]string{"status": status, "txn_id": delivery.Params.TxnID}
-			if reason != "" {
-				result["reason"] = reason
-			}
-			if body, err := json.Marshal(result); err == nil {
-				token := client.Publish(resultTopic, 1, false, body)
-				token.WaitTimeout(announceConnectTO)
-			}
+			token := client.Publish(resultTopic, 1, false, binding.result(delivery.Params.TxnID, status, reason))
+			token.WaitTimeout(announceConnectTO)
 
 			if status != "success" {
 				// Keep announcing: Sunshine can re-push, and the retained config

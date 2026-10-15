@@ -231,6 +231,9 @@ func defaultConfig() *models.Config {
 // ValidateConfig validates configuration
 func ValidateConfig(config *models.Config) error {
 	var errors []string
+	if err := config.Bootstrap.ValidateInstallationID(); err != nil {
+		errors = append(errors, err.Error())
+	}
 	if config.Bootstrap.Token != "" && config.Bootstrap.Code != "" {
 		errors = append(errors, "bootstrap.token and bootstrap.code are mutually exclusive")
 	}

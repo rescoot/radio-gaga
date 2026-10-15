@@ -44,7 +44,7 @@ func main() {
 	}
 
 	if flags.BootstrapCapabilities {
-		fmt.Fprintln(os.Stdout, `{"enrollment_protocol":1}`)
+		fmt.Fprintln(os.Stdout, `{"enrollment_protocol":1,"installation_binding":1}`)
 		os.Exit(0)
 	}
 

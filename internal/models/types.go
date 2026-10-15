@@ -104,6 +104,8 @@ type BootstrapConfig struct {
 	// code itself never appears in a topic or in a broker log.
 	Code  string `yaml:"code,omitempty"`
 	Token string `yaml:"token,omitempty"`
+	// InstallationID is a persistent UUID shared with the laptop's registration report.
+	InstallationID string `yaml:"installation_id,omitempty"`
 	// APIBaseURL is retained for the one-shot HTTP flow and for error reporting.
 	APIBaseURL string `yaml:"api_base_url,omitempty"`
 }
