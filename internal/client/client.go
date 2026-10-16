@@ -1149,24 +1149,18 @@ func (s *ScooterMQTTClient) checkAndStoreDBCFlavor() {
 
 		if sshCtx.Err() == context.DeadlineExceeded {
 			log.Printf("SSH command timed out while checking DBC os-release")
-			dbcID = "unknown_timeout"
-			dbcVersionID = "unknown_timeout"
+			return
 		} else if sshErr != nil {
 			log.Printf("Failed to SSH to DBC or get os-release: %v", sshErr)
-			dbcID = "unknown_ssh_error"
-			dbcVersionID = "unknown_ssh_error"
+			return
 		} else {
 			fetchedViaSSH = true
 			outputStr := string(output)
 			dbcID, dbcVersionID = parseOSRelease(outputStr)
 
-			if dbcID == "" {
-				dbcID = "unknown_os_release_id"
-				log.Printf("Could not find ID in DBC os-release")
-			}
-			if dbcVersionID == "" {
-				dbcVersionID = "unknown_os_release_version"
-				log.Printf("Could not find VERSION_ID in DBC os-release")
+			if dbcID == "" || dbcVersionID == "" {
+				log.Printf("Incomplete DBC os-release; preserving stored DBC information")
+				return
 			}
 
 			// Extract OTP hex lines (format: "0x...") and compute DBC serial numbers
