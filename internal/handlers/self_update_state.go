@@ -113,11 +113,16 @@ func runCoordinatedSelfUpdate(ctx context.Context, dir, request, identity string
 	}
 	results = kept
 	err = run()
+	// Shutdown is an interrupted command, not a completed failure. Leave its
+	// delivery eligible for resumption after the process starts again.
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	message := ""
 	if err != nil {
 		message = err.Error()
-		if len(message) > 2048 {
-			message = message[:2048]
+		if len(message) > 512 {
+			message = message[:512]
 		}
 	}
 	if len(results) >= 64 {

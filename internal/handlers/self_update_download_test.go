@@ -442,6 +442,111 @@ func TestUpdate416VerifiesCompleteWireBytes(t *testing.T) {
 	}
 }
 
+func TestUpdateProgressCanContinueBeyondFiveMinutes(t *testing.T) {
+	binary := []byte("a slowly progressing executable")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(binary) }))
+	defer server.Close()
+	policy := fastUpdatePolicy()
+	clock := time.Now()
+	start := clock
+	policy.now = func() time.Time { return clock }
+	policy.afterFunc = func(_ time.Duration, _ func()) updateWatchdog {
+		return &fakeUpdateWatchdog{reset: func() { clock = clock.Add(10 * time.Minute) }}
+	}
+	transport := server.Client().Transport
+	client := &http.Client{Transport: updateTestRoundTripper(func(request *http.Request) (*http.Response, error) {
+		deadline, ok := request.Context().Deadline()
+		if !ok || time.Until(deadline) < time.Hour {
+			t.Error("active attempt has a short wall-clock cutoff")
+		}
+		return transport.RoundTrip(request)
+	})}
+	got, err := downloadSelfUpdateBinary(context.Background(), client, t.TempDir(), server.URL, "sha256", updateDigest(binary), policy)
+	if err != nil || !bytes.Equal(got, binary) || clock.Sub(start) < 20*time.Minute {
+		t.Fatalf("slow progress: %q %v elapsed=%s", got, err, clock.Sub(start))
+	}
+}
+
+type updateTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f updateTestRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestUpdateChangedRedirectTargetDoesNotAppend(t *testing.T) {
+	binary := []byte("the new complete binary")
+	var entries atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"same"`)
+		if r.URL.Path == "/other" {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", len(binary)/2, len(binary)-1, len(binary)))
+			w.WriteHeader(206)
+			_, _ = w.Write(binary[len(binary)/2:])
+			return
+		}
+		switch entries.Add(1) {
+		case 1:
+			interruptedUpdate(w, bytes.Repeat([]byte("x"), len(binary)))
+		case 2:
+			http.Redirect(w, r, "/other", http.StatusTemporaryRedirect)
+		default:
+			if r.Header.Get("Range") != "" {
+				t.Error("changed final URL did not discard partial")
+			}
+			_, _ = w.Write(binary)
+		}
+	}))
+	defer server.Close()
+	got, err := downloadSelfUpdateBinary(context.Background(), server.Client(), t.TempDir(), server.URL, "sha256", updateDigest(binary), fastUpdatePolicy())
+	if err != nil || !bytes.Equal(got, binary) || entries.Load() != 3 {
+		t.Fatalf("changed redirect: %q %v entries=%d", got, err, entries.Load())
+	}
+}
+
+func TestUpdateCompressedToRawFallbackReplacesPartial(t *testing.T) {
+	binary := bytes.Repeat([]byte("candidate binary"), 100)
+	encoder, _ := zstd.NewWriter(nil)
+	wire := encoder.EncodeAll(binary, nil)
+	encoder.Close()
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("ETag", `"compressed"`)
+			w.Header().Set("Content-Type", "application/zstd")
+			interruptedUpdate(w, wire)
+			return
+		}
+		if r.Header.Get("If-Range") != `"compressed"` {
+			t.Error("missing compressed validator")
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("ETag", `"raw"`)
+		_, _ = w.Write(binary)
+	}))
+	defer server.Close()
+	got, err := downloadSelfUpdateBinary(context.Background(), server.Client(), t.TempDir(), server.URL, "sha256", updateDigest(binary), fastUpdatePolicy())
+	if err != nil || !bytes.Equal(got, binary) || calls.Load() != 2 {
+		t.Fatalf("raw fallback: %v calls=%d", err, calls.Load())
+	}
+}
+
+func TestUpdateBudgetExhaustionRetainsPartial(t *testing.T) {
+	binary := []byte("a complete executable candidate")
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("ETag", `"v1"`)
+		interruptedUpdate(w, binary)
+	}))
+	defer server.Close()
+	policy := fastUpdatePolicy()
+	policy.budget = time.Second
+	dir := t.TempDir()
+	_, err := downloadSelfUpdateBinary(context.Background(), server.Client(), dir, server.URL, "sha256", updateDigest(binary), policy)
+	partial, _ := os.ReadFile(filepath.Join(dir, "payload"))
+	if err == nil || !strings.Contains(err.Error(), "budget") || calls.Load() != 1 || !bytes.Equal(partial, binary[:len(binary)/2]) {
+		t.Fatalf("budget: %v calls=%d partial=%q", err, calls.Load(), partial)
+	}
+}
+
 func TestDefaultUpdateJitterIsBounded(t *testing.T) {
 	policy := defaultUpdateDownloadPolicy()
 	for i := 0; i < 100; i++ {

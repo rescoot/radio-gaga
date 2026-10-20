@@ -72,7 +72,7 @@ func updateHTTPClient() *http.Client {
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Device clocks may be invalid; preserve existing checksum-based update verification.
 		DialContext:         (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		TLSHandshakeTimeout: 30 * time.Second, ResponseHeaderTimeout: 30 * time.Second,
-		IdleConnTimeout: 90 * time.Second, DisableCompression: true,
+		IdleConnTimeout: 90 * time.Second, DisableCompression: true, MaxResponseHeaderBytes: 32 * 1024,
 	}}
 }
 
@@ -111,7 +111,7 @@ func downloadSelfUpdateBinary(ctx context.Context, client *http.Client, dir, url
 		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil || (request.URL.Scheme != "http" && request.URL.Scheme != "https") || request.URL.Host == "" {
+	if err != nil || len(url) > 8192 || (request.URL.Scheme != "http" && request.URL.Scheme != "https") || request.URL.Host == "" {
 		return nil, fmt.Errorf("invalid update URL")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -132,7 +132,7 @@ func downloadSelfUpdateBinary(ctx context.Context, client *http.Client, dir, url
 		}
 		return nil
 	}
-	stateErr := readUpdateJSON(statePath, &state, 16*1024)
+	stateErr := readUpdateJSON(statePath, &state, 64*1024)
 	info, statErr := os.Lstat(payloadPath)
 	if stateErr != nil || state.Identity != identity || policy.now().Sub(state.Updated) > selfUpdateCacheTTL || statErr != nil || !info.Mode().IsRegular() || info.Size() > selfUpdateMaxWireBytes || (state.Total >= 0 && info.Size() > state.Total) || (state.Complete && info.Size() != state.Total) {
 		if err := clear(); err != nil {
@@ -249,6 +249,9 @@ func downloadUpdateAttempt(ctx context.Context, cancel context.CancelFunc, clien
 	if encoding := response.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
 		return nil, false, 0, fmt.Errorf("unsupported update Content-Encoding %q", encoding)
 	}
+	if len(response.Request.URL.String()) > 8192 {
+		return nil, false, 0, fmt.Errorf("update response URL exceeds size limit")
+	}
 	mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	compressed := mediaType == "application/zstd"
 	total := response.ContentLength
@@ -266,6 +269,9 @@ func downloadUpdateAttempt(ctx context.Context, cancel context.CancelFunc, clien
 			return nil, false, 0, err
 		}
 		*state = updateDownloadState{Identity: identity, ETag: response.Header.Get("ETag"), URL: response.Request.URL.String(), Zstd: compressed, Total: total}
+		if len(state.ETag) > 1024 {
+			state.ETag = ""
+		}
 	}
 	if total > selfUpdateMaxWireBytes {
 		return nil, false, 0, fmt.Errorf("update representation exceeds %d-byte limit", selfUpdateMaxWireBytes)

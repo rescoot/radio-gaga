@@ -234,3 +234,33 @@ type updatePolicyClient struct {
 }
 
 func (c *updatePolicyClient) GetCommandParam(_, _ string, _ interface{}) interface{} { return c.value }
+
+func TestSelfUpdateShutdownDoesNotRecordCompletedFailure(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	err := coordinatedSelfUpdate(ctx, dir, "request", "binary", func() error {
+		cancel()
+		return context.Canceled
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("interruption: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "results.json")); !os.IsNotExist(err) {
+		t.Fatalf("shutdown recorded a completed outcome: %v", err)
+	}
+	runs := 0
+	if err := coordinatedSelfUpdate(context.Background(), dir, "request", "binary", func() error { runs++; return nil }); err != nil || runs != 1 {
+		t.Fatalf("redelivery did not resume: %v runs=%d", err, runs)
+	}
+}
+
+func TestSelfUpdateResultSizeRemainsBounded(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 65; i++ {
+		_ = coordinatedSelfUpdate(context.Background(), dir, fmt.Sprint(i), "binary", func() error { return errors.New(strings.Repeat("\x00", 2048)) })
+	}
+	var results []selfUpdateResult
+	if err := readUpdateJSON(filepath.Join(dir, "results.json"), &results, 256*1024); err != nil || len(results) != 64 {
+		t.Fatalf("result size bound: %v entries=%d", err, len(results))
+	}
+}
