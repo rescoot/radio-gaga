@@ -273,6 +273,29 @@ func (*pendingUpdateToken) WaitTimeout(time.Duration) bool { return false }
 func (t *pendingUpdateToken) Done() <-chan struct{}        { return t.done }
 func (*pendingUpdateToken) Error() error                   { return nil }
 
+func TestSelfUpdateDeliveryAckIsGenerationScoped(t *testing.T) {
+	s, old := newLaneClient(t)
+	message := laneCommand("self_update", "old", nil)
+	s.setActiveMQTTClient(&updateLaneMQTT{responses: make(chan models.CommandResponse, 1)})
+	s.ackSelfUpdateDelivery(queuedCommand{client: old, message: message})
+	select {
+	case <-message.acknowledged:
+		t.Fatal("stale generation ACKed")
+	default:
+	}
+	current := s.activeMQTTClient()
+	s.ackSelfUpdateDelivery(queuedCommand{client: current, message: message})
+	waitLaneAck(t, message)
+	s.cancel()
+	canceled := laneCommand("self_update", "canceled", nil)
+	s.ackSelfUpdateDelivery(queuedCommand{client: current, message: canceled})
+	select {
+	case <-canceled.acknowledged:
+		t.Fatal("shutdown delivery ACKed")
+	default:
+	}
+}
+
 func TestSelfUpdateLaneDoesNotGateVehicleCommands(t *testing.T) {
 	for _, command := range []string{"lock", "unlock", "blinkers", "honk", "alarm", "open_seatbox", "ping", "get_state", "restart"} {
 		if selfUpdateConflictsWithCommand(command) {

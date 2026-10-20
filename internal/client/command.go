@@ -64,8 +64,8 @@ func (s *ScooterMQTTClient) startCommandWorkerWithSelfUpdate(run func(handlers.C
 				default:
 				}
 				var parsed models.CommandMessage
-				_ = json.Unmarshal(command.message.Payload(), &parsed)
-				if parsed.Command == "self_update" {
+				parseErr := json.Unmarshal(command.message.Payload(), &parsed)
+				if parseErr == nil && parsed.Command == "self_update" {
 					params, _ := json.Marshal(parsed.Params)
 					key := fmt.Sprintf("%s:%x", parsed.RequestID, sha256.Sum256(params))
 					if updateDone != nil {
@@ -74,7 +74,7 @@ func (s *ScooterMQTTClient) startCommandWorkerWithSelfUpdate(run func(handlers.C
 						}
 						// Delivery ACK is not application success. A duplicate shares
 						// the original request's eventual post-install response.
-						command.message.Ack()
+						s.ackSelfUpdateDelivery(command)
 						continue
 					}
 					updateKey = key
@@ -86,15 +86,13 @@ func (s *ScooterMQTTClient) startCommandWorkerWithSelfUpdate(run func(handlers.C
 						defer close(done)
 						s.updateCloudStatus()
 						run(s.selfUpdateCommandClient(), command.message)
-						if s.ctx.Err() == nil && command.client == s.activeMQTTClient() {
-							command.message.Ack()
-						}
+						s.ackSelfUpdateDelivery(command)
 					}(command)
 					continue
 				}
-				if updateDone != nil && selfUpdateConflictsWithCommand(parsed.Command) {
+				if parseErr == nil && updateDone != nil && selfUpdateConflictsWithCommand(parsed.Command) {
 					s.rejectDuringSelfUpdate(command.message, parsed.RequestID)
-					command.message.Ack()
+					s.ackSelfUpdateDelivery(command)
 					continue
 				}
 				s.processCommand(command.client, command.message)
@@ -102,6 +100,14 @@ func (s *ScooterMQTTClient) startCommandWorkerWithSelfUpdate(run func(handlers.C
 			}
 		}
 	}()
+}
+
+func (s *ScooterMQTTClient) ackSelfUpdateDelivery(command queuedCommand) {
+	s.mqttClientMu.RLock()
+	defer s.mqttClientMu.RUnlock()
+	if s.ctx.Err() == nil && command.client == s.mqttClient {
+		command.message.Ack()
+	}
 }
 
 func selfUpdateConflictsWithCommand(command string) bool {
