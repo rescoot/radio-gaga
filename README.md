@@ -258,6 +258,8 @@ The single cache slot lives under `<state-dir>/self-update` (or `.self-update` a
 
 The cache is limited to one 65 MiB wire payload and a 64 MiB decoded candidate; zstd decoder memory is limited to 64 MiB. A different download identity replaces the slot, and entries older than seven days are discarded on the next self-update. Only the latest 64 command results are kept, also expiring after seven days. Repeated request IDs replay the original success or failure without another download/install; reuse with different parameters is rejected. To deliberately retry a failed command, send a new request ID. Commands without an ID are deduplicated by download identity. Process interruption before a completed result lets redelivery resume the partial transfer.
 
+Self-updates use one dedicated worker, so a stalled transfer does not block vehicle commands or change their ordering. Concurrent deliveries of the same request share its eventual response; other update requests receive a busy error. While an update is active, `txn:replace`, `config:set`, `config:del`, `config:save`, `update_ca_cert` and `migrate_broker` also receive busy errors to keep the candidate's binary/config transaction isolated. MQTT delivery acknowledgements are separate from application success, which is sent only after probe and installation succeed. A reconnect keeps the same update job and sends its result through the current connection. Shutdown cancels and joins the worker; interrupted commands can resume on redelivery.
+
 Optional local configuration (not command payload parameters):
 
 ```yaml
