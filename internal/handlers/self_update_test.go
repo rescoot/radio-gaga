@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -35,11 +36,12 @@ func (m *MockCommandHandlerClient) GetConfigPath() string { return m.configPath 
 func (m *MockCommandHandlerClient) RequestReconnect()     {}
 
 func TestSelfUpdateAllowsSlowDownloads(t *testing.T) {
-	if selfUpdateDownloadTimeout < 2*time.Minute {
-		t.Fatalf("download timeout %s is too short for cellular transfers", selfUpdateDownloadTimeout)
+	policy := defaultUpdateDownloadPolicy()
+	if policy.budget < time.Hour || policy.stall != 90*time.Second {
+		t.Fatalf("unexpected download policy: %+v", policy)
 	}
-	if selfUpdateProbeTimeout >= selfUpdateDownloadTimeout {
-		t.Fatalf("probe timeout %s should not consume the download window %s", selfUpdateProbeTimeout, selfUpdateDownloadTimeout)
+	if selfUpdateProbeTimeout >= policy.budget {
+		t.Fatal("probe and download must have independent budgets")
 	}
 }
 
@@ -141,11 +143,11 @@ func TestSelfUpdateDownloadsZstdAndVerifiesUncompressedChecksum(t *testing.T) {
 	defer server.Close()
 
 	digest := sha256.Sum256(binary)
-	got, err := downloadSelfUpdateBinary(server.URL, "sha256", fmt.Sprintf("%x", digest[:]))
+	got, err := testDownloadSelfUpdate(t, server.URL, fmt.Sprintf("%x", digest[:]))
 	if err != nil || string(got) != string(binary) {
 		t.Fatalf("compressed download = %q, %v", got, err)
 	}
-	_, err = downloadSelfUpdateBinary(server.URL, "sha256", strings.Repeat("0", 64))
+	_, err = testDownloadSelfUpdate(t, server.URL, strings.Repeat("0", 64))
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("compressed checksum mismatch = %v", err)
 	}
@@ -157,7 +159,7 @@ func TestSelfUpdateRejectsInvalidZstd(t *testing.T) {
 		_, _ = w.Write([]byte("not a zstd frame"))
 	}))
 	defer server.Close()
-	_, err := downloadSelfUpdateBinary(server.URL, "sha256", strings.Repeat("0", 64))
+	_, err := testDownloadSelfUpdate(t, server.URL, strings.Repeat("0", 64))
 	if err == nil {
 		t.Fatal("invalid compressed binary must be rejected")
 	}
@@ -252,7 +254,7 @@ func TestSelfUpdateProbeFailurePreservesCurrentBinary(t *testing.T) {
 func TestSelfUpdateValidatesRequestAndChecksum(t *testing.T) {
 	binary := []byte("candidate")
 	server, checksum := binaryServer(t, binary)
-	client := &MockCommandHandlerClient{configPath: "/tmp/config.yaml"}
+	client := &MockCommandHandlerClient{configPath: filepath.Join(t.TempDir(), "config.yaml")}
 
 	tests := []struct {
 		name    string
@@ -273,6 +275,11 @@ func TestSelfUpdateValidatesRequestAndChecksum(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testDownloadSelfUpdate(t *testing.T, url, checksum string) ([]byte, error) {
+	t.Helper()
+	return downloadSelfUpdateBinary(context.Background(), http.DefaultClient, t.TempDir(), url, "sha256", checksum, fastUpdatePolicy())
 }
 
 func binaryServer(t *testing.T, binary []byte) (*httptest.Server, string) {

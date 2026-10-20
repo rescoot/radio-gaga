@@ -3,30 +3,23 @@ package handlers
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
-	"mime"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
-
 	"radio-gaga/internal/handlers/commands"
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/txn"
-	"radio-gaga/internal/utils"
 )
 
 const (
-	selfUpdateDownloadTimeout = 5 * time.Minute
-	selfUpdateProbeTimeout    = 60 * time.Second
-	selfUpdateMaxBytes        = 64 * 1024 * 1024
+	selfUpdateProbeTimeout = 60 * time.Second
+	selfUpdateMaxBytes     = 64 * 1024 * 1024
 )
 
 var (
@@ -47,7 +40,11 @@ var (
 // exact binary in probe mode, and only then atomically installs it. The probe
 // must start, connect to MQTT, subscribe to the command topic, and remain
 // connected briefly. A failed probe leaves the running binary untouched.
-func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]interface{}, requestID string, _ *models.Config) error {
+func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]interface{}, requestID string, config *models.Config) error {
+	return handleSelfUpdateCommandContext(context.Background(), client, params, requestID, config)
+}
+
+func handleSelfUpdateCommandContext(ctx context.Context, client CommandHandlerClient, params map[string]interface{}, requestID string, config *models.Config) error {
 	updateURL, ok := params["url"].(string)
 	if !ok || updateURL == "" {
 		return fmt.Errorf("update URL not specified or invalid")
@@ -63,11 +60,32 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		return fmt.Errorf("invalid checksum format. Expected format: algorithm:value")
 	}
 
-	binary, err := downloadSelfUpdateBinary(updateURL, parts[0], parts[1])
+	if err := validateUpdateChecksum(parts[0], parts[1]); err != nil {
+		return err
+	}
+	dir, err := selfUpdateStateDir(client, config)
 	if err != nil {
 		return err
 	}
+	policy, err := selfUpdateDownloadPolicy(client)
+	if err != nil {
+		return err
+	}
+	return coordinatedSelfUpdate(ctx, dir, requestID, updateIdentity(updateURL, parts[0], parts[1]), func() error {
+		httpClient := updateHTTPClient()
+		defer httpClient.CloseIdleConnections()
+		binary, err := downloadSelfUpdateBinary(ctx, httpClient, dir, updateURL, parts[0], parts[1], policy)
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return installSelfUpdate(ctx, client, binary, requestID)
+	})
+}
 
+func installSelfUpdate(ctx context.Context, client CommandHandlerClient, binary []byte, requestID string) error {
 	configPath := client.GetConfigPath()
 	if configPath == "" {
 		return fmt.Errorf("config path unavailable; cannot test candidate")
@@ -102,7 +120,7 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		txnID = fmt.Sprintf("self-update-%d", time.Now().UnixNano())
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), selfUpdateProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, selfUpdateProbeTimeout)
 	defer cancel()
 
 	committed, runErr := manager.Run(
@@ -125,58 +143,6 @@ func handleSelfUpdateCommand(client CommandHandlerClient, params map[string]inte
 		return fmt.Errorf("update committed but failed to schedule restart: %w", err)
 	}
 	return nil
-}
-
-func downloadSelfUpdateBinary(url, algorithm, expectedChecksum string) ([]byte, error) {
-	hasher, err := utils.CreateHash(algorithm)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create hash: %w", err)
-	}
-
-	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // Device clocks may be invalid.
-	httpClient := &http.Client{Transport: transport, Timeout: selfUpdateDownloadTimeout}
-	request, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("invalid update URL: %w", err)
-	}
-	request.Header.Set("Accept", "application/zstd, application/octet-stream")
-
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download new binary: %w", err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download new binary: HTTP %d", response.StatusCode)
-	}
-
-	reader := io.Reader(response.Body)
-	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if err == nil && mediaType == "application/zstd" {
-		decoder, decodeErr := zstd.NewReader(response.Body, zstd.WithDecoderMaxMemory(selfUpdateMaxBytes))
-		if decodeErr != nil {
-			return nil, fmt.Errorf("open compressed update: %w", decodeErr)
-		}
-		defer decoder.Close()
-		reader = decoder
-	}
-
-	limited := io.LimitReader(reader, selfUpdateMaxBytes+1)
-	binary, err := io.ReadAll(io.TeeReader(limited, hasher))
-	if err != nil {
-		return nil, fmt.Errorf("failed to download new binary: %w", err)
-	}
-	if len(binary) > selfUpdateMaxBytes {
-		return nil, fmt.Errorf("new binary exceeds %d-byte limit", selfUpdateMaxBytes)
-	}
-
-	calculatedChecksum := fmt.Sprintf("%x", hasher.Sum(nil))
-	if !strings.EqualFold(calculatedChecksum, expectedChecksum) {
-		return nil, fmt.Errorf("checksum mismatch. Expected: %s, got: %s", expectedChecksum, calculatedChecksum)
-	}
-	log.Printf("Self-update checksum verification successful: %s", calculatedChecksum)
-	return binary, nil
 }
 
 // ensureSelfUpdateWritable remounts the filesystem containing the executable

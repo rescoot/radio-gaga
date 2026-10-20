@@ -109,6 +109,10 @@ events:
 # tune its params - unlisted commands keep their defaults and stay enabled.
 # ping and get_state can never be disabled.
 commands:
+  self_update:
+    params:
+      download_budget: 2h   # total download/retry budget, 1s to 24h
+      stall_timeout: 90s    # no received bytes for this long, 1s to 30m
   honk:
     disabled: false
     params:

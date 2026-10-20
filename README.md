@@ -245,12 +245,28 @@ notifications:
 
 OTA updates via the `self_update` command:
 
-1. Download binary from provided URL
-2. Verify checksum (SHA-256 or SHA-1)
-3. Remount filesystem read-write if needed
-4. Back up the current binary
-5. Replace and restart the systemd service
-6. Automatic rollback if the new binary fails to start
+1. Download raw or `application/zstd` bytes into a persistent, resumable cache.
+2. Verify the decoded binary's checksum (SHA-256 or SHA-1).
+3. Stage and run that exact candidate in probe mode using the current config. The probe must connect to MQTT and subscribe successfully.
+4. Only after probe success, atomically install the candidate and schedule a service restart. A rejected candidate leaves the installed binary and config untouched.
+
+The download has a 2-hour overall budget, not a five-minute transfer cutoff. A 90-second no-progress watchdog resets on every body read, so slow transfers can continue while making progress. Connection, TLS handshake and response-header waits are each limited to 30 seconds. Each attempt's deadline is the remaining overall budget; the probe has a separate 60-second deadline. Cancellation and budget exhaustion retain partial bytes.
+
+There are at most six HTTP attempts. Transient network/body failures, HTTP 408/425/429 and 5xx except 501/505 use exponential backoff: ceilings of 5, 10, 20, 40 and 80 seconds, with random delays between half and all of each ceiling (a 2-minute cap). Retry-After seconds or HTTP dates take precedence up to five minutes if they fit the remaining budget. Longer Retry-After values end the attempt sequence rather than retrying early. Other HTTP failures, invalid compression, oversized payloads and checksum mismatches are not blindly re-downloaded.
+
+The single cache slot lives under `<state-dir>/self-update` (or `.self-update` alongside the config when no state directory is supplied). Its identity includes the exact URL, checksum algorithm/value and representation negotiation. Partial raw and zstd wire bytes resume with `Range` and `If-Range` only when a strong ETag is available. A matching 206 must preserve ETag, final URL, representation and valid byte bounds. A 200 replaces partial bytes; invalid/changed ranges and unsatisfiable ranges restart safely. Servers without ranges or strong validators remain compatible, but interrupted transfers from them restart in full. Complete cached payloads are checksum-verified again before every probe, including after a process restart or failed probe/install.
+
+The cache is limited to one 65 MiB wire payload and a 64 MiB decoded candidate; zstd decoder memory is limited to 64 MiB. A different download identity replaces the slot, and entries older than seven days are discarded on the next self-update. Only the latest 64 command results are kept, also expiring after seven days. Repeated request IDs replay the original success or failure without another download/install; reuse with different parameters is rejected. To deliberately retry a failed command, send a new request ID. Commands without an ID are deduplicated by download identity. Process interruption before a completed result lets redelivery resume the partial transfer.
+
+Optional local configuration (not command payload parameters):
+
+```yaml
+commands:
+  self_update:
+    params:
+      download_budget: 2h   # 1s to 24h, includes retries and waits
+      stall_timeout: 90s   # 1s to 30m, no minimum throughput
+```
 
 ## unu-uplink Integration
 

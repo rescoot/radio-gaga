@@ -189,7 +189,7 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 	case "get_state":
 		err = handleGetStateCommand(client, redisClient, ctx, config, version)
 	case "self_update":
-		err = handleSelfUpdateCommand(client, command.Params, command.RequestID, config)
+		err = handleSelfUpdateCommandContext(ctx, client, command.Params, command.RequestID, config)
 	case "lock":
 		err = handleLockCommand(redisClient, ctx)
 	case "unlock":
