@@ -182,6 +182,61 @@ func TestBufferFailedFlushPreservesNewEventsAndRetryMetadata(t *testing.T) {
 	}
 }
 
+func TestBufferFailedSnapshotDoesNotReplaceRecoverableEvents(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+	b := NewBuffer(path, 3)
+	first := bufferTestEvent("first")
+	b.Add(first)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := bufferTestEvent("invalid")
+	invalid.Data = map[string]interface{}{"cannot_encode": make(chan int)}
+	b.Add(invalid)
+	b.Add(bufferTestEvent("second"))
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("failed encoding replaced the recoverable snapshot with a partial queue")
+	}
+	want := []BufferedEvent{{Event: first}}
+	if got := bufferedSnapshot(NewBuffer(path, 3)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("last complete snapshot was lost: %#v", got)
+	}
+	if got := b.Count(); got != 3 {
+		t.Fatalf("persistence failure lost in-memory events: %d", got)
+	}
+	files, err := os.ReadDir(dir)
+	if err != nil || len(files) != 1 || files[0].Name() != "events.jsonl" {
+		t.Fatalf("temporary snapshots were not cleaned up: %v, %v", files, err)
+	}
+}
+
+func TestBufferSnapshotIsPrivateAndRetainsLegacyJSONLines(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	first, second := bufferTestEvent("first"), bufferTestEvent("second")
+	b := NewBuffer(path, 3)
+	b.Add(first)
+	b.Add(second)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("event snapshot permissions = %o, want 600", got)
+	}
+	want := []BufferedEvent{{Event: first}, {Event: second}}
+	if got := bufferedSnapshot(NewBuffer(path, 3)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("JSON-lines snapshot no longer reloads unchanged: %#v", got)
+	}
+}
+
 func TestBufferConcurrentRetryRequestsCoalesceAndRespectBudget(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "events.jsonl")

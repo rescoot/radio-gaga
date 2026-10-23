@@ -146,36 +146,53 @@ func (b *Buffer) persistToDisk() {
 		return
 	}
 
-	// Ensure directory exists
+	if err := b.writeSnapshot(); err != nil {
+		log.Printf("[EventBuffer] Failed to persist buffer: %v", err)
+	}
+}
+
+func (b *Buffer) writeSnapshot() error {
 	dir := filepath.Dir(b.path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("[EventBuffer] Failed to create directory %s: %v", dir, err)
-		return
+		return err
 	}
 
-	// If no events, remove the file
 	if len(b.events) == 0 {
-		os.Remove(b.path)
-		return
-	}
-
-	// Write events as JSON lines
-	f, err := os.Create(b.path)
-	if err != nil {
-		log.Printf("[EventBuffer] Failed to create buffer file: %v", err)
-		return
-	}
-	defer f.Close()
-
-	for _, event := range b.events {
-		data, err := json.Marshal(event)
-		if err != nil {
-			log.Printf("[EventBuffer] Failed to marshal event: %v", err)
-			continue
+		if err := os.Remove(b.path); err != nil && !os.IsNotExist(err) {
+			return err
 		}
-		f.Write(data)
-		f.Write([]byte("\n"))
+	} else {
+		f, err := os.CreateTemp(dir, ".event-buffer-*")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(f.Name())
+		defer f.Close()
+
+		encoder := json.NewEncoder(f)
+		for _, event := range b.events {
+			if err := encoder.Encode(event); err != nil {
+				return err
+			}
+		}
+		// Never truncate the recoverable snapshot while writing its replacement.
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+		if err := os.Rename(f.Name(), b.path); err != nil {
+			return err
+		}
 	}
+
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 // loadFromDisk loads buffered events from disk
