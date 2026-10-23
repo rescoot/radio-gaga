@@ -15,8 +15,10 @@ type Buffer struct {
 	path       string
 	maxRetries int
 
-	mu     sync.Mutex
-	events []BufferedEvent
+	mu             sync.Mutex
+	events         []BufferedEvent
+	flushing       bool
+	flushRequested bool
 }
 
 // NewBuffer creates a new event buffer
@@ -49,8 +51,30 @@ func (b *Buffer) Add(event Event) {
 	log.Printf("[EventBuffer] Buffered event %s (total: %d)", event.EventType, len(b.events))
 }
 
-// Flush attempts to send all buffered events using the provided sender function
+// Flush attempts to send buffered events, coalescing concurrent requests.
 func (b *Buffer) Flush(sender func(Event) error) {
+	b.mu.Lock()
+	if b.flushing {
+		b.flushRequested = true
+		b.mu.Unlock()
+		return
+	}
+	b.flushing = true
+
+	for {
+		b.flushRequested = false
+		b.mu.Unlock()
+		b.flushBatch(sender)
+		b.mu.Lock()
+		if !b.flushRequested || len(b.events) == 0 {
+			b.flushing = false
+			b.mu.Unlock()
+			return
+		}
+	}
+}
+
+func (b *Buffer) flushBatch(sender func(Event) error) {
 	b.mu.Lock()
 	if len(b.events) == 0 {
 		b.mu.Unlock()
@@ -101,9 +125,9 @@ func (b *Buffer) Flush(sender func(Event) error) {
 	log.Printf("[EventBuffer] Flushed %d events, %d failed (will retry), %d discarded",
 		successCount, len(failed), discardedCount)
 
-	// Update buffer with only failed events
 	b.mu.Lock()
-	b.events = failed
+	// Only this flush can remove the snapshot prefix; Add can append meanwhile.
+	b.events = append(failed, b.events[len(events):]...)
 	b.persistToDisk()
 	b.mu.Unlock()
 }
