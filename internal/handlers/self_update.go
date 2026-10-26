@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"radio-gaga/internal/handlers/commands"
+	"radio-gaga/internal/installercompat"
 	"radio-gaga/internal/models"
 	"radio-gaga/internal/txn"
 )
@@ -123,12 +124,22 @@ func installSelfUpdate(ctx context.Context, client CommandHandlerClient, binary 
 	ctx, cancel := context.WithTimeout(ctx, selfUpdateProbeTimeout)
 	defer cancel()
 
+	probe := txn.SubprocessProbe(log.Default().Writer())
+	marker, markerErr := os.ReadFile(filepath.Join(filepath.Dir(executablePath), "installer-protocol"))
+	if markerErr == nil {
+		if strings.TrimSpace(string(marker)) != "1" {
+			return fmt.Errorf("unsupported managed installer protocol")
+		}
+		probe = managedInstallerProbe(probe)
+	} else if !os.IsNotExist(markerErr) {
+		return fmt.Errorf("read installer protocol: %w", markerErr)
+	}
 	committed, runErr := manager.Run(
 		ctx,
 		txnID,
 		txn.KindBinary,
 		txn.Candidate{Binary: binary},
-		txn.SubprocessProbe(log.Default().Writer()),
+		probe,
 	)
 	if !committed {
 		return fmt.Errorf("candidate rejected; current binary preserved: %w", runErr)
@@ -143,6 +154,15 @@ func installSelfUpdate(ctx context.Context, client CommandHandlerClient, binary 
 		return fmt.Errorf("update committed but failed to schedule restart: %w", err)
 	}
 	return nil
+}
+
+func managedInstallerProbe(next txn.ProbeFunc) txn.ProbeFunc {
+	return func(ctx context.Context, info txn.ProbeInfo) error {
+		if err := installercompat.Check(ctx, info.BinaryPath, info.ConfigPath); err != nil {
+			return err
+		}
+		return next(ctx, info)
+	}
 }
 
 // ensureSelfUpdateWritable remounts the filesystem containing the executable

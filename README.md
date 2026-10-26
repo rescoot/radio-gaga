@@ -408,7 +408,16 @@ version string.
 and TLS settings without contacting Redis/MQTT, creating state directories or
 recovering a transaction. It prints `enrolled` or `announce`, and rejects invalid
 configuration or missing `mqtt.require_verified_tls: true`. It never prints a
-credential. This preflight does not perform a broker connectivity probe. The laptop uses a
+credential. This preflight does not perform a broker connectivity probe.
+
+A managed installation writes `installer-protocol` beside the executable. For
+protocol 1, self-update checks the candidate's same capability report before its
+normal broker probe and transaction commit. A client missing these capabilities
+cannot replace the managed executable. Self-update follows `os.Executable()`, so
+a service running `/data/radio-gaga/radio-gaga` updates that persistent file,
+not the image's `/usr/bin/radio-gaga`.
+
+The laptop uses a
 bootstrap credential, never its OAuth token. Setting `bootstrap.installation_id`
 to a persistent UUID enables installation-specific configuration/result topics
 and requires replies to match that installation and the current process nonce.

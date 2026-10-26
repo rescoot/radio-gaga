@@ -15,6 +15,7 @@ import (
 	"radio-gaga/internal/config"
 	"radio-gaga/internal/handlers"
 	"radio-gaga/internal/handlers/commands"
+	"radio-gaga/internal/installercompat"
 	"radio-gaga/internal/journalupload"
 	"radio-gaga/internal/txn"
 )
@@ -45,7 +46,7 @@ func main() {
 	}
 
 	if flags.BootstrapCapabilities {
-		fmt.Fprintln(os.Stdout, `{"enrollment_protocol":1,"installation_binding":1,"installer_protocol":1,"bootstrap_announce":1,"mqtt_username":1,"verified_tls":1,"offline_config":1}`)
+		fmt.Fprintln(os.Stdout, installercompat.Report)
 		os.Exit(0)
 	}
 
