@@ -58,6 +58,7 @@ type Pending struct {
 	// "rollback = delete staging" rather than the usual rename-from-lkg —
 	// because there's no LKG to roll back to. Tracked separately so the
 	// combined-kind case can rollback each file pair correctly.
+	ConfigInstallOnly bool `json:"config_install_only,omitempty"`
 	NoPriorLiveConfig bool `json:"no_prior_live_config,omitempty"`
 	NoPriorLiveBinary bool `json:"no_prior_live_binary,omitempty"`
 }

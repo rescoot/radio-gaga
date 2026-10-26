@@ -69,6 +69,10 @@ func ParseFlags() *models.CommandLineFlags {
 	flag.StringVar(&flags.BootstrapToken, "bootstrap-token", "", "BootstrapToken plaintext (paired with -bootstrap)")
 	flag.BoolVar(&flags.BootstrapIdentity, "bootstrap-identity", false, "print local modem/SIM identity as JSON without connecting to the cloud")
 	flag.BoolVar(&flags.BootstrapCapabilities, "bootstrap-capabilities", false, "print supported laptop enrollment protocol version")
+	flag.BoolVar(&flags.ConnectCapabilities, "connect-capabilities", false, "print supported provider-neutral connection profiles")
+	flag.BoolVar(&flags.ConnectEnroll, "connect-enroll", false, "read a session-scoped pairing claim from stdin and configure a new connection")
+	flag.BoolVar(&flags.ConnectDevelopment, "connect-development", false, "allow isolated loopback enrollment tests without vehicle integration")
+	flag.StringVar(&flags.ConnectIdentityFile, "connect-identity-file", "", "synthetic identity JSON for isolated enrollment tests only")
 
 	flag.Parse()
 	return flags

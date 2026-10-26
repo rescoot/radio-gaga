@@ -43,6 +43,21 @@ func main() {
 		os.Exit(0)
 	}
 
+	if flags.ConnectCapabilities {
+		fmt.Fprintln(os.Stdout, `{"profiles":["radio-gaga/1"]}`)
+		return
+	}
+	if flags.ConnectEnroll {
+		log.SetOutput(os.Stderr)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := runConnectEnrollment(ctx, flags.ConfigPath, flags.ConnectDevelopment, flags.ConnectIdentityFile, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(probeFailExitCode)
+		}
+		return
+	}
+
 	if flags.BootstrapCapabilities {
 		fmt.Fprintln(os.Stdout, `{"enrollment_protocol":1,"installation_binding":1}`)
 		os.Exit(0)

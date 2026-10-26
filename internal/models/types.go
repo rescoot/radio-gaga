@@ -55,6 +55,10 @@ type CommandLineFlags struct {
 	BootstrapToken        string
 	BootstrapIdentity     bool
 	BootstrapCapabilities bool
+	ConnectCapabilities   bool
+	ConnectEnroll         bool
+	ConnectDevelopment    bool
+	ConnectIdentityFile   string
 }
 
 // Config represents the application configuration

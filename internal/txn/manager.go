@@ -25,6 +25,9 @@ type Manager struct {
 	// /data/radio-gaga/config.yaml). Staging and LKG files live alongside
 	// with .staging and .lkg suffixes.
 	LiveConfigPath string
+	// ConfigInstallOnly atomically creates a first configuration without replacing another writer's file.
+	ConfigInstallOnly bool
+	ConfigMode        os.FileMode
 
 	// LiveBinaryPath is the canonical binary path (e.g. /usr/bin/radio-gaga).
 	// Required only when the transaction kind involves a binary swap; for
@@ -93,6 +96,16 @@ func (m *Manager) Run(ctx context.Context, txnID string, kind Kind, c Candidate,
 	if err := validateKind(kind, c, m); err != nil {
 		return false, err
 	}
+	if m.ConfigInstallOnly {
+		if kind != KindConfig {
+			return false, errors.New("initial installation requires a config-only transaction")
+		}
+		if _, err := os.Lstat(m.LiveConfigPath); err == nil {
+			return false, errors.New("existing configuration blocks enrollment")
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
 
 	// 1. Refuse if a prior transaction is still pending.
 	prior, err := readPending(m.PendingPath)
@@ -135,6 +148,10 @@ func (m *Manager) Run(ctx context.Context, txnID string, kind Kind, c Candidate,
 		if err != nil {
 			return false, err
 		}
+		if m.ConfigInstallOnly && !noPriorLiveConfig {
+			_ = os.Remove(cfgLkg)
+			return false, errors.New("configuration appeared during enrollment")
+		}
 	}
 	if swapsBinary {
 		var err error
@@ -147,7 +164,11 @@ func (m *Manager) Run(ctx context.Context, txnID string, kind Kind, c Candidate,
 
 	// 3. Stage candidates.
 	if swapsConfig {
-		if err := writeFileSync(cfgStaging, c.Config, 0o644); err != nil {
+		mode := m.ConfigMode
+		if mode == 0 {
+			mode = 0o644
+		}
+		if err := writeFileSync(cfgStaging, c.Config, mode); err != nil {
 			rollbackLkgs(m, swapsConfig, swapsBinary, cfgLkg, binLkg)
 			return false, fmt.Errorf("write config staging: %w", err)
 		}
@@ -181,6 +202,7 @@ func (m *Manager) Run(ctx context.Context, txnID string, kind Kind, c Candidate,
 		State:             StateInflight,
 		StartedAtUnix:     nowUnix(),
 		DeadlineUnix:      deadlineUnix,
+		ConfigInstallOnly: m.ConfigInstallOnly,
 		NoPriorLiveConfig: noPriorLiveConfig,
 		NoPriorLiveBinary: noPriorLiveBinary,
 	}
@@ -217,8 +239,17 @@ func (m *Manager) Run(ctx context.Context, txnID string, kind Kind, c Candidate,
 		}
 	}
 	if swapsConfig {
-		if err := os.Rename(cfgStaging, m.LiveConfigPath); err != nil {
-			return false, fmt.Errorf("commit rename config %s → %s: %w", cfgStaging, m.LiveConfigPath, err)
+		if m.ConfigInstallOnly {
+			if !noPriorLiveConfig {
+				return false, errors.New("configuration appeared during enrollment")
+			}
+			if err := os.Link(cfgStaging, m.LiveConfigPath); err != nil {
+				_ = os.Remove(cfgStaging)
+				_ = removePending(m.PendingPath)
+				return false, fmt.Errorf("create initial configuration: %w", err)
+			}
+		} else if err := os.Rename(cfgStaging, m.LiveConfigPath); err != nil {
+			return false, fmt.Errorf("commit config: %w", err)
 		}
 	}
 
@@ -229,6 +260,10 @@ func (m *Manager) Run(ctx context.Context, txnID string, kind Kind, c Candidate,
 		return true, fmt.Errorf("commit succeeded but marker write failed: %w", err)
 	}
 
+	// Keep the initial-install staging inode until the committed marker is durable.
+	if m.ConfigInstallOnly {
+		_ = os.Remove(cfgStaging)
+	}
 	// 6c. Delete LKGs and pending.
 	if swapsConfig {
 		if err := os.Remove(cfgLkg); err != nil && !os.IsNotExist(err) {
@@ -380,7 +415,14 @@ func (m *Manager) RecoverOnBoot() error {
 	case StateInflight:
 		m.logf("txn %s: recovery — state=inflight (kind=%s); rolling back", prior.TxnID, prior.Kind)
 		if swapsConfig {
-			if err := rollbackOne(m, m.LiveConfigPath, cfgLkg, cfgStaging, prior.NoPriorLiveConfig, prior.TxnID, "config"); err != nil {
+			if prior.ConfigInstallOnly {
+				staged, se := os.Lstat(cfgStaging)
+				live, le := os.Lstat(m.LiveConfigPath)
+				if se == nil && le == nil && os.SameFile(staged, live) {
+					_ = os.Remove(m.LiveConfigPath)
+				}
+				_ = os.Remove(cfgStaging)
+			} else if err := rollbackOne(m, m.LiveConfigPath, cfgLkg, cfgStaging, prior.NoPriorLiveConfig, prior.TxnID, "config"); err != nil {
 				return err
 			}
 		}
