@@ -395,8 +395,20 @@ BOOTSTRAP_TOKEN='<bootstrap-token>' bash install.sh
 `install.sh` downloads Sunshine's shared installer over HTTPS. That installer detects the distro, installs the binary and `radio-gaga.service` where needed, and uses radio-gaga's bootstrap mode to identify the scooter and fetch its configuration. Accept any pending scooter claim in Sunshine to complete setup. `SUNSHINE_URL` selects a different HTTPS Sunshine instance.
 
 For laptop enrollment, `-bootstrap-capabilities` reports
-`{"enrollment_protocol":1,"installation_binding":1}` and `-bootstrap-identity`
-reads IMEI, ICCID and optional IMSI from the local modem. The laptop uses a
+`enrollment_protocol: 1` and `installation_binding: 1` in its JSON output, and
+`-bootstrap-identity` reads IMEI, ICCID and optional IMSI from the local modem.
+The same report includes `installer_protocol: 1`, `bootstrap_announce: 1`,
+`mqtt_username: 1`, `verified_tls: 1` and `offline_config: 1`. Installer protocol 1
+supports bootstrap-only configurations, a separate MQTT username, mandatory
+verified TLS, and offline configuration validation. Installers must check these
+capabilities, including on a downloaded candidate, rather than infer them from a
+version string.
+
+`radio-gaga -config /path/to/config.yaml -validate-config` checks configuration
+and TLS settings without contacting Redis/MQTT, creating state directories or
+recovering a transaction. It prints `enrolled` or `announce`, and rejects invalid
+configuration or missing `mqtt.require_verified_tls: true`. It never prints a
+credential. This preflight does not perform a broker connectivity probe. The laptop uses a
 bootstrap credential, never its OAuth token. Setting `bootstrap.installation_id`
 to a persistent UUID enables installation-specific configuration/result topics
 and requires replies to match that installation and the current process nonce.

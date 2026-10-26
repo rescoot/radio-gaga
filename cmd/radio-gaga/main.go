@@ -30,6 +30,7 @@ var version string
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
+	validateConfig := flag.Bool("validate-config", false, "validate installer configuration offline and print enrolled or announce")
 
 	// Parse command line flags (this calls flag.Parse())
 	flags := config.ParseFlags()
@@ -44,8 +45,25 @@ func main() {
 	}
 
 	if flags.BootstrapCapabilities {
-		fmt.Fprintln(os.Stdout, `{"enrollment_protocol":1,"installation_binding":1}`)
+		fmt.Fprintln(os.Stdout, `{"enrollment_protocol":1,"installation_binding":1,"installer_protocol":1,"bootstrap_announce":1,"mqtt_username":1,"verified_tls":1,"offline_config":1}`)
 		os.Exit(0)
+	}
+
+	if *validateConfig {
+		cfg, err := config.ReadInstallerConfig(flags.ConfigPath)
+		if err == nil {
+			_, err = bootstrapTLSConfig(cfg.MQTT)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "invalid installer configuration:", err)
+			os.Exit(probeFailExitCode)
+		}
+		if cfg.InBootstrapState() {
+			fmt.Fprintln(os.Stdout, "announce")
+		} else {
+			fmt.Fprintln(os.Stdout, "enrolled")
+		}
+		return
 	}
 
 	if flags.BootstrapIdentity {
