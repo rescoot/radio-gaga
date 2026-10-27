@@ -536,7 +536,14 @@ func waitForMQTTConnect(token mqtt.Token) error {
 // createMQTTClient creates and connects an MQTT client. The command route and
 // active-client reference are installed before Connect so queued persistent-
 // session commands can be handled safely before OnConnect re-subscribes.
+var ensureVerifiedClock = utils.EnsureVerifiedClock
+
 func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTopic string, commandHandler mqtt.MessageHandler, activate func(mqtt.Client)) (mqtt.Client, error) {
+	if config.MQTT.RequireVerifiedTLS {
+		if err := ensureVerifiedClock(&config.NTP); err != nil {
+			return nil, fmt.Errorf("verified TLS requires synchronized NTP time: %w", err)
+		}
+	}
 	client := mqtt.NewClient(opts)
 	if commandHandler != nil {
 		client.AddRoute(commandTopic, commandHandler)
@@ -555,12 +562,12 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 				// Try connecting again after time sync
 				token := client.Connect()
 				if err := waitForMQTTConnect(token); err != nil {
-					log.Printf("Connection failed after NTP sync: %v, falling back to insecure...", err)
+					log.Printf("Connection failed after NTP sync: %v", err)
 				} else {
 					return client, nil
 				}
 			} else {
-				log.Printf("NTP sync failed: %v, falling back to insecure...", ntpErr)
+				log.Printf("NTP sync failed: %v", ntpErr)
 			}
 
 			if config.MQTT.RequireVerifiedTLS {

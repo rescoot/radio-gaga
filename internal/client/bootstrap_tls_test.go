@@ -3,6 +3,7 @@ package client
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -15,7 +16,21 @@ import (
 	"radio-gaga/internal/models"
 )
 
+func TestVerifiedTLSWaitsForNTPBeforeConnecting(t *testing.T) {
+	previous := ensureVerifiedClock
+	ensureVerifiedClock = func(*models.NTPConfig) error { return fmt.Errorf("time unavailable") }
+	defer func() { ensureVerifiedClock = previous }()
+	config := &models.Config{MQTT: models.MQTTConfig{RequireVerifiedTLS: true}}
+	_, err := createMQTTClient(config, mqtt.NewClientOptions(), "", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "synchronized NTP time") {
+		t.Fatalf("wanted NTP failure before connection, got %v", err)
+	}
+}
+
 func TestEnrollmentConfigRefusesInsecureTLSFallback(t *testing.T) {
+	previous := ensureVerifiedClock
+	ensureVerifiedClock = func(*models.NTPConfig) error { return nil }
+	defer func() { ensureVerifiedClock = previous }()
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("expired certificate must prevent application data")
 	}))
