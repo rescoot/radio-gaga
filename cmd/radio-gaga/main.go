@@ -15,6 +15,7 @@ import (
 	"radio-gaga/internal/config"
 	"radio-gaga/internal/handlers"
 	"radio-gaga/internal/handlers/commands"
+	"radio-gaga/internal/installercompat"
 	"radio-gaga/internal/journalupload"
 	"radio-gaga/internal/txn"
 )
@@ -30,6 +31,8 @@ var version string
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
+	validateConfig := flag.Bool("validate-config", false, "validate installer configuration offline and print enrolled or announce")
+	prepareConfig := flag.String("prepare-installer-config", "", "write a staged verified-TLS configuration")
 
 	// Parse command line flags (this calls flag.Parse())
 	flags := config.ParseFlags()
@@ -59,8 +62,33 @@ func main() {
 	}
 
 	if flags.BootstrapCapabilities {
-		fmt.Fprintln(os.Stdout, `{"enrollment_protocol":1,"installation_binding":1}`)
+		fmt.Fprintln(os.Stdout, installercompat.Report)
 		os.Exit(0)
+	}
+
+	if *prepareConfig != "" {
+		if err := prepareInstallerConfig(flags.ConfigPath, *prepareConfig); err != nil {
+			fmt.Fprintln(os.Stderr, "cannot prepare installer configuration:", err)
+			os.Exit(probeFailExitCode)
+		}
+		return
+	}
+
+	if *validateConfig {
+		cfg, err := config.ReadInstallerConfig(flags.ConfigPath)
+		if err == nil {
+			_, err = bootstrapTLSConfig(cfg.MQTT)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "invalid installer configuration:", err)
+			os.Exit(probeFailExitCode)
+		}
+		if cfg.InBootstrapState() {
+			fmt.Fprintln(os.Stdout, "announce")
+		} else {
+			fmt.Fprintln(os.Stdout, "enrolled")
+		}
+		return
 	}
 
 	if flags.BootstrapIdentity {
