@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,8 @@ import (
 
 	"github.com/go-redis/redis/v8"
 	"gopkg.in/yaml.v2"
+	"radio-gaga/internal/config"
+	"radio-gaga/internal/models"
 	"radio-gaga/internal/txn"
 )
 
@@ -34,9 +37,10 @@ type connectRequest struct {
 	ClaimToken     string `json:"claim_token"`
 }
 type connectIdentity struct {
-	IMEI string `json:"imei"`
-	MDB  string `json:"mdb_serial"`
-	DBC  string `json:"dbc_serial"`
+	Platform string `json:"platform,omitempty"`
+	IMEI     string `json:"imei"`
+	MDB      string `json:"mdb_serial"`
+	DBC      string `json:"dbc_serial"`
 }
 type connectMaterial struct {
 	Profile       string `json:"profile"`
@@ -122,6 +126,10 @@ func saveConnectJournal(path string, value any) error {
 	return dir.Sync()
 }
 func connectHTTP(ctx context.Context, method, endpoint, token string, payload, out any) error {
+	return connectHTTPWithDeviceCredential(ctx, method, endpoint, token, "", payload, out)
+}
+
+func connectHTTPWithDeviceCredential(ctx context.Context, method, endpoint, token, deviceCredential string, payload, out any) error {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -132,6 +140,9 @@ func connectHTTP(ctx context.Context, method, endpoint, token string, payload, o
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
+	if deviceCredential != "" {
+		request.Header.Set("X-Connect-Device-Credential", deviceCredential)
+	}
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(request)
 	if err != nil {
@@ -156,22 +167,30 @@ func connectSafeState(ctx context.Context) error {
 	if !(values[0] == "stand-by" || values[0] == "parked" && values[1] == "down") {
 		return errors.New("waiting_for_safe_state")
 	}
-	statuses, err := client.HMGet(ctx, "ota", "status:mdb", "status:dbc").Result()
+	statuses, err := client.HMGet(ctx, "ota", "status", "status:mdb", "status:dbc").Result()
 	if err != nil {
 		return errors.New("update state unavailable")
 	}
-	for _, value := range statuses {
-		if value == nil {
+	if !connectUpdatesIdle(statuses) {
+		return errors.New("update in progress")
+	}
+	return nil
+}
+
+func connectUpdatesIdle(statuses []any) bool {
+	for index, value := range statuses {
+		if value == nil || index == 0 && value == "initializing" {
 			continue
 		}
 		switch value {
 		case "", "idle", "failed", "error", "complete", "completed", "success":
 		default:
-			return errors.New("update in progress")
+			return false
 		}
 	}
-	return nil
+	return true
 }
+
 func renderConnectConfig(material connectMaterial, providerOrigin string) ([]byte, error) {
 	broker, err := url.Parse(material.BrokerURL)
 	if err != nil || broker.Hostname() == "" || broker.User != nil || broker.RawQuery != "" || broker.Fragment != "" || (broker.Path != "" && broker.Path != "/") {
@@ -190,6 +209,76 @@ func renderConnectConfig(material connectMaterial, providerOrigin string) ([]byt
 	data := map[string]any{"environment": "production", "redis_url": "redis://127.0.0.1:6379", "scooter": map[string]string{"identifier": material.Identifier, "token": material.Token}, "mqtt": mqtt, "commands": map[string]any{"shell": map[string]bool{"disabled": true}, "redis": map[string]bool{"disabled": true}}, "api": map[string]string{"base_url": providerOrigin, "scooter_id": material.ScooterID}}
 	return yaml.Marshal(data)
 }
+func probeConnectExistingConfig(ctx context.Context, exe, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var configuration map[string]any
+	if err := yaml.Unmarshal(data, &configuration); err != nil {
+		return err
+	}
+	mqtt, ok := configuration["mqtt"].(map[any]any)
+	if !ok {
+		return errors.New("existing MQTT configuration unavailable")
+	}
+	mqtt["require_verified_tls"] = true
+	data, err = yaml.Marshal(configuration)
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".connect-probe-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return txn.SubprocessProbe(io.Discard)(ctx, txn.ProbeInfo{BinaryPath: exe, ConfigPath: file.Name()})
+}
+
+func existingConnectCredential(path, providerOrigin string) (string, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("unsafe existing configuration")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) > 65536 {
+		return "", errors.New("existing configuration unavailable")
+	}
+	var existing struct {
+		Scooter struct {
+			Token string `yaml:"token"`
+		} `yaml:"scooter"`
+		API struct {
+			BaseURL string `yaml:"base_url"`
+		} `yaml:"api"`
+		MQTT struct {
+			BrokerURL string `yaml:"broker_url"`
+		} `yaml:"mqtt"`
+	}
+	if yaml.Unmarshal(data, &existing) != nil || existing.Scooter.Token == "" || len(existing.Scooter.Token) > 4096 || strings.ContainsAny(existing.Scooter.Token, "\r\n") {
+		return "", errors.New("existing configuration blocks enrollment")
+	}
+	if strings.TrimSuffix(existing.API.BaseURL, "/") != providerOrigin {
+		// Older Sunshine configurations predate api.base_url; their broker URL
+		// is a local operator setting and must match the known Sunshine broker.
+		broker, parseErr := url.Parse(existing.MQTT.BrokerURL)
+		if providerOrigin != "https://sunshine.rescoot.org" || existing.API.BaseURL != "" || parseErr != nil || broker.Hostname() != "mqtt2.sunshine.rescoot.org" {
+			return "", errors.New("existing configuration belongs to another provider")
+		}
+	}
+	return existing.Scooter.Token, nil
+}
+
 func runConnectEnrollment(ctx context.Context, path string, development bool, identityFile string, input io.Reader, output io.Writer) error {
 	var request connectRequest
 	if err := readConnectJSON(input, &request); err != nil {
@@ -203,11 +292,18 @@ func runConnectEnrollment(ctx context.Context, path string, development bool, id
 		return errors.New("verified provider origin required")
 	}
 	base := strings.TrimSuffix(request.ProviderOrigin, "/")
-	if path == "" {
-		path = "/data/radio-gaga/config.yaml"
-	}
-	if !development && path != "/data/radio-gaga/config.yaml" {
-		return errors.New("managed enrollment requires the Librescoot config path")
+	platform := connectPlatform{Name: "librescoot", ConfigPath: "/data/radio-gaga/config.yaml"}
+	if !development {
+		platform, err = detectConnectPlatform(ctx)
+		if err != nil {
+			return err
+		}
+		path, err = connectConfigPath(path, platform)
+		if err != nil {
+			return err
+		}
+	} else if path == "" {
+		path = platform.ConfigPath
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
@@ -229,18 +325,14 @@ func runConnectEnrollment(ctx context.Context, path string, development bool, id
 	requestBytes, _ := json.Marshal(request)
 	digest := connectDigest(requestBytes)
 	journal := connectJournal{RequestDigest: digest}
-	if err := readConnectJournal(journalPath, &journal); err != nil && !os.IsNotExist(err) {
-		return err
+	journalErr := readConnectJournal(journalPath, &journal)
+	if journalErr != nil && !os.IsNotExist(journalErr) {
+		return journalErr
 	}
 	if journal.RequestDigest != digest {
 		return errors.New("another enrollment owns this configuration")
 	}
 	if journal.Material == nil {
-		if _, err := os.Lstat(path); err == nil {
-			return errors.New("existing configuration blocks enrollment")
-		} else if !os.IsNotExist(err) {
-			return err
-		}
 		if identityFile != "" {
 			if !development {
 				return errors.New("identity override is only available for isolated tests")
@@ -261,12 +353,25 @@ func runConnectEnrollment(ctx context.Context, path string, development bool, id
 		if journal.Identity.IMEI == "" && journal.Identity.MDB == "" {
 			return errors.New("no scooter identity available")
 		}
+		if os.IsNotExist(journalErr) && journal.Identity.Platform == "" {
+			journal.Identity.Platform = platform.Name
+		}
+		if journal.Identity.Platform != "" && journal.Identity.Platform != "stock" && journal.Identity.Platform != "librescoot" {
+			return errors.New("invalid enrollment platform")
+		}
 		if err := saveConnectJournal(journalPath, journal); err != nil {
 			return err
 		}
 		payload := map[string]string{"session_id": request.SessionID, "profile": request.Profile, "imei": journal.Identity.IMEI, "mdb_serial": journal.Identity.MDB, "dbc_serial": journal.Identity.DBC}
+		if journal.Identity.Platform != "" {
+			payload["platform"] = journal.Identity.Platform
+		}
+		deviceCredential, err := existingConnectCredential(path, base)
+		if err != nil {
+			return err
+		}
 		var material connectMaterial
-		if err := connectHTTP(ctx, http.MethodPost, base+"/api/v1/connect/exchange", request.ClaimToken, payload, &material); err != nil {
+		if err := connectHTTPWithDeviceCredential(ctx, http.MethodPost, base+"/api/v1/connect/exchange", request.ClaimToken, deviceCredential, payload, &material); err != nil {
 			return err
 		}
 		if material.SessionID != request.SessionID || material.Profile != request.Profile || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`).MatchString(material.TransactionID) {
@@ -308,7 +413,34 @@ func runConnectEnrollment(ctx context.Context, path string, development bool, id
 	existing, readErr := os.ReadFile(path)
 	if readErr == nil {
 		if connectDigest(existing) != candidateDigest {
-			return errors.New("existing configuration blocks enrollment")
+			credential, err := existingConnectCredential(path, base)
+			if err != nil || credential == "" || subtle.ConstantTimeCompare([]byte(credential), []byte(journal.Material.Token)) != 1 {
+				return errors.New("existing configuration does not match the approved connection")
+			}
+			loaded, _, err := config.LoadConfig(&models.CommandLineFlags{ConfigPath: path})
+			if err != nil {
+				return errors.New("existing configuration is invalid")
+			}
+			username := loaded.MQTT.Username
+			if username == "" {
+				username = loaded.Scooter.Identifier
+			}
+			if loaded.Scooter.Identifier != journal.Material.Identifier || loaded.MQTT.BrokerURL != journal.Material.BrokerURL || username != journal.Material.Username {
+				return errors.New("existing configuration does not match the approved connection")
+			}
+			if !development && !loaded.MQTT.RequireVerifiedTLS {
+				return errors.New("existing service must require verified MQTT TLS before reconnecting")
+			}
+			if !development {
+				if err := connectSafeState(ctx); err != nil {
+					return err
+				}
+			}
+			err = probeConnectExistingConfig(ctx, exe, path)
+			if err != nil {
+				return errors.New("existing connection probe failed")
+			}
+			candidateDigest = connectDigest(existing)
 		}
 	} else {
 		if !os.IsNotExist(readErr) {
@@ -332,10 +464,10 @@ func runConnectEnrollment(ctx context.Context, path string, development bool, id
 		if err := connectSafeState(ctx); err != nil {
 			return err
 		}
-		if err := exec.CommandContext(ctx, "systemctl", "start", "librescoot-radio-gaga.service").Run(); err != nil {
+		if err := exec.CommandContext(ctx, "systemctl", "start", platform.Service).Run(); err != nil {
 			return errors.New("cloud client start failed")
 		}
-		if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "librescoot-radio-gaga.service").Run(); err != nil {
+		if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", platform.Service).Run(); err != nil {
 			return errors.New("cloud client is not running")
 		}
 	}

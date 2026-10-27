@@ -35,6 +35,54 @@ func TestConnectEnrollmentDoesNotOverwriteExistingConfig(t *testing.T) {
 		t.Fatal("existing configuration changed")
 	}
 }
+func TestExistingCredentialRequiresMatchingProviderAndSafeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	write := func(data string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("scooter:\n  token: existing-secret\nmqtt:\n  broker_url: ssl://mqtt2.sunshine.rescoot.org:8883\n")
+	if credential, err := existingConnectCredential(path, "https://sunshine.rescoot.org"); err != nil || credential != "existing-secret" {
+		t.Fatal("legacy Sunshine configuration was not recognized")
+	}
+	if _, err := existingConnectCredential(path, "https://another.example"); err == nil {
+		t.Fatal("existing credential exposed to unrelated provider")
+	}
+	write("scooter:\n  token: existing-secret\napi:\n  base_url: https://another.example\nmqtt:\n  broker_url: ssl://mqtt2.sunshine.rescoot.org:8883\n")
+	if _, err := existingConnectCredential(path, "https://sunshine.rescoot.org"); err == nil {
+		t.Fatal("explicit different API origin ignored")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc/passwd", path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := existingConnectCredential(path, "https://sunshine.rescoot.org"); err == nil {
+		t.Fatal("symlink configuration accepted")
+	}
+}
+
+func TestExistingCredentialExchangeUsesOnlyProviderAuthorizationHeader(t *testing.T) {
+	var received bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer claim-secret" || r.Header.Get("X-Connect-Device-Credential") != "device-secret" {
+			t.Error("missing credential binding")
+		}
+		if strings.Contains(r.URL.String(), "secret") {
+			t.Error("credential leaked to URL")
+		}
+		received = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	if err := connectHTTPWithDeviceCredential(context.Background(), http.MethodPost, server.URL, "claim-secret", "device-secret", map[string]string{"profile": connectProfile}, nil); err != nil || !received {
+		t.Fatal("device proof exchange failed")
+	}
+}
+
 func TestConnectTypedConfigCannotSetPathsOrDisableTLS(t *testing.T) {
 	valid := connectMaterial{Profile: connectProfile, SessionID: strings.Repeat("A", 43), TransactionID: "connect-1", Identifier: "test", Token: strings.Repeat("a", 64), ScooterID: "1", BrokerURL: "ssl://broker.example:8883", Username: "test"}
 	config, err := renderConnectConfig(valid, "https://cloud.example")
