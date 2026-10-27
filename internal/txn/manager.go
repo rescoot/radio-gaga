@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 )
 
 // stagingSuffix and lkgSuffix name the sibling files used during a
@@ -521,25 +522,34 @@ func copyFile(src, dst string) error {
 	return nil
 }
 
-// writeFileSync writes data to path with the given mode and fsyncs before
-// closing.
+// A fresh inode prevents stale staging permissions, symlinks or open readers
+// from exposing a replacement credential.
 func writeFileSync(path string, data []byte, mode os.FileMode) error {
-	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	out, err := os.CreateTemp(filepath.Dir(path), ".txn-staging-*")
 	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
+		return fmt.Errorf("stage %s: %w", path, err)
+	}
+	defer os.Remove(out.Name())
+	defer out.Close()
+	if err := out.Chmod(mode); err != nil {
+		return fmt.Errorf("chmod staging: %w", err)
 	}
 	if _, err := out.Write(data); err != nil {
-		_ = out.Close()
-		_ = os.Remove(path)
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	if err := out.Sync(); err != nil {
-		_ = out.Close()
-		_ = os.Remove(path)
 		return fmt.Errorf("fsync %s: %w", path, err)
 	}
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", path, err)
 	}
-	return nil
+	if err := os.Rename(out.Name(), path); err != nil {
+		return fmt.Errorf("replace staging: %w", err)
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
