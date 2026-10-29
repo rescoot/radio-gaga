@@ -120,6 +120,15 @@ The first stop is the current navigation target. The route command requires `nav
 | `update_ca_cert` | Replace MQTT CA certificate (validates PEM, checks CA flag) |
 | `fetch_logs` | Collect and upload system logs to Sunshine |
 
+For duration windows such as `1h`, `24h`, `2d` or `1w`, log collection includes
+all available entries from the current boot when its uptime fits within that
+window. This preserves startup messages written before the clock was
+synchronized. Earlier boots still use the requested wall-clock window; the
+startup supplement and that window have non-overlapping timestamp boundaries.
+MDB and DBC use the same selection. Older current boots and native journalctl
+expressions such as `today` retain their normal time filter. Collection does not
+wake the dashboard.
+
 ### Keycard Management
 
 | Command | Description |

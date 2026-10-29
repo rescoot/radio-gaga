@@ -184,7 +184,7 @@ func collectMDB(ctx context.Context, redisClient *redis.Client, hostDir, since s
 	}
 
 	journalPath := filepath.Join(hostDir, "journal.log")
-	if n, err := runJournalctl(ctx, since, journalPath); err != nil {
+	if n, err := runJournalctl(ctx, since, journalPath, meta.UptimeSeconds); err != nil {
 		log.Printf("logcollect mdb: journalctl failed: %v", err)
 	} else {
 		meta.JournalBytes = n
@@ -205,23 +205,20 @@ func collectMDB(ctx context.Context, redisClient *redis.Client, hostDir, since s
 	return writeJSON(filepath.Join(hostDir, "metadata.json"), meta)
 }
 
-// runJournalctl executes `journalctl -o short-monotonic --since X --no-pager`
-// and writes stdout to outPath. Returns the number of bytes written.
-func runJournalctl(ctx context.Context, since, outPath string) (int64, error) {
+// runJournalctl writes the requested window and any missing early-boot entries.
+func runJournalctl(ctx context.Context, since, outPath string, uptime float64) (int64, error) {
 	f, err := os.Create(outPath)
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
 
-	args := []string{"-o", "short-monotonic", "--no-pager"}
-	if since != "" {
-		args = append(args, "--since", convertSince(since))
-	}
-	cmd := exec.CommandContext(ctx, "journalctl", args...)
-	cmd.Stdout = f
-	if err := cmd.Run(); err != nil {
-		return 0, err
+	for _, args := range journalCommands(since, uptime, time.Now()) {
+		cmd := exec.CommandContext(ctx, "journalctl", args...)
+		cmd.Stdout = f
+		if err := cmd.Run(); err != nil {
+			return 0, err
+		}
 	}
 	info, statErr := f.Stat()
 	if statErr != nil {

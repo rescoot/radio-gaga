@@ -38,7 +38,7 @@ func collectDBC(ctx context.Context, hostDir, since string) error {
 	meta.Collector = "ssh:" + DBCSSHAddr
 
 	journalPath := filepath.Join(hostDir, "journal.log")
-	if n, err := runDBCJournalctl(ctx, since, journalPath); err != nil {
+	if n, err := runDBCJournalctl(ctx, since, journalPath, meta.UptimeSeconds); err != nil {
 		return fmt.Errorf("dbc journalctl: %w", err)
 	} else {
 		meta.JournalBytes = n
@@ -96,17 +96,13 @@ func probeDBC(ctx context.Context) (HostMetadata, error) {
 	return meta, nil
 }
 
-// runDBCJournalctl streams `journalctl -o short-monotonic --since X` from the
-// DBC straight into outPath. We use ssh stdin piping so nothing lands on the
-// DBC's filesystem.
-func runDBCJournalctl(ctx context.Context, since, outPath string) (int64, error) {
+// runDBCJournalctl uses the same boot-aware window as the local collector.
+// Output streams directly to the MDB; no temporary files are created on DBC.
+func runDBCJournalctl(ctx context.Context, since, outPath string, uptime float64) (int64, error) {
 	jCtx, cancel := context.WithTimeout(ctx, dbcJournalTimeout)
 	defer cancel()
 
-	remote := "journalctl -o short-monotonic --no-pager"
-	if since != "" {
-		remote += " --since " + shellQuote(convertSince(since))
-	}
+	remote := remoteJournalCommand(journalCommands(since, uptime, time.Now()))
 	return streamSSHToFile(jCtx, remote, outPath)
 }
 
