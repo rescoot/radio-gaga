@@ -2,8 +2,11 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
+	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -17,7 +20,10 @@ import (
 // When the application NTP client is disabled, chrony must report a healthy,
 // recently updated system clock instead.
 func EnsureVerifiedClock(config *models.NTPConfig, librescoot bool) error {
-	if librescoot || (config != nil && !config.Enabled) {
+	if librescoot {
+		return coordinatorVerifiedClock("/run/clock-coordinator/control.sock", "/proc/sys/kernel/random/boot_id")
+	}
+	if config != nil && !config.Enabled {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		out, err := exec.CommandContext(ctx, "chronyc", "-c", "tracking").Output()
@@ -38,6 +44,48 @@ func EnsureVerifiedClock(config *models.NTPConfig, librescoot bool) error {
 	}
 	if absDuration(time.Since(reference)) > 5*time.Second {
 		return fmt.Errorf("system clock differs from NTP")
+	}
+	return nil
+}
+
+func coordinatorVerifiedClock(socket, bootPath string) error {
+	boot, err := os.ReadFile(bootPath)
+	if err != nil {
+		return fmt.Errorf("clock boot identity unavailable: %w", err)
+	}
+	conn, err := net.DialTimeout("unix", socket, 3*time.Second)
+	if err != nil {
+		return fmt.Errorf("clock coordinator unavailable: %w", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		return err
+	}
+	if err := json.NewEncoder(conn).Encode(map[string]string{"op": "status"}); err != nil {
+		return err
+	}
+	var response struct {
+		OK      bool `json:"ok"`
+		Quality struct {
+			BootID      string   `json:"boot_id"`
+			Generation  uint64   `json:"generation"`
+			Source      string   `json:"source"`
+			External    bool     `json:"external"`
+			AgeNS       *int64   `json:"age_ns"`
+			Residual    *float64 `json:"residual_seconds"`
+			Uncertainty *float64 `json:"uncertainty_seconds"`
+			Outcome     string   `json:"outcome"`
+		} `json:"quality"`
+	}
+	if err := json.NewDecoder(conn).Decode(&response); err != nil {
+		return fmt.Errorf("invalid clock status: %w", err)
+	}
+	q := response.Quality
+	if !response.OK || strings.TrimSpace(string(boot)) == "" || q.BootID != strings.TrimSpace(string(boot)) || q.Generation == 0 ||
+		!q.External || (q.Source != "gps" && q.Source != "ntp") || q.AgeNS == nil || q.Residual == nil || q.Uncertainty == nil || *q.AgeNS < 0 || *q.AgeNS > int64(30*time.Second) ||
+		q.Outcome == "unknown" || q.Outcome == "in-flight" || q.Outcome == "" ||
+		math.IsNaN(*q.Residual) || math.IsInf(*q.Residual, 0) || math.IsNaN(*q.Uncertainty) || math.IsInf(*q.Uncertainty, 0) || *q.Uncertainty < 0 || math.Abs(*q.Residual)+*q.Uncertainty > 5 {
+		return fmt.Errorf("clock coordinator has no fresh external confirmation")
 	}
 	return nil
 }

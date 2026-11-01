@@ -5,7 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"radio-gaga/internal/models"
+	"bufio"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -51,17 +52,48 @@ func TestChronyTrackingPlatformBoundary(t *testing.T) {
 	}
 }
 
-func TestEnsureVerifiedClockLibrescootUsesChronyForBothNTPModes(t *testing.T) {
+func TestCoordinatorVerifiedClock(t *testing.T) {
 	dir := t.TempDir()
-	now := time.Now().Unix()
-	tracking := fmt.Sprintf("8E84C8F1,192.0.2.1,3,%d,0,0,0,0,0,0,0,0,10,Normal", now)
-	if err := os.WriteFile(filepath.Join(dir, "chronyc"), []byte("#!/bin/sh\necho '"+tracking+"'\n"), 0755); err != nil {
+	boot := filepath.Join(dir, "boot")
+	if err := os.WriteFile(boot, []byte("boot-1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir)
-	for _, enabled := range []bool{false, true} {
-		if err := EnsureVerifiedClock(&models.NTPConfig{Enabled: enabled}, true); err != nil {
-			t.Fatalf("NTP enabled=%v: %v", enabled, err)
-		}
+	for _, tc := range []struct {
+		name, quality string
+		ok            bool
+	}{
+		{"ntp", `"source":"ntp","external":true`, true},
+		{"gps", `"source":"gps","external":true`, true},
+		{"nrf", `"source":"nrf","external":true`, false},
+		{"user", `"source":"user","external":true`, false},
+		{"local", `"source":"local","external":true`, false},
+		{"holdover", `"source":"ntp","external":false`, false},
+		{"stale", `"source":"ntp","external":true,"age_ns":31000000000`, false},
+		{"residual", `"source":"ntp","external":true,"residual_seconds":5,"uncertainty_seconds":1`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name)
+			l, err := net.Listen("unix", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			go func() {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				defer c.Close()
+				bufio.NewReader(c).ReadString('\n')
+				fmt.Fprintf(c, `{"ok":true,"quality":{"boot_id":"boot-1","generation":1,"outcome":"completed","age_ns":0,"residual_seconds":0,"uncertainty_seconds":0,%s}}`+"\n", tc.quality)
+			}()
+			err = coordinatorVerifiedClock(path, boot)
+			if (err == nil) != tc.ok {
+				t.Fatalf("got %v, want valid=%v", err, tc.ok)
+			}
+		})
+	}
+	if err := coordinatorVerifiedClock(filepath.Join(dir, "missing"), boot); err == nil {
+		t.Fatal("missing coordinator accepted")
 	}
 }

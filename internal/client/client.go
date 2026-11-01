@@ -582,7 +582,7 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 				log.Printf("NTP sync failed: %v", ntpErr)
 			}
 
-			if config.MQTT.RequireVerifiedTLS {
+			if config.MQTT.RequireVerifiedTLS || librescoot {
 				return nil, fmt.Errorf("verified TLS connection failed; certificate verification is required")
 			}
 
