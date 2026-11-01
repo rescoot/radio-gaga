@@ -115,3 +115,24 @@ func TestClockPolicyUnknownIdentityFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestLibrescootCertificateErrorNeverUsesInsecureFallback(t *testing.T) {
+	previous := ensureVerifiedClock
+	ensureVerifiedClock = func(*models.NTPConfig, bool) error { return nil }
+	defer func() { ensureVerifiedClock = previous }()
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("expired certificate reached application") }))
+	server.Config.ErrorLog = log.New(io.Discard, "", 0)
+	server.StartTLS()
+	defer server.Close()
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	cfg := &tls.Config{RootCAs: roots, Time: func() time.Time { return server.Certificate().NotAfter.Add(time.Hour) }}
+	opts := mqtt.NewClientOptions().AddBroker("ssl://" + strings.TrimPrefix(server.URL, "https://")).SetTLSConfig(cfg).SetConnectTimeout(time.Second).SetAutoReconnect(false)
+	_, err := createMQTTClient(&models.Config{}, opts, "", nil, nil, true)
+	if err == nil || !strings.Contains(err.Error(), "certificate verification is required") {
+		t.Fatalf("unexpected result: %v", err)
+	}
+	if opts.TLSConfig.InsecureSkipVerify {
+		t.Fatal("insecure fallback enabled")
+	}
+}
