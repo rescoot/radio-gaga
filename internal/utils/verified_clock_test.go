@@ -85,7 +85,7 @@ func TestCoordinatorVerifiedClock(t *testing.T) {
 				}
 				defer c.Close()
 				bufio.NewReader(c).ReadString('\n')
-				fmt.Fprintf(c, `{"ok":true,"quality":{"boot_id":"boot-1","generation":1,"outcome":"completed","age_ns":0,"residual_seconds":0,"uncertainty_seconds":0,%s}}`+"\n", tc.quality)
+				fmt.Fprintf(c, `{"ok":true,"quality":{"boot_id":"boot-1","generation":1,"outcome":"completed","preparing":false,"age_ns":0,"residual_seconds":0,"uncertainty_seconds":0,%s}}`+"\n", tc.quality)
 			}()
 			err = coordinatorVerifiedClock(path, boot)
 			if (err == nil) != tc.ok {

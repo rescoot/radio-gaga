@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"radio-gaga/internal/models"
 )
 
@@ -49,6 +50,10 @@ func EnsureVerifiedClock(config *models.NTPConfig, librescoot bool) error {
 }
 
 func coordinatorVerifiedClock(socket, bootPath string) error {
+	var started, finished unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &started); err != nil {
+		return err
+	}
 	boot, err := os.ReadFile(bootPath)
 	if err != nil {
 		return fmt.Errorf("clock boot identity unavailable: %w", err)
@@ -75,14 +80,22 @@ func coordinatorVerifiedClock(socket, bootPath string) error {
 			Residual    *float64 `json:"residual_seconds"`
 			Uncertainty *float64 `json:"uncertainty_seconds"`
 			Outcome     string   `json:"outcome"`
+			Preparing   *bool    `json:"preparing"`
 		} `json:"quality"`
 	}
 	if err := json.NewDecoder(conn).Decode(&response); err != nil {
 		return fmt.Errorf("invalid clock status: %w", err)
 	}
 	q := response.Quality
+	if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &finished); err != nil {
+		return err
+	}
+	elapsed := finished.Nano() - started.Nano()
+	if elapsed < 0 || elapsed > int64(30*time.Second) {
+		return fmt.Errorf("stale coordinator response")
+	}
 	if !response.OK || strings.TrimSpace(string(boot)) == "" || q.BootID != strings.TrimSpace(string(boot)) || q.Generation == 0 ||
-		!q.External || (q.Source != "gps" && q.Source != "ntp") || q.AgeNS == nil || q.Residual == nil || q.Uncertainty == nil || *q.AgeNS < 0 || *q.AgeNS > int64(30*time.Second) ||
+		q.Preparing == nil || *q.Preparing || !q.External || (q.Source != "gps" && q.Source != "ntp") || q.AgeNS == nil || q.Residual == nil || q.Uncertainty == nil || *q.AgeNS < 0 || *q.AgeNS > int64(30*time.Second)-elapsed ||
 		q.Outcome == "unknown" || q.Outcome == "in-flight" || q.Outcome == "" ||
 		math.IsNaN(*q.Residual) || math.IsInf(*q.Residual, 0) || math.IsNaN(*q.Uncertainty) || math.IsInf(*q.Uncertainty, 0) || *q.Uncertainty < 0 || math.Abs(*q.Residual)+*q.Uncertainty > 5 {
 		return fmt.Errorf("clock coordinator has no fresh external confirmation")

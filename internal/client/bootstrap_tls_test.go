@@ -68,3 +68,50 @@ func TestVerifiedTLSUsesSelectedPlatformPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestLibrescootTLSRechecksClockOnEveryHandshake(t *testing.T) {
+	previous := ensureVerifiedClock
+	defer func() { ensureVerifiedClock = previous }()
+	allowed := false
+	ensureVerifiedClock = func(*models.NTPConfig, bool) error {
+		if !allowed {
+			return fmt.Errorf("stale clock")
+		}
+		return nil
+	}
+	cfg := &models.Config{}
+	opts := mqtt.NewClientOptions().AddBroker("ssl://127.0.0.1:1").SetTLSConfig(&tls.Config{}).SetConnectTimeout(50 * time.Millisecond).SetAutoReconnect(false)
+	_, _ = createMQTTClient(cfg, opts, "", nil, nil, true)
+	if opts.TLSConfig.VerifyConnection == nil {
+		t.Fatal("missing handshake quality check")
+	}
+	if err := opts.TLSConfig.VerifyConnection(tls.ConnectionState{}); err == nil {
+		t.Fatal("stale quality accepted")
+	}
+	allowed = true
+	if err := opts.TLSConfig.VerifyConnection(tls.ConnectionState{}); err != nil {
+		t.Fatal(err)
+	}
+	allowed = false
+	if err := opts.TLSConfig.VerifyConnection(tls.ConnectionState{}); err == nil {
+		t.Fatal("reconnect accepted stale quality")
+	}
+}
+func TestLibrescootRejectsInsecureTLS(t *testing.T) {
+	opts := mqtt.NewClientOptions().SetTLSConfig(&tls.Config{InsecureSkipVerify: true})
+	_, err := createMQTTClient(&models.Config{}, opts, "", nil, nil, true)
+	if err == nil {
+		t.Fatal("accepted insecure TLS")
+	}
+}
+
+func TestClockPolicyUnknownIdentityFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		flavor      string
+		coordinator bool
+	}{{"stock", false}, {"librescoot", true}, {"unknown", true}, {"unknown_error", true}, {"unrecognized-os", true}, {"", true}} {
+		if got := useCoordinatorClockPolicy(tc.flavor); got != tc.coordinator {
+			t.Fatalf("%q: %v", tc.flavor, got)
+		}
+	}
+}

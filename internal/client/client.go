@@ -399,7 +399,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	})
 
 	// Unknown platform identity must not enable direct clock writes.
-	librescootTimePolicy := mdbFlavor == "librescoot" || mdbFlavor == "unknown" || mdbFlavor == "unknown_error"
+	librescootTimePolicy := useCoordinatorClockPolicy(mdbFlavor)
 
 	// Capture monotonic reference BEFORE MQTT setup (which may trigger NTP)
 	monotonicRef := time.Now()
@@ -540,12 +540,30 @@ func waitForMQTTConnect(token mqtt.Token) error {
 	return token.Error()
 }
 
+func useCoordinatorClockPolicy(flavor string) bool { return flavor != "stock" }
+
 // createMQTTClient creates and connects an MQTT client. The command route and
 // active-client reference are installed before Connect so queued persistent-
 // session commands can be handled safely before OnConnect re-subscribes.
 var ensureVerifiedClock = utils.EnsureVerifiedClock
 
 func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTopic string, commandHandler mqtt.MessageHandler, activate func(mqtt.Client), librescoot bool) (mqtt.Client, error) {
+	if librescoot && opts.TLSConfig != nil {
+		cfg := opts.TLSConfig.Clone()
+		if cfg.InsecureSkipVerify {
+			return nil, fmt.Errorf("Librescoot requires certificate verification")
+		}
+		previous := cfg.VerifyConnection
+		cfg.VerifyConnection = func(state tls.ConnectionState) error {
+			if previous != nil {
+				if err := previous(state); err != nil {
+					return err
+				}
+			}
+			return ensureVerifiedClock(&config.NTP, true)
+		}
+		opts.SetTLSConfig(cfg)
+	}
 	if config.MQTT.RequireVerifiedTLS {
 		if err := ensureVerifiedClock(&config.NTP, librescoot); err != nil {
 			return nil, fmt.Errorf("verified TLS requires synchronized NTP time: %w", err)
