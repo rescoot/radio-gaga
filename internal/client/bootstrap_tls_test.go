@@ -18,10 +18,10 @@ import (
 
 func TestVerifiedTLSWaitsForNTPBeforeConnecting(t *testing.T) {
 	previous := ensureVerifiedClock
-	ensureVerifiedClock = func(*models.NTPConfig) error { return fmt.Errorf("time unavailable") }
+	ensureVerifiedClock = func(*models.NTPConfig, bool) error { return fmt.Errorf("time unavailable") }
 	defer func() { ensureVerifiedClock = previous }()
 	config := &models.Config{MQTT: models.MQTTConfig{RequireVerifiedTLS: true}}
-	_, err := createMQTTClient(config, mqtt.NewClientOptions(), "", nil, nil)
+	_, err := createMQTTClient(config, mqtt.NewClientOptions(), "", nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "synchronized NTP time") {
 		t.Fatalf("wanted NTP failure before connection, got %v", err)
 	}
@@ -29,7 +29,7 @@ func TestVerifiedTLSWaitsForNTPBeforeConnecting(t *testing.T) {
 
 func TestEnrollmentConfigRefusesInsecureTLSFallback(t *testing.T) {
 	previous := ensureVerifiedClock
-	ensureVerifiedClock = func(*models.NTPConfig) error { return nil }
+	ensureVerifiedClock = func(*models.NTPConfig, bool) error { return nil }
 	defer func() { ensureVerifiedClock = previous }()
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("expired certificate must prevent application data")
@@ -43,11 +43,28 @@ func TestEnrollmentConfigRefusesInsecureTLSFallback(t *testing.T) {
 	opts := mqtt.NewClientOptions().AddBroker("ssl://" + strings.TrimPrefix(server.URL, "https://")).
 		SetTLSConfig(tlsConfig).SetConnectTimeout(time.Second).SetAutoReconnect(false)
 	config := &models.Config{MQTT: models.MQTTConfig{RequireVerifiedTLS: true}, NTP: models.NTPConfig{Enabled: false}}
-	_, err := createMQTTClient(config, opts, "", nil, nil)
+	_, err := createMQTTClient(config, opts, "", nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "certificate verification is required") {
 		t.Fatalf("wanted verified TLS failure, got %v", err)
 	}
 	if opts.TLSConfig.InsecureSkipVerify {
 		t.Fatal("TLS verification was disabled")
+	}
+}
+
+func TestVerifiedTLSUsesSelectedPlatformPolicy(t *testing.T) {
+	previous := ensureVerifiedClock
+	defer func() { ensureVerifiedClock = previous }()
+	for _, platform := range []bool{false, true} {
+		seen := !platform
+		ensureVerifiedClock = func(_ *models.NTPConfig, librescoot bool) error {
+			seen = librescoot
+			return fmt.Errorf("not synchronized")
+		}
+		cfg := &models.Config{MQTT: models.MQTTConfig{RequireVerifiedTLS: true}}
+		_, err := createMQTTClient(cfg, mqtt.NewClientOptions(), "", nil, nil, platform)
+		if err == nil || seen != platform {
+			t.Fatalf("platform=%v, passed=%v, err=%v", platform, seen, err)
+		}
 	}
 }

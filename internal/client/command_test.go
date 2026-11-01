@@ -68,7 +68,7 @@ func TestPersistentCommandReplayKeepsMQTTReceiveLoopRunning(t *testing.T) {
 	if !options.AutoAckDisabled {
 		t.Fatal("command acknowledgements must be controlled by worker")
 	}
-	client, err := createMQTTClient(s.config, options, "scooters/test-scooter/commands", s.handleCommand, s.setActiveMQTTClient)
+	client, err := createMQTTClient(s.config, options, "scooters/test-scooter/commands", s.handleCommand, s.setActiveMQTTClient, s.librescoot)
 	if err != nil {
 		t.Fatal(err)
 	}

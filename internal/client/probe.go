@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -97,7 +98,14 @@ func RunProbe(cfg *models.Config, probeTimeout, stickinessWait time.Duration) er
 	// insecure-TLS fallback behavior production has. If the live client
 	// reaches the broker via the insecure fallback, the probe should too —
 	// otherwise we'd reject a config production happily accepts.
-	mqClient, err := createMQTTClient(cfg, opts, "", nil, nil)
+	osRelease, readErr := os.ReadFile("/etc/os-release")
+	id, _ := parseOSRelease(string(osRelease))
+	librescoot := strings.Contains(id, "librescoot")
+	if readErr != nil || id == "" {
+		hostname, _ := os.Hostname()
+		librescoot = !strings.HasPrefix(hostname, "mdb-")
+	}
+	mqClient, err := createMQTTClient(cfg, opts, "", nil, nil, librescoot)
 	if err != nil {
 		return fmt.Errorf("connect: %v", err)
 	}

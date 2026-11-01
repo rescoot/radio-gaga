@@ -16,15 +16,15 @@ import (
 // EnsureVerifiedClock requires a recent NTP reference before verified TLS.
 // When the application NTP client is disabled, chrony must report a healthy,
 // recently updated system clock instead.
-func EnsureVerifiedClock(config *models.NTPConfig) error {
-	if config != nil && !config.Enabled {
+func EnsureVerifiedClock(config *models.NTPConfig, librescoot bool) error {
+	if librescoot || (config != nil && !config.Enabled) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		out, err := exec.CommandContext(ctx, "chronyc", "-c", "tracking").Output()
 		if err != nil {
 			return fmt.Errorf("NTP is disabled and the system time service is unavailable")
 		}
-		return checkChronyTracking(string(out), time.Now())
+		return checkChronyTracking(string(out), time.Now(), librescoot)
 	}
 	reference, err := QueryNTPTime(config)
 	if err != nil {
@@ -42,14 +42,16 @@ func EnsureVerifiedClock(config *models.NTPConfig) error {
 	return nil
 }
 
-func checkChronyTracking(value string, now time.Time) error {
+func checkChronyTracking(value string, now time.Time, librescoot bool) error {
 	fields := strings.Split(strings.TrimSpace(value), ",")
 	if len(fields) != 14 || fields[13] != "Normal" {
 		return fmt.Errorf("system time service is not synchronized")
 	}
-	refID, err := strconv.ParseUint(fields[0], 16, 32)
-	if err != nil || len(fields[0]) != 8 || refID == 0 || refID>>24 == 127 {
-		return fmt.Errorf("system time service has no external reference")
+	if librescoot {
+		refID, err := strconv.ParseUint(fields[0], 16, 32)
+		if err != nil || len(fields[0]) != 8 || refID == 0 || refID>>24 == 127 {
+			return fmt.Errorf("system time service has no external reference")
+		}
 	}
 	stratum, err := strconv.Atoi(fields[2])
 	if err != nil || stratum < 1 || stratum > 15 {
@@ -67,13 +69,15 @@ func checkChronyTracking(value string, now time.Time) error {
 	if err != nil || math.IsNaN(offset) || math.IsInf(offset, 0) || math.Abs(offset) > 5 {
 		return fmt.Errorf("system clock is not sufficiently synchronized")
 	}
-	rootDelay, err := strconv.ParseFloat(fields[10], 64)
-	if err != nil || math.IsNaN(rootDelay) || math.IsInf(rootDelay, 0) || rootDelay < 0 {
-		return fmt.Errorf("invalid system time reference delay")
-	}
-	rootDispersion, err := strconv.ParseFloat(fields[11], 64)
-	if err != nil || math.IsNaN(rootDispersion) || math.IsInf(rootDispersion, 0) || rootDispersion < 0 || math.Abs(offset)+rootDelay/2+rootDispersion > 5 {
-		return fmt.Errorf("system time reference uncertainty is too large")
+	if librescoot {
+		rootDelay, err := strconv.ParseFloat(fields[10], 64)
+		if err != nil || math.IsNaN(rootDelay) || math.IsInf(rootDelay, 0) || rootDelay < 0 {
+			return fmt.Errorf("invalid system time reference delay")
+		}
+		rootDispersion, err := strconv.ParseFloat(fields[11], 64)
+		if err != nil || math.IsNaN(rootDispersion) || math.IsInf(rootDispersion, 0) || rootDispersion < 0 || math.Abs(offset)+rootDelay/2+rootDispersion > 5 {
+			return fmt.Errorf("system time reference uncertainty is too large")
+		}
 	}
 	return nil
 }

@@ -63,6 +63,7 @@ func writeCloudStatus(ctx context.Context, client redis.Cmdable, status string) 
 // ScooterMQTTClient manages the MQTT and Redis connections
 type ScooterMQTTClient struct {
 	config           *models.Config
+	librescoot       bool
 	configPath       string
 	mqttClientMu     sync.RWMutex
 	mqttClient       mqtt.Client
@@ -397,12 +398,17 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		}
 	})
 
+	// Unknown platform identity must not enable direct clock writes.
+	librescootTimePolicy := mdbFlavor == "librescoot" || mdbFlavor == "unknown" || mdbFlavor == "unknown_error"
+
 	// Capture monotonic reference BEFORE MQTT setup (which may trigger NTP)
 	monotonicRef := time.Now()
 
 	// Proactively query NTP for a valid clock reference
 	var clockIsValid bool
-	if _, ntpErr := utils.QueryNTPTime(&config.NTP); ntpErr == nil {
+	if librescootTimePolicy {
+		clockIsValid = utils.EnsureVerifiedClock(&config.NTP, true) == nil
+	} else if _, ntpErr := utils.QueryNTPTime(&config.NTP); ntpErr == nil {
 		// NTP query succeeded — attempt to set system clock too
 		if syncErr := utils.SyncTimeNTP(&config.NTP); syncErr != nil {
 			log.Printf("NTP query succeeded but system clock sync failed: %v", syncErr)
@@ -431,6 +437,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	// client, so delivery during Connect does not depend on the active-client field.
 	client = &ScooterMQTTClient{
 		config:           config,
+		librescoot:       librescootTimePolicy,
 		configPath:       configPath,
 		redisClient:      redisClient,
 		ctx:              ctx,
@@ -465,7 +472,7 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 		}()
 	}
 
-	_, err = createMQTTClient(config, opts, commandTopic, client.handleCommand, client.setActiveMQTTClient)
+	_, err = createMQTTClient(config, opts, commandTopic, client.handleCommand, client.setActiveMQTTClient, client.librescoot)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("MQTT connection failed: %v", err)
@@ -538,9 +545,9 @@ func waitForMQTTConnect(token mqtt.Token) error {
 // session commands can be handled safely before OnConnect re-subscribes.
 var ensureVerifiedClock = utils.EnsureVerifiedClock
 
-func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTopic string, commandHandler mqtt.MessageHandler, activate func(mqtt.Client)) (mqtt.Client, error) {
+func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTopic string, commandHandler mqtt.MessageHandler, activate func(mqtt.Client), librescoot bool) (mqtt.Client, error) {
 	if config.MQTT.RequireVerifiedTLS {
-		if err := ensureVerifiedClock(&config.NTP); err != nil {
+		if err := ensureVerifiedClock(&config.NTP, librescoot); err != nil {
 			return nil, fmt.Errorf("verified TLS requires synchronized NTP time: %w", err)
 		}
 	}
@@ -557,7 +564,12 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 			log.Printf("Certificate validity period error, attempting NTP sync...")
 
 			// Try NTP sync
-			ntpErr := utils.SyncTimeNTP(&config.NTP)
+			var ntpErr error
+			if librescoot {
+				ntpErr = ensureVerifiedClock(&config.NTP, true)
+			} else {
+				ntpErr = utils.SyncTimeNTP(&config.NTP)
+			}
 			if ntpErr == nil {
 				// Try connecting again after time sync
 				token := client.Connect()
@@ -1281,7 +1293,7 @@ func (s *ScooterMQTTClient) rebuildClient(reason string) error {
 	}
 
 	commandTopic := fmt.Sprintf("scooters/%s/commands", s.config.Scooter.Identifier)
-	_, err := createMQTTClient(s.config, s.buildMQTTOptions(), commandTopic, s.handleCommand, s.setActiveMQTTClient)
+	_, err := createMQTTClient(s.config, s.buildMQTTOptions(), commandTopic, s.handleCommand, s.setActiveMQTTClient, s.librescoot)
 	if err != nil {
 		log.Printf("Reconnect failed (%s): %v", reason, err)
 		return err
