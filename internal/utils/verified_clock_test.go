@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,6 +17,9 @@ func TestChronyTrackingRequiresRecentSynchronizedReference(t *testing.T) {
 		valid       bool
 	}{
 		{"healthy", row(3, now.Unix()-60, .001, "Normal"), true},
+		{"local pseudo reference", strings.Replace(row(1, now.Unix(), 0, "Normal"), "8E84C8F1", "7F7F0101", 1), false},
+		{"zero reference", strings.Replace(row(1, now.Unix(), 0, "Normal"), "8E84C8F1", "00000000", 1), false},
+		{"excess dispersion", strings.Replace(row(3, now.Unix(), 0, "Normal"), ",0,0,10,Normal", ",0,6,10,Normal", 1), false},
 		{"stale", row(3, now.Unix()-7201, 0, "Normal"), false},
 		{"future", row(3, now.Unix()+6, 0, "Normal"), false},
 		{"unsynchronized", row(3, now.Unix(), 0, "Not synchronised"), false},
