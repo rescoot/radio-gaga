@@ -161,48 +161,8 @@ func NewScooterMQTTClient(config *models.Config, configPath string, version stri
 	}
 
 	// --- MDB Flavor and Version Handling ---
-	mdbOsReleaseBytes, readErr := os.ReadFile("/etc/os-release")
-	var mdbFlavor string
-	var mdbFlavorSource string
-
-	if readErr == nil {
-		mdbOsID, _ := parseOSRelease(string(mdbOsReleaseBytes))
-		if strings.Contains(mdbOsID, "librescoot") {
-			mdbFlavor = "librescoot"
-			mdbFlavorSource = "os-release ID"
-		} else if strings.Contains(mdbOsID, "scooteros") {
-			mdbFlavor = "stock"
-			mdbFlavorSource = "os-release ID"
-		} else if mdbOsID != "" {
-			mdbFlavor = mdbOsID
-			mdbFlavorSource = "os-release ID (unrecognized)"
-			log.Printf("Using unrecognized MDB ID from os-release as flavor: %s", mdbOsID)
-		}
-	}
-
-	if mdbFlavor == "" {
-		if readErr != nil {
-			log.Printf("Warning: Failed to read /etc/os-release: %v, falling back to hostname", readErr)
-		}
-		mdbHostname, err := os.Hostname()
-		if err != nil {
-			log.Printf("Warning: Failed to get MDB hostname: %v", err)
-			mdbFlavor = "unknown_error"
-			mdbFlavorSource = "error"
-		} else {
-			if strings.HasPrefix(mdbHostname, "librescoot-") {
-				mdbFlavor = "librescoot"
-				mdbFlavorSource = "hostname"
-			} else if strings.HasPrefix(mdbHostname, "mdb-") {
-				mdbFlavor = "stock"
-				mdbFlavorSource = "hostname"
-			} else {
-				mdbFlavor = "unknown"
-				mdbFlavorSource = "hostname (unrecognized)"
-				log.Printf("Unrecognized MDB hostname format: %s", mdbHostname)
-			}
-		}
-	}
+	mdbOsReleaseBytes, readErr, hostname, hostErr := readMDBIdentity()
+	mdbFlavor, mdbFlavorSource := detectMDBFlavor(string(mdbOsReleaseBytes), readErr, hostname, hostErr)
 
 	if storeErr := redisClient.HSet(ctx, "system", "mdb-flavor", mdbFlavor).Err(); storeErr != nil {
 		log.Printf("Failed to store MDB flavor '%s' in Redis: %v", mdbFlavor, storeErr)
@@ -538,6 +498,39 @@ func waitForMQTTConnect(token mqtt.Token) error {
 		return fmt.Errorf("connection timed out after %s", models.MQTTPublishTimeout)
 	}
 	return token.Error()
+}
+
+var readMDBIdentity = func() ([]byte, error, string, error) {
+	content, readErr := os.ReadFile("/etc/os-release")
+	hostname, hostErr := os.Hostname()
+	return content, readErr, hostname, hostErr
+}
+
+func detectMDBFlavor(content string, readErr error, hostname string, hostErr error) (string, string) {
+	if readErr == nil {
+		id, _ := parseOSRelease(content)
+		switch {
+		case strings.Contains(id, "librescoot"):
+			return "librescoot", "os-release ID"
+		case id == "scooteros" || id == "scooteros-mdb":
+			return "stock", "os-release ID"
+		case id == "stock":
+			return "unknown", "os-release ID (unrecognized)"
+		case id != "":
+			return id, "os-release ID (unrecognized)"
+		}
+	}
+	if hostErr != nil {
+		return "unknown_error", "error"
+	}
+	switch {
+	case strings.HasPrefix(hostname, "librescoot-"):
+		return "librescoot", "hostname"
+	case strings.HasPrefix(hostname, "mdb-"):
+		return "stock", "hostname"
+	default:
+		return "unknown", "hostname (unrecognized)"
+	}
 }
 
 func useCoordinatorClockPolicy(flavor string) bool { return flavor != "stock" }

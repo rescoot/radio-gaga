@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"radio-gaga/internal/models"
 )
@@ -134,5 +135,66 @@ func TestLibrescootCertificateErrorNeverUsesInsecureFallback(t *testing.T) {
 	}
 	if opts.TLSConfig.InsecureSkipVerify {
 		t.Fatal("insecure fallback enabled")
+	}
+}
+
+func TestDetectMDBFlavorClockPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		id, host         string
+		readErr, hostErr error
+		coordinator      bool
+	}{
+		{"ID=librescoot\n", "mdb-example", nil, nil, true},
+		{"ID=scooteros\n", "librescoot-example", nil, nil, false},
+		{"ID=scooteros-mdb\n", "librescoot-example", nil, nil, false},
+		{"ID=scooteros-other\n", "mdb-example", nil, nil, true},
+		{"ID=unknown\n", "mdb-example", nil, nil, true},
+		{"ID=stock\n", "mdb-example", nil, nil, true},
+		{"ID=arbitrary\n", "mdb-example", nil, nil, true},
+		{"", "mdb-example", nil, nil, false},
+		{"", "librescoot-example", fmt.Errorf("missing"), nil, true},
+		{"", "other", fmt.Errorf("missing"), nil, true},
+		{"", "", fmt.Errorf("missing"), fmt.Errorf("missing"), true},
+	} {
+		flavor, _ := detectMDBFlavor(tc.id, tc.readErr, tc.host, tc.hostErr)
+		if got := useCoordinatorClockPolicy(flavor); got != tc.coordinator {
+			t.Fatalf("id=%q host=%q flavor=%q got=%v", tc.id, tc.host, flavor, got)
+		}
+	}
+}
+
+func TestProductionAndProbeShareClockPolicy(t *testing.T) {
+	oldRead, oldEnsure := readMDBIdentity, ensureVerifiedClock
+	defer func() { readMDBIdentity = oldRead; ensureVerifiedClock = oldEnsure }()
+	server := miniredis.RunT(t)
+	for _, tc := range []struct {
+		id, host         string
+		readErr, hostErr error
+		coordinator      bool
+	}{
+		{"ID=unknown\n", "mdb-test", nil, nil, true},
+		{"ID=other\n", "mdb-test", nil, nil, true},
+		{"", "mdb-test", fmt.Errorf("missing"), nil, false},
+		{"", "librescoot-test", fmt.Errorf("missing"), nil, true},
+		{"", "", fmt.Errorf("missing"), fmt.Errorf("missing"), true},
+		{"ID=scooteros-mdb\n", "other", nil, nil, false},
+	} {
+		readMDBIdentity = func() ([]byte, error, string, error) { return []byte(tc.id), tc.readErr, tc.host, tc.hostErr }
+		seen := []bool{}
+		ensureVerifiedClock = func(_ *models.NTPConfig, coordinated bool) error {
+			seen = append(seen, coordinated)
+			return fmt.Errorf("test stops before connecting")
+		}
+		config := &models.Config{RedisURL: "redis://" + server.Addr(), Scooter: models.ScooterConfig{Identifier: "test", Token: "test"}, MQTT: models.MQTTConfig{BrokerURL: "ssl://127.0.0.1:1", KeepAlive: "30s", RequireVerifiedTLS: true}, NTP: models.NTPConfig{Enabled: false}}
+		_, _ = NewScooterMQTTClient(config, "", "test")
+		if len(seen) != 1 || seen[0] != tc.coordinator {
+			t.Fatalf("production ID=%q host=%q policy=%v", tc.id, tc.host, seen)
+		}
+		seen = nil
+		config.NTP.Enabled = true
+		_ = RunProbe(config, time.Second, 0)
+		if len(seen) != 1 || seen[0] != tc.coordinator {
+			t.Fatalf("probe ID=%q host=%q policy=%v", tc.id, tc.host, seen)
+		}
 	}
 }
