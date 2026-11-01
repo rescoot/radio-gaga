@@ -404,26 +404,23 @@ func (s *ScooterMQTTClient) transmitBuffer() error {
 	// This prevents re-transmission in the current process run
 	s.resetBuffer(buffer)
 
-	// Try to persist the reset for durability across restarts
-	if err := s.saveBufferToRedis(buffer); err != nil {
-		log.Printf("Warning: failed to persist buffer reset to Redis: %v", err)
-
-		// Fall back to disk if Redis fails and disk is configured
-		if s.config.Telemetry.Buffer.PersistPath != "" {
-			if diskErr := s.saveBufferToDisk(buffer); diskErr != nil {
-				log.Printf("Warning: failed to persist buffer reset to disk: %v", diskErr)
-				log.Printf("Buffer reset in memory only - may re-transmit on restart (batch ID: %s)", buffer.BatchID)
-			} else {
-				log.Printf("Buffer reset persisted to disk (Redis failed)")
-			}
-		} else {
-			log.Printf("Buffer reset in memory only - may re-transmit on restart (batch ID: %s)", buffer.BatchID)
-		}
-	}
+	s.persistTransmittedBufferReset(buffer)
 
 	// Always return success after MQTT transmission succeeds
 	// In-memory reset prevents re-transmission during this process run
 	return nil
+}
+
+// A successful Redis write must not leave an older disk fallback eligible for replay.
+func (s *ScooterMQTTClient) persistTransmittedBufferReset(buffer *models.TelemetryBuffer) {
+	if err := s.saveBufferToRedis(buffer); err != nil {
+		log.Printf("Warning: failed to persist buffer reset to Redis: %v", err)
+	}
+	if s.config.Telemetry.Buffer.PersistPath != "" {
+		if err := s.saveBufferToDisk(buffer); err != nil {
+			log.Printf("Warning: failed to clear disk telemetry fallback: %v", err)
+		}
+	}
 }
 
 // transmitBufferPeriodically transmits the telemetry buffer periodically
