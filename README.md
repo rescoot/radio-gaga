@@ -435,7 +435,9 @@ Without an installation ID, laptop enrollment uses an individual 256-bit
 [installation binding protocol](docs/bootstrap-installation-binding.md) for
 configuration examples, server requirements and compatibility.
 Bootstrap MQTT requires TLS with a valid certificate chain, hostname and clock;
-plaintext brokers and malformed configured CAs are rejected. Config deliveries
+plaintext brokers and malformed configured CAs are rejected. On Librescoot,
+verified TLS requires fresh external clock-coordinator quality. Local and nRF
+holdover are not external confirmation, and radio-gaga does not set the clock. Config deliveries
 and results carry a `txn_id`. Enrollment configs set `mqtt.require_verified_tls`
 to prevent insecure certificate/time fallback after switching to normal operation.
 
