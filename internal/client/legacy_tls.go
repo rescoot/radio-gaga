@@ -23,7 +23,7 @@ const (
 // legacyPinnedTLS tolerates dates only for the exact legacy server and configured
 // CA. It still verifies the hostname, chain signatures and TLS proof of key possession.
 func legacyPinnedTLS(config *models.Config, base *tls.Config) (*tls.Config, bool) {
-	if config.MQTT.RequireVerifiedTLS || base == nil || base.InsecureSkipVerify {
+	if base == nil || base.InsecureSkipVerify {
 		return nil, false
 	}
 	u, err := url.Parse(config.MQTT.BrokerURL)

@@ -548,7 +548,7 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 	if librescoot && opts.TLSConfig != nil && opts.TLSConfig.InsecureSkipVerify && !legacyPinned {
 		return nil, fmt.Errorf("Librescoot requires certificate verification")
 	}
-	if librescoot && config.MQTT.RequireVerifiedTLS && opts.TLSConfig != nil {
+	if librescoot && config.MQTT.RequireVerifiedTLS && !legacyPinned && opts.TLSConfig != nil {
 		cfg := opts.TLSConfig.Clone()
 		previous := cfg.VerifyConnection
 		cfg.VerifyConnection = func(state tls.ConnectionState) error {
@@ -561,7 +561,7 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 		}
 		opts.SetTLSConfig(cfg)
 	}
-	if config.MQTT.RequireVerifiedTLS {
+	if config.MQTT.RequireVerifiedTLS && !legacyPinned {
 		if err := ensureVerifiedClock(&config.NTP, librescoot); err != nil {
 			return nil, fmt.Errorf("verified TLS requires synchronized NTP time: %w", err)
 		}

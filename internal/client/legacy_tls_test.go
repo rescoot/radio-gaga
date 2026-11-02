@@ -73,7 +73,6 @@ func TestLegacyPinnedTLSIsNarrowlyScoped(t *testing.T) {
 		name   string
 		change func(*models.Config, *tls.Config)
 	}{
-		{"strict enrollment", func(c *models.Config, _ *tls.Config) { c.MQTT.RequireVerifiedTLS = true }},
 		{"modern broker", func(c *models.Config, _ *tls.Config) { c.MQTT.BrokerURL = "ssl://mqtt2.sunshine.rescoot.org:8883" }},
 		{"other host", func(c *models.Config, _ *tls.Config) { c.MQTT.BrokerURL = "ssl://example.org:8883" }},
 		{"other port", func(c *models.Config, _ *tls.Config) { c.MQTT.BrokerURL = "ssl://mqtt.sunshine.rescoot.org:8887" }},
@@ -144,16 +143,19 @@ func TestLegacyPinnedTLSWorksWithoutFreshCoordinatorOnBothPlatforms(t *testing.T
 		return fmt.Errorf("stale")
 	}
 	for _, librescoot := range []bool{false, true} {
-		config, base, leaf := legacyTLSFixture(t)
-		// Avoid external traffic; exercise the production options and reconnect verifier.
-		opts := mqtt.NewClientOptions().AddBroker("ssl://127.0.0.1:1").SetTLSConfig(base).SetConnectTimeout(50 * time.Millisecond).SetAutoReconnect(false)
-		_, _ = createMQTTClient(config, opts, "", nil, nil, librescoot)
-		for i := 0; i < 2; i++ {
-			if opts.TLSConfig.VerifyConnection == nil {
-				t.Fatal("missing pinned verifier")
-			}
-			if err := opts.TLSConfig.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}}); err != nil {
-				t.Fatal(err)
+		for _, strict := range []bool{false, true} {
+			config, base, leaf := legacyTLSFixture(t)
+			config.MQTT.RequireVerifiedTLS = strict
+			// Exercise the production options and reconnect verifier without external traffic.
+			opts := mqtt.NewClientOptions().AddBroker("ssl://127.0.0.1:1").SetTLSConfig(base).SetConnectTimeout(50 * time.Millisecond).SetAutoReconnect(false)
+			_, _ = createMQTTClient(config, opts, "", nil, nil, librescoot)
+			for i := 0; i < 2; i++ {
+				if opts.TLSConfig.VerifyConnection == nil {
+					t.Fatal("missing pinned verifier")
+				}
+				if err := opts.TLSConfig.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}}); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 	}
