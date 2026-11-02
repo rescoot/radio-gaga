@@ -541,11 +541,15 @@ func useCoordinatorClockPolicy(flavor string) bool { return flavor != "stock" }
 var ensureVerifiedClock = utils.EnsureVerifiedClock
 
 func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTopic string, commandHandler mqtt.MessageHandler, activate func(mqtt.Client), librescoot bool) (mqtt.Client, error) {
-	if librescoot && opts.TLSConfig != nil {
+	pinnedTLS, legacyPinned := legacyPinnedTLS(config, opts.TLSConfig)
+	if legacyPinned {
+		opts.SetTLSConfig(pinnedTLS)
+	}
+	if librescoot && opts.TLSConfig != nil && opts.TLSConfig.InsecureSkipVerify && !legacyPinned {
+		return nil, fmt.Errorf("Librescoot requires certificate verification")
+	}
+	if librescoot && config.MQTT.RequireVerifiedTLS && opts.TLSConfig != nil {
 		cfg := opts.TLSConfig.Clone()
-		if cfg.InsecureSkipVerify {
-			return nil, fmt.Errorf("Librescoot requires certificate verification")
-		}
 		previous := cfg.VerifyConnection
 		cfg.VerifyConnection = func(state tls.ConnectionState) error {
 			if previous != nil {

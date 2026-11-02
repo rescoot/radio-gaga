@@ -70,7 +70,7 @@ func TestVerifiedTLSUsesSelectedPlatformPolicy(t *testing.T) {
 	}
 }
 
-func TestLibrescootTLSRechecksClockOnEveryHandshake(t *testing.T) {
+func TestStrictLibrescootTLSRechecksClockOnEveryHandshake(t *testing.T) {
 	previous := ensureVerifiedClock
 	defer func() { ensureVerifiedClock = previous }()
 	allowed := false
@@ -80,7 +80,7 @@ func TestLibrescootTLSRechecksClockOnEveryHandshake(t *testing.T) {
 		}
 		return nil
 	}
-	cfg := &models.Config{}
+	cfg := &models.Config{MQTT: models.MQTTConfig{RequireVerifiedTLS: true}}
 	opts := mqtt.NewClientOptions().AddBroker("ssl://127.0.0.1:1").SetTLSConfig(&tls.Config{}).SetConnectTimeout(50 * time.Millisecond).SetAutoReconnect(false)
 	_, _ = createMQTTClient(cfg, opts, "", nil, nil, true)
 	if opts.TLSConfig.VerifyConnection == nil {
