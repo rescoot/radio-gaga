@@ -6,7 +6,12 @@ on:
       - main # Or your default branch
     tags:
       - 'v*' # Trigger on version tags like v1.0, v2.3.4
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing tag to build and release (leave empty for a normal build)'
+        required: false
+        type: string
 
 permissions:
   contents: write # Needed for releases
@@ -20,6 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Fetches all history for git describe
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -31,6 +37,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mosquitto
 
+      - name: Allow the test broker to read its temporary files
+        run: |
+          if [ -f /etc/apparmor.d/mosquitto ]; then
+            sudo mkdir -p /etc/apparmor.d/local
+            printf '%s\n' '/tmp/TestBootstrapMQTT*/** r,' | sudo tee -a /etc/apparmor.d/local/mosquitto
+            sudo apparmor_parser -r /etc/apparmor.d/mosquitto
+          fi
+
       - name: Test
         run: |
           go test ./...
@@ -38,11 +52,17 @@ jobs:
 
       - name: Determine Version
         id: get_version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            git check-ref-format "refs/tags/$RELEASE_TAG"
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          fi
           # Always use git describe for a consistent version identifier
           # Fetch tags first to ensure describe works correctly
           git fetch --tags --force
-          VERSION=$(git describe --always --tags --dirty)
+          VERSION=${RELEASE_TAG:-$(git describe --always --tags --dirty)}
 
           # Clean up version string (remove leading 'v' if present for artifact naming)
           VERSION_CLEAN=${VERSION#v}
@@ -80,7 +100,7 @@ jobs:
           echo "Created archive: $PACKAGE_NAME"
 
       - name: Upload Build Artifact (for non-tags)
-        if: github.ref_type != 'tag'
+        if: github.ref_type != 'tag' && inputs.release_tag == ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.artifact_name }}
@@ -88,7 +108,7 @@ jobs:
           retention-days: 7 # Keep nightly artifacts for a week
 
       - name: Generate Changelog
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
         run: |
           chmod +x create-changelog.sh
           ./create-changelog.sh > changelog.md
@@ -96,7 +116,7 @@ jobs:
           cat changelog.md
 
       - name: Create Release and Upload Asset (for tags)
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ steps.get_version.outputs.version }} # Use the full version which should be the tag name
