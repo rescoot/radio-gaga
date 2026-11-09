@@ -8,7 +8,8 @@ require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/klauspost/compress v1.18.7
-	github.com/librescoot/redis-ipc v0.15.3
+	github.com/librescoot/redis-ipc v0.15.4
+	golang.org/x/sys v0.45.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
@@ -21,5 +22,4 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 )
