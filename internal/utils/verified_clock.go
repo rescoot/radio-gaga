@@ -17,21 +17,18 @@ import (
 	"radio-gaga/internal/models"
 )
 
-// EnsureVerifiedClock requires a recent NTP reference before verified TLS.
-// When the application NTP client is disabled, chrony must report a healthy,
-// recently updated system clock instead.
+// EnsureVerifiedClock requires a recent external time reference before verified TLS.
 func EnsureVerifiedClock(config *models.NTPConfig, librescoot bool) error {
 	if librescoot {
-		return coordinatorVerifiedClock("/run/clock-coordinator/control.sock", "/proc/sys/kernel/random/boot_id")
+		return verifiedLibrescootClock(
+			func() error {
+				return coordinatorVerifiedClock("/run/clock-coordinator/control.sock", "/proc/sys/kernel/random/boot_id")
+			},
+			func() error { return chronyVerifiedClock(true) },
+		)
 	}
 	if config != nil && !config.Enabled {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, "chronyc", "-c", "tracking").Output()
-		if err != nil {
-			return fmt.Errorf("NTP is disabled and the system time service is unavailable")
-		}
-		return checkChronyTracking(string(out), time.Now(), librescoot)
+		return chronyVerifiedClock(false)
 	}
 	reference, err := QueryNTPTime(config)
 	if err != nil {
@@ -47,6 +44,25 @@ func EnsureVerifiedClock(config *models.NTPConfig, librescoot bool) error {
 		return fmt.Errorf("system clock differs from NTP")
 	}
 	return nil
+}
+
+func verifiedLibrescootClock(coordinator, chrony func() error) error {
+	if err := coordinator(); err == nil {
+		return nil
+	} else if chronyErr := chrony(); chronyErr != nil {
+		return fmt.Errorf("clock coordinator: %v; system time service: %w", err, chronyErr)
+	}
+	return nil
+}
+
+func chronyVerifiedClock(librescoot bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "chronyc", "-c", "tracking").Output()
+	if err != nil {
+		return fmt.Errorf("system time service is unavailable: %w", err)
+	}
+	return checkChronyTracking(string(out), time.Now(), librescoot)
 }
 
 func coordinatorVerifiedClock(socket, bootPath string) error {

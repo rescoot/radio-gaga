@@ -459,7 +459,7 @@ Requires Go 1.24+. Runtime dependencies: Redis, an MQTT broker (Sunshine).
 ## Security
 
 - TLS for MQTT with custom CA certificate support
-- NTP sync on startup (required for TLS certificate validation)
+- Verified TLS checks clock quality; on Librescoot it accepts a fresh coordinator confirmation or a synchronized external chrony reference no more than two hours old
 - Per-vehicle authentication (identifier + token)
 - Environment-based command restrictions (shell disabled in production; redis limited to a fixed whitelist of typed operations)
 - Checksum verification for OTA updates with automatic rollback

@@ -41,6 +41,34 @@ func TestChronyTrackingRequiresRecentSynchronizedReference(t *testing.T) {
 	}
 }
 
+func TestVerifiedLibrescootClockFallback(t *testing.T) {
+	now := time.Unix(1793101100, 0)
+	tracking := func(reference int64, leap string) func() error {
+		return func() error {
+			row := fmt.Sprintf("8E84C8F1,192.0.2.1,3,%d,0.001,0,0,0,0,0,0.002,0.001,1024,%s", reference, leap)
+			return checkChronyTracking(row, now, true)
+		}
+	}
+	unavailable := func() error { return fmt.Errorf("coordinator unavailable or stale") }
+	for _, tc := range []struct {
+		name                string
+		coordinator, chrony func() error
+		valid               bool
+	}{
+		{"fresh coordinator", func() error { return nil }, func() error { t.Fatal("unnecessary chrony request"); return nil }, true},
+		{"chrony with 17-minute-old reference", unavailable, tracking(now.Unix()-1020, "Normal"), true},
+		{"stale chrony", unavailable, tracking(now.Unix()-7201, "Normal"), false},
+		{"unsynchronized chrony", unavailable, tracking(now.Unix()-60, "Not synchronised"), false},
+		{"unavailable chrony", unavailable, func() error { return fmt.Errorf("chronyc unavailable") }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := verifiedLibrescootClock(tc.coordinator, tc.chrony); (err == nil) != tc.valid {
+				t.Fatalf("valid=%v err=%v", tc.valid, err)
+			}
+		})
+	}
+}
+
 func TestChronyTrackingPlatformBoundary(t *testing.T) {
 	now := time.Unix(1793101100, 0)
 	local := fmt.Sprintf("7F7F0101,127.127.1.1,1,%d,0,0,0,0,0,0,0,6,10,Normal", now.Unix())
