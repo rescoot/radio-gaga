@@ -2,9 +2,11 @@ package sms
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -142,7 +144,12 @@ func (n *Notifier) sendSMS(event events.Event) error {
 	// pick whichever quote type doesn't appear in the text.
 	arg := formatMMCLICreateArg(number, text)
 
-	createOut, err := exec.Command("mmcli", "-m", "0", arg).CombinedOutput()
+	modem, err := activeModem()
+	if err != nil {
+		return err
+	}
+
+	createOut, err := exec.Command("mmcli", "-m", modem, arg).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("mmcli create failed: %v (output: %s)", err, string(createOut))
 	}
@@ -160,6 +167,29 @@ func (n *Notifier) sendSMS(event events.Event) error {
 
 	log.Printf("[SMS] Sent %s notification to %s", event.EventType, number)
 	return nil
+}
+
+var modemPathPattern = regexp.MustCompile(`^/org/freedesktop/ModemManager1/Modem/[0-9]+$`)
+
+// activeModem resolves the current ModemManager path for each send, since indices can change.
+func activeModem() (string, error) {
+	out, err := exec.Command("mmcli", "-J", "-L").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("mmcli list modems failed: %v (output: %s)", err, out)
+	}
+	var list struct {
+		Modems []string `json:"modem-list"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return "", fmt.Errorf("parse mmcli modem list: %w", err)
+	}
+	if len(list.Modems) != 1 {
+		return "", fmt.Errorf("SMS requires exactly one modem, found %d", len(list.Modems))
+	}
+	if !modemPathPattern.MatchString(list.Modems[0]) {
+		return "", fmt.Errorf("invalid modem path %q", list.Modems[0])
+	}
+	return list.Modems[0], nil
 }
 
 // formatMMCLICreateArg builds the --messaging-create-sms argument with safe quoting.
