@@ -39,15 +39,15 @@ var transitionalVehicleStates = map[string]struct{}{
 }
 
 var hibernatingPowerStates = map[string]struct{}{
-	"hibernating":                {},
-	"hibernating-imminent":       {},
-	"hibernating-manual":         {},
+	"hibernating":                 {},
+	"hibernating-imminent":        {},
+	"hibernating-manual":          {},
 	"hibernating-manual-imminent": {},
-	"hibernating-timer":          {},
-	"hibernating-timer-imminent": {},
-	"suspending":                 {},
-	"suspending-imminent":        {},
-	"booting":                    {},
+	"hibernating-timer":           {},
+	"hibernating-timer-imminent":  {},
+	"suspending":                  {},
+	"suspending-imminent":         {},
+	"booting":                     {},
 }
 
 const (
@@ -94,9 +94,9 @@ const (
 )
 
 type gpsSample struct {
-	lat       float64
-	lng       float64
-	at        time.Time
+	lat float64
+	lng float64
+	at  time.Time
 }
 
 // MovementMonitor performs on-device unauthorized-movement detection with
@@ -110,13 +110,14 @@ type gpsSample struct {
 type MovementMonitor struct {
 	redisClient *redis.Client
 	publisher   EventPublisher
+	emitEvent   func(Event)
 
-	mu              sync.Mutex
-	anchor          *gpsSample
-	anchorState     string
-	stateEnteredAt  time.Time
-	confirming      bool
-	cooldownUntil   time.Time
+	mu             sync.Mutex
+	anchor         *gpsSample
+	anchorState    string
+	stateEnteredAt time.Time
+	confirming     bool
+	cooldownUntil  time.Time
 }
 
 // NewMovementMonitor wires a monitor to redis and the event publisher.
@@ -124,9 +125,13 @@ func NewMovementMonitor(redisClient *redis.Client) *MovementMonitor {
 	return &MovementMonitor{redisClient: redisClient}
 }
 
-// SetPublisher is called by Detector after construction.
+// SetPublisher supports standalone use; Detector routes verdicts through its event pipeline.
 func (m *MovementMonitor) SetPublisher(p EventPublisher) {
 	m.publisher = p
+}
+
+func (m *MovementMonitor) SetEventSink(emit func(Event)) {
+	m.emitEvent = emit
 }
 
 // OnVehicleStateChange resets the anchor whenever the vehicle state changes.
@@ -281,7 +286,7 @@ func (m *MovementMonitor) runConfirmation(ctx context.Context, anchor gpsSample,
 }
 
 func (m *MovementMonitor) publishVerdict(status, rejectionReason string, anchor gpsSample, samples []gpsSample, vehicleState, powerState string) {
-	if m.publisher == nil {
+	if m.publisher == nil && m.emitEvent == nil {
 		return
 	}
 	smoothed := emaSmooth(samples)
@@ -307,7 +312,12 @@ func (m *MovementMonitor) publishVerdict(status, rejectionReason string, anchor 
 	}
 
 	log.Printf("[MovementMonitor] Verdict: %s (%s) disp=%.1fm samples=%d", status, rejectionReason, finalDisp, len(samples))
-	if err := m.publisher.PublishEvent(NewEvent(EventTypeUnauthorizedMovement, status, data)); err != nil {
+	event := NewEvent(EventTypeUnauthorizedMovement, status, data)
+	if m.emitEvent != nil {
+		m.emitEvent(event)
+		return
+	}
+	if err := m.publisher.PublishEvent(event); err != nil {
 		log.Printf("[MovementMonitor] Publish failed: %v", err)
 	}
 }

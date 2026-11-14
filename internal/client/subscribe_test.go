@@ -67,6 +67,7 @@ type fakeMQTTClient struct {
 	subErrors      []error
 	subCalls       int
 	publishErr     error
+	publishErrors  []error
 	publishCalls   int
 	connectionOpen bool
 	calls          []string
@@ -95,9 +96,14 @@ func (c *fakeMQTTClient) Subscribe(topic string, qos byte, _ mqtt.MessageHandler
 }
 
 func (c *fakeMQTTClient) Publish(string, byte, bool, interface{}) mqtt.Token {
+	call := c.publishCalls
 	c.publishCalls++
 	c.calls = append(c.calls, "publish")
-	return &fakeToken{err: c.publishErr}
+	err := c.publishErr
+	if call < len(c.publishErrors) {
+		err = c.publishErrors[call]
+	}
+	return &fakeToken{err: err}
 }
 
 func (c *fakeMQTTClient) IsConnectionOpen() bool { return c.connectionOpen }

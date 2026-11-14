@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +29,10 @@ import (
 type CommandHandlerClient interface {
 	SendCommandResponse(requestID, status, errorMsg string)
 	SendCommandResponseWithPID(requestID, status, errorMsg string, pid int)
+	SetResponseCacheID(cacheID string)
+	ReplayCachedCommandResponse(cacheID string) (bool, error)
+	RetryPendingResponse() (bool, error)
+	ResponseError() error
 	GetCommandParam(cmd, param string, defaultValue interface{}) interface{}
 	CleanRetainedMessage(topic string) error
 	PublishTelemetryData(current *models.TelemetryData) error
@@ -37,13 +42,20 @@ type CommandHandlerClient interface {
 
 // ClientImplementation implements CommandHandlerClient and provides access to client methods
 type ClientImplementation struct {
-	Config        *models.Config
-	ConfigPath    string
-	MQTTClient    mqtt.Client
-	RedisClient   *redis.Client
-	Ctx           context.Context
-	Version       string
-	ReconnectFunc func()
+	Config          *models.Config
+	ConfigPath      string
+	MQTTClient      mqtt.Client
+	RedisClient     *redis.Client
+	Ctx             context.Context
+	Version         string
+	ReconnectFunc   func()
+	PublishResponse func(topic string, payload []byte) error
+
+	responseMu           sync.Mutex
+	responseErr          error
+	responseCacheID      string
+	pendingResponseBody  []byte
+	pendingResponseTopic string
 }
 
 // SendCommandResponse sends a response to a command
@@ -65,17 +77,143 @@ func (c *ClientImplementation) SendCommandResponseWithPID(requestID, status, err
 
 	responseJSON, err := json.Marshal(response)
 	if err != nil {
+		c.recordResponseError(err)
 		log.Printf("Failed to marshal response: %v", err)
 		return
 	}
 
 	topic := fmt.Sprintf("scooters/%s/acks", c.Config.Scooter.Identifier)
-	token := c.MQTTClient.Publish(topic, 1, false, responseJSON)
-	if !token.WaitTimeout(models.MQTTPublishTimeout) || token.Error() != nil {
-		log.Printf("Failed to publish response: %v", token.Error())
+	cacheID := c.cacheID(requestID)
+	if cacheID != "" && c.RedisClient != nil {
+		if err := c.RedisClient.Set(c.responseContext(), commandResponseCacheKey(c.Config.Scooter.Identifier, cacheID),
+			responseJSON, 7*24*time.Hour).Err(); err != nil {
+			log.Printf("Failed to cache command response: %v", err)
+		}
 	}
+	c.setPendingResponse(topic, responseJSON)
+	if err := c.publishResponse(topic, responseJSON); err != nil {
+		c.recordResponseError(err)
+		log.Printf("Failed to publish response: %v", err)
+		return
+	}
+	c.clearPendingResponse()
 
 	log.Printf("Published response to %s: %s", topic, string(responseJSON))
+}
+
+func (c *ClientImplementation) SetResponseCacheID(cacheID string) {
+	c.responseMu.Lock()
+	defer c.responseMu.Unlock()
+	c.responseCacheID = cacheID
+}
+
+func (c *ClientImplementation) cacheID(requestID string) string {
+	c.responseMu.Lock()
+	defer c.responseMu.Unlock()
+	if c.responseCacheID != "" {
+		return c.responseCacheID
+	}
+	return requestID
+}
+
+func (c *ClientImplementation) ReplayCachedCommandResponse(cacheID string) (bool, error) {
+	if cacheID == "" || c.RedisClient == nil {
+		return false, nil
+	}
+	payload, err := c.RedisClient.Get(c.responseContext(), commandResponseCacheKey(c.Config.Scooter.Identifier, cacheID)).Bytes()
+	if err == redis.Nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read cached command response: %w", err)
+	}
+	topic := fmt.Sprintf("scooters/%s/acks", c.Config.Scooter.Identifier)
+	c.setPendingResponse(topic, payload)
+	if err := c.publishResponse(topic, payload); err != nil {
+		c.recordResponseError(err)
+		return true, err
+	}
+	c.clearPendingResponse()
+	log.Printf("Replayed cached command response to %s for request %s", topic, cacheID)
+	return true, nil
+}
+
+func (c *ClientImplementation) RetryPendingResponse() (bool, error) {
+	c.responseMu.Lock()
+	if len(c.pendingResponseBody) == 0 {
+		c.responseMu.Unlock()
+		return false, nil
+	}
+	topic := c.pendingResponseTopic
+	payload := append([]byte(nil), c.pendingResponseBody...)
+	c.responseMu.Unlock()
+
+	if err := c.publishResponse(topic, payload); err != nil {
+		c.recordResponseError(err)
+		return true, err
+	}
+	c.clearPendingResponse()
+	return true, nil
+}
+
+func (c *ClientImplementation) setPendingResponse(topic string, payload []byte) {
+	c.responseMu.Lock()
+	defer c.responseMu.Unlock()
+	c.pendingResponseTopic = topic
+	c.pendingResponseBody = append([]byte(nil), payload...)
+}
+
+func (c *ClientImplementation) clearPendingResponse() {
+	c.responseMu.Lock()
+	defer c.responseMu.Unlock()
+	c.pendingResponseTopic = ""
+	c.pendingResponseBody = nil
+	c.responseErr = nil
+}
+
+func (c *ClientImplementation) ResponseError() error {
+	c.responseMu.Lock()
+	defer c.responseMu.Unlock()
+	return c.responseErr
+}
+
+func (c *ClientImplementation) recordResponseError(err error) {
+	if err == nil {
+		return
+	}
+	c.responseMu.Lock()
+	defer c.responseMu.Unlock()
+	if c.responseErr == nil {
+		c.responseErr = err
+	}
+}
+
+func (c *ClientImplementation) responseContext() context.Context {
+	if c.Ctx != nil {
+		return c.Ctx
+	}
+	return context.Background()
+}
+
+func (c *ClientImplementation) publishResponse(topic string, payload []byte) error {
+	if c.PublishResponse != nil {
+		return c.PublishResponse(topic, payload)
+	}
+	if c.MQTTClient == nil {
+		return fmt.Errorf("MQTT client is unavailable")
+	}
+	token := c.MQTTClient.Publish(topic, 1, false, payload)
+	if !token.WaitTimeout(models.MQTTPublishTimeout) {
+		return fmt.Errorf("timed out publishing command response")
+	}
+	if err := token.Error(); err != nil {
+		return fmt.Errorf("publish command response: %w", err)
+	}
+	return nil
+}
+
+func commandResponseCacheKey(identifier, requestID string) string {
+	return fmt.Sprintf("radio-gaga:command-response:%s:%x", identifier, sha256.Sum256([]byte(requestID)))
 }
 
 // GetCommandParam retrieves a command parameter from configuration
@@ -95,7 +233,7 @@ func (c *ClientImplementation) CleanRetainedMessage(topic string) error {
 
 	token := c.MQTTClient.Publish(topic, 1, true, emptyPayload)
 	if !token.WaitTimeout(models.MQTTPublishTimeout) {
-		log.Printf("Timeout waiting to clean retained message on topic: %s", topic)
+		return fmt.Errorf("timed out cleaning retained message on topic %s", topic)
 	}
 
 	if err := token.Error(); err != nil {
@@ -139,7 +277,12 @@ func (c *ClientImplementation) RequestReconnect() {
 }
 
 // HandleCommand processes incoming MQTT commands
-func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisClient *redis.Client, ctx context.Context, config *models.Config, version string, mqttMsg mqtt.Message) {
+func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisClient *redis.Client, ctx context.Context, config *models.Config, version string, mqttMsg mqtt.Message) (result error) {
+	defer func() {
+		if err := client.ResponseError(); err != nil {
+			result = err
+		}
+	}()
 	// Check for empty payload early
 	if len(mqttMsg.Payload()) == 0 {
 		log.Printf("Received empty payload message on topic: %s, retained: %v",
@@ -160,12 +303,23 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 
 	log.Printf("Received command: %s with requestID: %s", command.Command, command.RequestID)
 
+	cacheID := command.RequestID
+	if cacheID == "" {
+		cacheID = fmt.Sprintf("payload:%x", sha256.Sum256(mqttMsg.Payload()))
+	}
+	client.SetResponseCacheID(cacheID)
+	if replayed, err := client.ReplayCachedCommandResponse(cacheID); err != nil {
+		return err
+	} else if replayed {
+		return cleanRetainedCommandIfNeeded(client, mqttMsg)
+	}
+
 	// Check if command is disabled (except for ping and get_state)
 	if command.Command != "ping" && command.Command != "get_state" {
 		if cmdConfig, ok := config.Commands[command.Command]; ok && cmdConfig.Disabled {
 			log.Printf("Command %s is disabled in config", command.Command)
 			client.SendCommandResponse(command.RequestID, "error", "Command disabled in config")
-			return
+			return cleanRetainedCommandIfNeeded(client, mqttMsg)
 		}
 	}
 
@@ -173,7 +327,7 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 	if command.Command == "shell" && config.Environment != "development" {
 		log.Printf("Command %s is not allowed in %s environment", command.Command, config.Environment)
 		client.SendCommandResponse(command.RequestID, "error", "Command not allowed in this environment")
-		return
+		return cleanRetainedCommandIfNeeded(client, mqttMsg)
 	}
 
 	var err error
@@ -266,6 +420,17 @@ func HandleCommand(client CommandHandlerClient, mqttClient mqtt.Client, redisCli
 	}
 
 	client.SendCommandResponse(command.RequestID, "success", "")
+	return nil
+}
+
+func cleanRetainedCommandIfNeeded(client CommandHandlerClient, message mqtt.Message) error {
+	if !message.Retained() {
+		return nil
+	}
+	if err := client.CleanRetainedMessage(message.Topic()); err != nil {
+		return fmt.Errorf("clean retained command: %w", err)
+	}
+	return nil
 }
 
 // handleGetStateCommand handles the get_state command

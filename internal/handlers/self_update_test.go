@@ -19,13 +19,23 @@ import (
 )
 
 type MockCommandHandlerClient struct {
-	configPath string
+	configPath    string
+	cleanedTopics []string
 }
 
 func (m *MockCommandHandlerClient) SendCommandResponse(requestID, status, message string) {}
 func (m *MockCommandHandlerClient) SendCommandResponseWithPID(requestID, status, message string, pid int) {
 }
-func (m *MockCommandHandlerClient) CleanRetainedMessage(topic string) error { return nil }
+func (m *MockCommandHandlerClient) SetResponseCacheID(string) {}
+func (m *MockCommandHandlerClient) ReplayCachedCommandResponse(string) (bool, error) {
+	return false, nil
+}
+func (m *MockCommandHandlerClient) RetryPendingResponse() (bool, error) { return false, nil }
+func (m *MockCommandHandlerClient) ResponseError() error                { return nil }
+func (m *MockCommandHandlerClient) CleanRetainedMessage(topic string) error {
+	m.cleanedTopics = append(m.cleanedTopics, topic)
+	return nil
+}
 func (m *MockCommandHandlerClient) GetCommandParam(command, param string, defaultValue interface{}) interface{} {
 	return defaultValue
 }

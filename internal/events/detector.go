@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 
@@ -52,21 +53,22 @@ type Detector struct {
 
 // NewDetector creates a new event detector
 func NewDetector(redisClient *redis.Client, config *models.Config) *Detector {
-	return &Detector{
+	d := &Detector{
 		redisClient:   redisClient,
 		config:        config,
 		buffer:        NewBuffer(config.Events.BufferPath, config.Events.MaxRetries),
 		ruleEvaluator: notifications.NewRuleEvaluator(config.Notifications.Rules, redisClient),
-		movement:      NewMovementMonitor(redisClient),
 		lastState:     make(map[string]string),
 		stopCh:        make(chan struct{}),
 	}
+	d.movement = NewMovementMonitor(redisClient)
+	d.movement.SetEventSink(d.sendEvent)
+	return d
 }
 
 // SetPublisher sets the event publisher
 func (d *Detector) SetPublisher(publisher EventPublisher) {
 	d.publisher = publisher
-	d.movement.SetPublisher(publisher)
 }
 
 // AddListener registers an event listener for notifications
@@ -421,13 +423,7 @@ func (d *Detector) checkTemperatureEvents(component string, fields map[string]st
 // watchFaultStream monitors the events:faults Redis stream for fault events
 func (d *Detector) watchFaultStream(ctx context.Context) {
 	lastID := "$" // Start from new messages
-
-	// Check if stream exists first
-	exists, err := d.redisClient.Exists(ctx, "events:faults").Result()
-	if err != nil || exists == 0 {
-		log.Println("[EventDetector] Fault stream does not exist, skipping fault monitoring")
-		return
-	}
+	retryDelay := time.Second
 
 	log.Println("[EventDetector] Monitoring fault stream...")
 
@@ -448,21 +444,30 @@ func (d *Detector) watchFaultStream(ctx context.Context) {
 		}).Result()
 
 		if err != nil {
-			// redis.Nil means timeout with no messages - expected
 			if err == redis.Nil {
+				retryDelay = time.Second
 				continue
 			}
-			// Log other errors but don't spam - check every 30 seconds
+			log.Printf("[EventDetector] Fault stream read failed: %v; retrying in %s", err, retryDelay)
+			timer := time.NewTimer(retryDelay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
 			case <-d.stopCh:
+				timer.Stop()
 				return
-			default:
-				// Silently continue on errors - stream reading is best-effort
-				continue
+			case <-timer.C:
 			}
+			if retryDelay < 30*time.Second {
+				retryDelay *= 2
+				if retryDelay > 30*time.Second {
+					retryDelay = 30 * time.Second
+				}
+			}
+			continue
 		}
+		retryDelay = time.Second
 
 		for _, stream := range streams {
 			for _, msg := range stream.Messages {

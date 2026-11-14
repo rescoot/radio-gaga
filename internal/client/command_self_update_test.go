@@ -165,11 +165,12 @@ func TestSelfUpdateLaneReconnectDoesNotLaunchSecondJobOrPublishThroughOldClient(
 	s, old := newLaneClient(t)
 	started, release := make(chan struct{}), make(chan struct{})
 	var runs atomic.Int32
-	s.startCommandWorkerWithSelfUpdate(func(client handlers.CommandHandlerClient, _ mqtt.Message) {
+	s.startCommandWorkerWithSelfUpdate(func(client handlers.CommandHandlerClient, _ mqtt.Message) error {
 		runs.Add(1)
 		close(started)
 		<-release
 		client.SendCommandResponse("update", "success", "")
+		return client.ResponseError()
 	})
 	params := map[string]interface{}{"url": "https://example.test/binary", "checksum": "sha256:" + strings.Repeat("0", 64)}
 	original := laneCommand("self_update", "update", params)

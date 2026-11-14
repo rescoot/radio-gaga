@@ -98,8 +98,8 @@ func (n *Notifier) processQueue(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case event := <-n.queue:
-			if err := n.sendSMS(event); err != nil {
-				log.Printf("[SMS] Failed to send: %v", err)
+			if err := n.sendWithRetry(ctx, event); err != nil {
+				log.Printf("[SMS] Dropping after retry failures: %v", err)
 			}
 			// Rate limit: wait for next tick before processing more
 			select {
@@ -123,11 +123,40 @@ func (n *Notifier) checkDailyLimit() bool {
 		n.dailyDate = today
 		n.dailyCount = 0
 	}
-	if n.dailyCount >= n.config.DailyLimit {
-		return false
+	return n.dailyCount < n.config.DailyLimit
+}
+
+func (n *Notifier) recordSuccessfulSend() {
+	today := time.Now().Format("2006-01-02")
+	n.dailyMu.Lock()
+	defer n.dailyMu.Unlock()
+	if n.dailyDate != today {
+		n.dailyDate = today
+		n.dailyCount = 0
 	}
 	n.dailyCount++
-	return true
+}
+
+func (n *Notifier) sendWithRetry(ctx context.Context, event events.Event) error {
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		err = n.sendSMS(event)
+		if err == nil {
+			return nil
+		}
+		log.Printf("[SMS] Send attempt %d/3 failed: %v", attempt, err)
+		if attempt == 3 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
 }
 
 func (n *Notifier) sendSMS(event events.Event) error {
@@ -166,6 +195,7 @@ func (n *Notifier) sendSMS(event events.Event) error {
 	}
 
 	log.Printf("[SMS] Sent %s notification to %s", event.EventType, number)
+	n.recordSuccessfulSend()
 	return nil
 }
 

@@ -20,6 +20,7 @@ type Notifier struct {
 	name       string
 	queue      chan events.Event
 	client     *http.Client
+	apiURL     string
 	rateLimit  time.Duration
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
@@ -48,6 +49,7 @@ func NewNotifier(config *models.TelegramConfig, scooterConfig *models.ScooterCon
 		name:       scooterConfig.Name,
 		queue:      make(chan events.Event, queueSize),
 		client:     &http.Client{Timeout: 10 * time.Second},
+		apiURL:     fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", config.BotToken),
 		rateLimit:  rateLimit,
 	}, nil
 }
@@ -103,11 +105,40 @@ func (n *Notifier) checkDailyLimit() bool {
 		n.dailyDate = today
 		n.dailyCount = 0
 	}
-	if n.dailyCount >= n.config.DailyLimit {
-		return false
+	return n.dailyCount < n.config.DailyLimit
+}
+
+func (n *Notifier) recordSuccessfulSend() {
+	today := time.Now().Format("2006-01-02")
+	n.dailyMu.Lock()
+	defer n.dailyMu.Unlock()
+	if n.dailyDate != today {
+		n.dailyDate = today
+		n.dailyCount = 0
 	}
 	n.dailyCount++
-	return true
+}
+
+func (n *Notifier) sendWithRetry(ctx context.Context, event events.Event) error {
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		err = n.sendToTelegram(event)
+		if err == nil {
+			return nil
+		}
+		log.Printf("[Telegram] Send attempt %d/3 failed: %v", attempt, err)
+		if attempt == 3 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
 }
 
 func (n *Notifier) processQueue(ctx context.Context) {
@@ -120,8 +151,8 @@ func (n *Notifier) processQueue(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case event := <-n.queue:
-			if err := n.sendToTelegram(event); err != nil {
-				log.Printf("[Telegram] Failed to send: %v", err)
+			if err := n.sendWithRetry(ctx, event); err != nil {
+				log.Printf("[Telegram] Dropping after retry failures: %v", err)
 			}
 			// Rate limit: wait for next tick before processing more
 			select {
@@ -139,7 +170,10 @@ func (n *Notifier) sendToTelegram(event events.Event) error {
 		return nil
 	}
 	text := n.FormatMessage(event)
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", n.config.BotToken)
+	apiURL := n.apiURL
+	if apiURL == "" {
+		apiURL = fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", n.config.BotToken)
+	}
 
 	resp, err := n.client.PostForm(apiURL, url.Values{
 		"chat_id":    {n.config.ChatID},
@@ -156,6 +190,7 @@ func (n *Notifier) sendToTelegram(event events.Event) error {
 	}
 
 	log.Printf("[Telegram] Sent %s notification", event.EventType)
+	n.recordSuccessfulSend()
 	return nil
 }
 

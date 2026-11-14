@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -10,6 +11,8 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/eclipse/paho.mqtt.golang/packets"
+
+	"radio-gaga/internal/handlers"
 	"radio-gaga/internal/models"
 )
 
@@ -158,6 +161,58 @@ type acknowledgedCommandMessage struct {
 }
 
 func (m *acknowledgedCommandMessage) Ack() { close(m.acknowledged) }
+
+func TestCommandWorkerRetriesResponseWithoutRepeatingCommand(t *testing.T) {
+	s, _ := newTestClient(t)
+	s.ctx, s.cancel = context.WithCancel(s.ctx)
+	s.commandQueue = make(chan queuedCommand, commandQueueCapacity)
+	client := &fakeMQTTClient{publishErrors: []error{nil, errors.New("temporary response failure"), nil}}
+	s.setActiveMQTTClient(client)
+	message := &acknowledgedCommandMessage{
+		fakeMessage:  fakeMessage{payload: []byte(`{"command":"lock","request_id":"lock-once"}`)},
+		acknowledged: make(chan struct{}),
+	}
+	s.handleCommand(client, message)
+	s.startCommandWorker()
+	select {
+	case <-message.acknowledged:
+	case <-time.After(5 * time.Second):
+		s.cancel()
+		s.wg.Wait()
+		t.Fatal("command was not acknowledged after its response retry")
+	}
+	s.cancel()
+	s.wg.Wait()
+
+	if count := s.redisClient.LLen(context.Background(), "scooter:state").Val(); count != 1 {
+		t.Fatalf("lock command executed %d times, want 1", count)
+	}
+	if client.publishCalls != 3 {
+		t.Fatalf("publish calls = %d, want retained cleanup plus two response attempts", client.publishCalls)
+	}
+}
+
+func TestDuplicateCommandReplaysCachedResponseWithoutReexecuting(t *testing.T) {
+	s, _ := newTestClient(t)
+	client := &fakeMQTTClient{}
+	message := &fakeMessage{
+		topic:   "scooters/test-scooter/commands",
+		payload: []byte(`{"command":"lock","request_id":"lock-deduplicated"}`),
+	}
+
+	for range 2 {
+		handler := s.commandHandlerClient(client)
+		if err := handlers.HandleCommand(handler, nil, s.redisClient, s.ctx, s.config, s.version, message); err != nil {
+			t.Fatalf("HandleCommand: %v", err)
+		}
+	}
+	if count := s.redisClient.LLen(context.Background(), "scooter:state").Val(); count != 1 {
+		t.Fatalf("lock command executed %d times, want 1", count)
+	}
+	if client.publishCalls != 3 {
+		t.Fatalf("publish calls = %d, want retained cleanup and two response publications", client.publishCalls)
+	}
+}
 
 func TestCommandWorkerLeavesStaleAndCancelledMessagesUnacknowledged(t *testing.T) {
 	for _, cancelled := range []bool{false, true} {

@@ -20,7 +20,7 @@ printf '%s\n' "$*" >> "$MMCLI_LOG"
 case "$1 $2" in
   '-J -L') if [ "$MMCLI_FAIL_LIST" = 1 ]; then echo 'list failed' >&2; exit 1; fi; /bin/cat "$MMCLI_LIST" ;;
   '-m '*) echo 'Successfully created new SMS: /org/freedesktop/ModemManager1/SMS/4' ;;
-  '-s '*) echo sent ;;
+  '-s '*) if [ "$MMCLI_FAIL_SEND" = 1 ]; then echo 'send failed' >&2; exit 1; fi; echo sent ;;
   *) exit 1 ;;
 esac
 `
@@ -87,6 +87,30 @@ func TestSendSMSRejectsInvalidModemLists(t *testing.T) {
 				t.Fatalf("unexpected calls %q, error %v", calls, err)
 			}
 		})
+	}
+}
+
+func TestFailedSMSSendsDoNotConsumeDailyLimit(t *testing.T) {
+	list, _ := setupMMCLI(t)
+	if err := os.WriteFile(list, []byte(`{"modem-list":["/org/freedesktop/ModemManager1/Modem/7"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MMCLI_FAIL_SEND", "1")
+	n := &Notifier{config: &models.SMSConfig{PhoneNumber: "+123", DailyLimit: 1}}
+	event := events.Event{EventType: events.EventTypeAlarm}
+	if err := n.sendSMS(event); err == nil {
+		t.Fatal("expected send failure")
+	}
+	if n.dailyCount != 0 {
+		t.Fatalf("failed send consumed daily quota: %d", n.dailyCount)
+	}
+
+	t.Setenv("MMCLI_FAIL_SEND", "0")
+	if err := n.sendSMS(event); err != nil {
+		t.Fatalf("successful retry: %v", err)
+	}
+	if n.dailyCount != 1 {
+		t.Fatalf("successful send count = %d, want 1", n.dailyCount)
 	}
 }
 

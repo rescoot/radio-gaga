@@ -181,6 +181,37 @@ func TestNotifyQueueFull(t *testing.T) {
 	}
 }
 
+func TestTelegramRetriesTransientFailureWithoutConsumingQuota(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer server.Close()
+
+	cfg := testConfig()
+	cfg.DailyLimit = 1
+	n, err := NewNotifier(cfg, testScooter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.client = server.Client()
+	n.apiURL = server.URL
+	if err := n.sendWithRetry(context.Background(), events.Event{EventType: events.EventTypeAlarm}); err != nil {
+		t.Fatalf("sendWithRetry: %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("HTTP attempts = %d, want 2", got)
+	}
+	if n.dailyCount != 1 {
+		t.Fatalf("successful send count = %d, want 1", n.dailyCount)
+	}
+}
+
 func TestSendToTelegram(t *testing.T) {
 	var receivedCount int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +235,7 @@ func TestSendToTelegram(t *testing.T) {
 
 	n, _ := NewNotifier(testConfig(), testScooter())
 	n.client = server.Client()
+	n.apiURL = server.URL
 
 	ctx, cancel := context.WithCancel(context.Background())
 	n.Start(ctx)
@@ -213,7 +245,13 @@ func TestSendToTelegram(t *testing.T) {
 }
 
 func TestStartStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
 	n, _ := NewNotifier(testConfig(), testScooter())
+	n.apiURL = server.URL
+	n.client = server.Client()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	n.Start(ctx)

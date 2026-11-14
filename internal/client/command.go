@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -34,12 +35,12 @@ func (s *ScooterMQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) 
 }
 
 func (s *ScooterMQTTClient) startCommandWorker() {
-	s.startCommandWorkerWithSelfUpdate(func(client handlers.CommandHandlerClient, message mqtt.Message) {
-		handlers.HandleCommand(client, nil, s.redisClient, s.ctx, s.config, s.version, message)
+	s.startCommandWorkerWithSelfUpdate(func(client handlers.CommandHandlerClient, message mqtt.Message) error {
+		return handlers.HandleCommand(client, nil, s.redisClient, s.ctx, s.config, s.version, message)
 	})
 }
 
-func (s *ScooterMQTTClient) startCommandWorkerWithSelfUpdate(run func(handlers.CommandHandlerClient, mqtt.Message)) {
+func (s *ScooterMQTTClient) startCommandWorkerWithSelfUpdate(run func(handlers.CommandHandlerClient, mqtt.Message) error) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -65,15 +66,45 @@ func (s *ScooterMQTTClient) startCommandWorkerWithSelfUpdate(run func(handlers.C
 				}
 				var parsed models.CommandMessage
 				parseErr := json.Unmarshal(command.message.Payload(), &parsed)
+				if parseErr == nil && parsed.Command == "self_update" && parsed.RequestID != "" {
+					responseClient := s.commandHandlerClient(command.client)
+					replayed, replayErr := responseClient.ReplayCachedCommandResponse(parsed.RequestID)
+					for attempt := 1; replayErr != nil && attempt < commandResponseRetryAttempts; attempt++ {
+						if pending, err := responseClient.RetryPendingResponse(); pending {
+							replayed, replayErr = true, err
+						} else {
+							replayed, replayErr = responseClient.ReplayCachedCommandResponse(parsed.RequestID)
+						}
+						if replayErr != nil && !waitCommandResponseRetry(s.ctx, attempt) {
+							break
+						}
+					}
+					if replayErr != nil {
+						log.Printf("Could not replay cached self-update response: %v", replayErr)
+						continue
+					}
+					if replayed {
+						if command.message.Retained() {
+							if err := responseClient.CleanRetainedMessage(command.message.Topic()); err != nil {
+								log.Printf("Could not clean retained self-update command: %v", err)
+								continue
+							}
+						}
+						s.ackSelfUpdateDelivery(command)
+						continue
+					}
+				}
 				if parseErr == nil && parsed.Command == "self_update" {
 					params, _ := json.Marshal(parsed.Params)
 					key := fmt.Sprintf("%s:%x", parsed.RequestID, sha256.Sum256(params))
 					if updateDone != nil {
 						if key != updateKey {
-							s.rejectDuringSelfUpdate(command.message, parsed.RequestID)
+							if err := s.rejectDuringSelfUpdate(command.message, parsed.RequestID); err != nil {
+								log.Printf("Could not reject command during self-update: %v", err)
+								continue
+							}
 						}
-						// Delivery ACK is not application success. A duplicate shares
-						// the original request's eventual post-install response.
+						// An identical in-flight update already owns this request ID.
 						s.ackSelfUpdateDelivery(command)
 						continue
 					}
@@ -85,17 +116,26 @@ func (s *ScooterMQTTClient) startCommandWorkerWithSelfUpdate(run func(handlers.C
 						defer s.wg.Done()
 						defer close(done)
 						s.updateCloudStatus()
-						run(s.selfUpdateCommandClient(), command.message)
+						if err := s.runCommandWithResponseRetry(command, true, run); err != nil {
+							log.Printf("Self-update command response remains pending: %v", err)
+							return
+						}
 						s.ackSelfUpdateDelivery(command)
 					}(command)
 					continue
 				}
 				if parseErr == nil && updateDone != nil && selfUpdateConflictsWithCommand(parsed.Command) {
-					s.rejectDuringSelfUpdate(command.message, parsed.RequestID)
+					if err := s.rejectDuringSelfUpdate(command.message, parsed.RequestID); err != nil {
+						log.Printf("Could not reject command during self-update: %v", err)
+						continue
+					}
 					s.ackSelfUpdateDelivery(command)
 					continue
 				}
-				s.processCommand(command.client, command.message)
+				if err := s.runCommandWithResponseRetry(command, false, run); err != nil {
+					log.Printf("Command response remains pending for message %d: %v", command.message.MessageID(), err)
+					continue
+				}
 				command.message.Ack()
 			}
 		}
@@ -118,11 +158,83 @@ func selfUpdateConflictsWithCommand(command string) bool {
 	return false
 }
 
-func (s *ScooterMQTTClient) rejectDuringSelfUpdate(message mqtt.Message, requestID string) {
+func (s *ScooterMQTTClient) rejectDuringSelfUpdate(message mqtt.Message, requestID string) error {
 	client := s.selfUpdateCommandClient()
 	client.SendCommandResponse(requestID, "error", "self-update in progress; retry with a new request ID after it completes")
+	for attempt := 1; attempt <= commandResponseRetryAttempts && client.ResponseError() != nil; attempt++ {
+		if _, err := client.RetryPendingResponse(); err == nil && client.ResponseError() == nil {
+			break
+		}
+		if attempt < commandResponseRetryAttempts && !waitCommandResponseRetry(s.ctx, attempt) {
+			return s.ctx.Err()
+		}
+	}
+	if err := client.ResponseError(); err != nil {
+		return err
+	}
 	if err := client.CleanRetainedMessage(message.Topic()); err != nil {
-		log.Printf("Failed to clean busy self-update command: %v", err)
+		return fmt.Errorf("clean denied retained command: %w", err)
+	}
+	return nil
+}
+
+const commandResponseRetryAttempts = 5
+
+func (s *ScooterMQTTClient) runCommandWithResponseRetry(command queuedCommand, selfUpdate bool,
+	run func(handlers.CommandHandlerClient, mqtt.Message) error) error {
+	newClient := func() handlers.CommandHandlerClient {
+		if selfUpdate {
+			return s.selfUpdateCommandClient()
+		}
+		return s.commandHandlerClient(command.client)
+	}
+	runCommand := run
+	if !selfUpdate {
+		runCommand = func(client handlers.CommandHandlerClient, message mqtt.Message) error {
+			return handlers.HandleCommand(client, nil, s.redisClient, s.ctx, s.config, s.version, message)
+		}
+	}
+	client := newClient()
+	var err error
+	for attempt := 1; attempt <= commandResponseRetryAttempts; attempt++ {
+		if attempt == 1 {
+			err = runCommand(client, command.message)
+		} else {
+			pending, retryErr := client.RetryPendingResponse()
+			if pending {
+				err = retryErr
+			} else {
+				client = newClient()
+				err = runCommand(client, command.message)
+			}
+		}
+		if err == nil {
+			return nil
+		}
+		log.Printf("Command response attempt %d/%d failed: %v", attempt, commandResponseRetryAttempts, err)
+		if attempt < commandResponseRetryAttempts && !waitCommandResponseRetry(s.ctx, attempt) {
+			return s.ctx.Err()
+		}
+	}
+	return err
+}
+
+func waitCommandResponseRetry(ctx context.Context, attempt int) bool {
+	delay := time.Duration(1<<uint(attempt-1)) * time.Second
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (s *ScooterMQTTClient) commandHandlerClient(client mqtt.Client) *handlers.ClientImplementation {
+	return &handlers.ClientImplementation{
+		Config: s.config, ConfigPath: s.configPath, MQTTClient: client, RedisClient: s.redisClient,
+		Ctx: s.ctx, Version: s.version, ReconnectFunc: s.RequestReconnect,
 	}
 }
 
@@ -137,22 +249,10 @@ func (s *ScooterMQTTClient) selfUpdateCommandClient() *selfUpdateCommandClient {
 	return &selfUpdateCommandClient{owner: s, ClientImplementation: &handlers.ClientImplementation{
 		Config: s.config, ConfigPath: s.configPath, RedisClient: s.redisClient,
 		Ctx: s.ctx, Version: s.version, ReconnectFunc: s.RequestReconnect,
+		PublishResponse: func(topic string, payload []byte) error {
+			return s.publishSelfUpdate(topic, false, payload)
+		},
 	}}
-}
-
-func (c *selfUpdateCommandClient) SendCommandResponse(requestID, status, message string) {
-	c.SendCommandResponseWithPID(requestID, status, message, 0)
-}
-
-func (c *selfUpdateCommandClient) SendCommandResponseWithPID(requestID, status, message string, pid int) {
-	response := models.CommandResponse{RequestID: requestID, Status: status, Error: message, PID: pid}
-	payload, err := json.Marshal(response)
-	if err == nil {
-		err = c.owner.publishSelfUpdate(fmt.Sprintf("scooters/%s/acks", c.Config.Scooter.Identifier), false, payload)
-	}
-	if err != nil {
-		log.Printf("Failed to publish self-update response: %v", err)
-	}
 }
 
 func (c *selfUpdateCommandClient) CleanRetainedMessage(topic string) error {
