@@ -191,7 +191,11 @@ func (s *ScooterMQTTClient) runCommandWithResponseRetry(command queuedCommand, s
 	runCommand := run
 	if !selfUpdate {
 		runCommand = func(client handlers.CommandHandlerClient, message mqtt.Message) error {
-			return handlers.HandleCommand(client, nil, s.redisClient, s.ctx, s.config, s.version, message)
+			mqttClient := s.activeMQTTClient()
+			if mqttClient == nil {
+				return fmt.Errorf("no active MQTT client")
+			}
+			return handlers.HandleCommand(client, mqttClient, s.redisClient, s.ctx, s.config, s.version, message)
 		}
 	}
 	client := newClient()

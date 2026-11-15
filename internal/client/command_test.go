@@ -162,6 +162,23 @@ type acknowledgedCommandMessage struct {
 
 func (m *acknowledgedCommandMessage) Ack() { close(m.acknowledged) }
 
+func TestCommandWorkerPassesActiveMQTTClientToHandlers(t *testing.T) {
+	s, _ := newTestClient(t)
+	mqttClient := &fakeMQTTClient{}
+	s.setActiveMQTTClient(mqttClient)
+	message := &fakeMessage{
+		topic:   "scooters/test-scooter/commands",
+		payload: []byte(`{"command":"config:get","request_id":"config-read"}`),
+	}
+
+	if err := s.runCommandWithResponseRetry(queuedCommand{client: mqttClient, message: message}, false, nil); err != nil {
+		t.Fatalf("runCommandWithResponseRetry: %v", err)
+	}
+	if mqttClient.publishCalls != 3 {
+		t.Fatalf("publish calls = %d, want config response, retained cleanup, and command response", mqttClient.publishCalls)
+	}
+}
+
 func TestCommandWorkerRetriesResponseWithoutRepeatingCommand(t *testing.T) {
 	s, _ := newTestClient(t)
 	s.ctx, s.cancel = context.WithCancel(s.ctx)
