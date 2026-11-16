@@ -548,7 +548,26 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 	if librescoot && opts.TLSConfig != nil && opts.TLSConfig.InsecureSkipVerify && !legacyPinned {
 		return nil, fmt.Errorf("Librescoot requires certificate verification")
 	}
-	if librescoot && config.MQTT.RequireVerifiedTLS && !legacyPinned && opts.TLSConfig != nil {
+	independentNTP := librescoot && config.MQTT.RequireVerifiedTLS && config.NTP.Enabled && !legacyPinned && opts.TLSConfig != nil
+	if independentNTP {
+		clock := &ntpTLSClock{config: &config.NTP}
+		if _, err := clock.current(); err != nil {
+			return nil, fmt.Errorf("verified TLS requires NTP time: %w", err)
+		}
+		cfg := opts.TLSConfig.Clone()
+		previous := cfg.VerifyConnection
+		cfg.Time = clock.time
+		cfg.VerifyConnection = func(state tls.ConnectionState) error {
+			if _, err := clock.current(); err != nil {
+				return fmt.Errorf("NTP time unavailable: %w", err)
+			}
+			if previous != nil {
+				return previous(state)
+			}
+			return nil
+		}
+		opts.SetTLSConfig(cfg)
+	} else if librescoot && config.MQTT.RequireVerifiedTLS && !legacyPinned && opts.TLSConfig != nil {
 		cfg := opts.TLSConfig.Clone()
 		previous := cfg.VerifyConnection
 		cfg.VerifyConnection = func(state tls.ConnectionState) error {
@@ -561,7 +580,7 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 		}
 		opts.SetTLSConfig(cfg)
 	}
-	if config.MQTT.RequireVerifiedTLS && !legacyPinned {
+	if config.MQTT.RequireVerifiedTLS && !legacyPinned && !independentNTP {
 		if err := ensureVerifiedClock(&config.NTP, librescoot); err != nil {
 			return nil, fmt.Errorf("verified TLS requires synchronized NTP time: %w", err)
 		}
@@ -576,6 +595,9 @@ func createMQTTClient(config *models.Config, opts *mqtt.ClientOptions, commandTo
 	token := client.Connect()
 	if err := waitForMQTTConnect(token); err != nil {
 		if strings.Contains(err.Error(), "certificate has expired or is not yet valid") {
+			if independentNTP {
+				return nil, fmt.Errorf("verified TLS connection failed; certificate verification is required: %w", err)
+			}
 			log.Printf("Certificate validity period error, attempting NTP sync...")
 
 			// Try NTP sync

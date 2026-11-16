@@ -20,12 +20,7 @@ import (
 // EnsureVerifiedClock requires a recent external time reference before verified TLS.
 func EnsureVerifiedClock(config *models.NTPConfig, librescoot bool) error {
 	if librescoot {
-		return verifiedLibrescootClock(
-			func() error {
-				return coordinatorVerifiedClock("/run/clock-coordinator/control.sock", "/proc/sys/kernel/random/boot_id")
-			},
-			func() error { return chronyVerifiedClock(true) },
-		)
+		return chronyVerifiedClock(true)
 	}
 	if config != nil && !config.Enabled {
 		return chronyVerifiedClock(false)

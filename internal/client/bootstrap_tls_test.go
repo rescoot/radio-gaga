@@ -164,8 +164,13 @@ func TestDetectMDBFlavorClockPolicy(t *testing.T) {
 }
 
 func TestProductionAndProbeShareClockPolicy(t *testing.T) {
-	oldRead, oldEnsure := readMDBIdentity, ensureVerifiedClock
-	defer func() { readMDBIdentity = oldRead; ensureVerifiedClock = oldEnsure }()
+	oldRead, oldEnsure, oldQuery := readMDBIdentity, ensureVerifiedClock, queryTLSTime
+	defer func() { readMDBIdentity = oldRead; ensureVerifiedClock = oldEnsure; queryTLSTime = oldQuery }()
+	queries := 0
+	queryTLSTime = func(*models.NTPConfig) (time.Time, error) {
+		queries++
+		return time.Time{}, fmt.Errorf("test stops before connecting")
+	}
 	server := miniredis.RunT(t)
 	for _, tc := range []struct {
 		id, host         string
@@ -191,9 +196,14 @@ func TestProductionAndProbeShareClockPolicy(t *testing.T) {
 			t.Fatalf("production ID=%q host=%q policy=%v", tc.id, tc.host, seen)
 		}
 		seen = nil
+		queries = 0
 		config.NTP.Enabled = true
 		_ = RunProbe(config, time.Second, 0)
-		if len(seen) != 1 || seen[0] != tc.coordinator {
+		if tc.coordinator {
+			if queries != 1 || len(seen) != 0 {
+				t.Fatalf("probe ID=%q host=%q NTP queries=%d policy=%v", tc.id, tc.host, queries, seen)
+			}
+		} else if len(seen) != 1 || seen[0] {
 			t.Fatalf("probe ID=%q host=%q policy=%v", tc.id, tc.host, seen)
 		}
 	}
