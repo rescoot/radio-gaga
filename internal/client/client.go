@@ -41,6 +41,7 @@ const (
 	commandSubscriptionAttempts   = 3
 	commandSubscriptionRetryDelay = time.Second
 	commandSubscriptionRejected   = byte(0x80)
+	telemetryFlushInhibitorID     = "radio-gaga-final-telemetry"
 )
 
 var (
@@ -55,6 +56,38 @@ func writeCloudStatus(ctx context.Context, client redis.Cmdable, status string) 
 		pipe.Publish(ctx, "remote-access", "radio-gaga")
 		pipe.HSet(ctx, "internet", "unu-cloud", status)
 		pipe.Publish(ctx, "internet", "unu-cloud")
+		return nil
+	})
+	return err
+}
+
+func (s *ScooterMQTTClient) setTelemetryFlushInhibitor(active bool) error {
+	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+	defer cancel()
+
+	if active {
+		payload, err := json.Marshal(map[string]any{
+			"id":      telemetryFlushInhibitorID,
+			"who":     "radio-gaga",
+			"what":    "final telemetry",
+			"why":     "keep cellular connectivity until final telemetry is sent",
+			"type":    "block",
+			"created": time.Now().Unix(),
+		})
+		if err != nil {
+			return err
+		}
+		_, err = s.redisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HSet(ctx, "power:inhibits", telemetryFlushInhibitorID, string(payload))
+			pipe.Publish(ctx, "power:inhibits", "add:"+telemetryFlushInhibitorID)
+			return nil
+		})
+		return err
+	}
+
+	_, err := s.redisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.HDel(ctx, "power:inhibits", telemetryFlushInhibitorID)
+		pipe.Publish(ctx, "power:inhibits", "remove:"+telemetryFlushInhibitorID)
 		return nil
 	})
 	return err
@@ -946,6 +979,11 @@ func (s *ScooterMQTTClient) publishConnectedStatus(c mqtt.Client) {
 // which runs on the first connect and every reconnect, so there is no explicit
 // subscribe here.
 func (s *ScooterMQTTClient) Start() error {
+	if s.librescoot {
+		if err := s.setTelemetryFlushInhibitor(true); err != nil {
+			return fmt.Errorf("register final telemetry inhibitor: %w", err)
+		}
+	}
 	if s.rideGroupAdapter != nil {
 		s.rideGroupAdapter.Start()
 		if c := s.activeMQTTClient(); c != nil && c.IsConnected() {
@@ -1071,6 +1109,11 @@ func (s *ScooterMQTTClient) Stop() {
 			log.Printf("Error flushing telemetry buffer during shutdown: %v", err)
 		} else {
 			log.Println("Telemetry buffer flushed.")
+		}
+	}
+	if s.librescoot {
+		if err := s.setTelemetryFlushInhibitor(false); err != nil {
+			log.Printf("Failed to release final telemetry inhibitor during shutdown: %v", err)
 		}
 	}
 
@@ -1471,12 +1514,17 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 
 				switch powerState {
 				case "running":
+					if s.librescoot {
+						if err := s.setTelemetryFlushInhibitor(true); err != nil {
+							log.Printf("Failed to restore final telemetry inhibitor: %v", err)
+						}
+					}
 					mqttClient := s.activeMQTTClient()
 					if mqttClient == nil || !mqttClient.IsConnectionOpen() {
 						log.Printf("Power state changed to running, forcing MQTT reconnect")
 						s.forceReconnect()
 					}
-				case "suspending-imminent", "hibernating-imminent", "hibernating-manual-imminent", "hibernating-timer-imminent", "reboot-imminent":
+				case "suspending-imminent", "hibernating-imminent", "hibernating-manual-imminent", "hibernating-timer-imminent", "hibernating-for-imminent", "reboot-imminent":
 					log.Printf("Power manager entering critical state '%s', sending final telemetry", powerState)
 
 					currentData, telErr := telemetry.GetTelemetryFromRedis(s.ctx, s.redisClient, s.config, s.version, s.monotonicRef, s.clockValid.Load())
@@ -1490,6 +1538,11 @@ func (s *ScooterMQTTClient) publishTelemetry() {
 						log.Printf("Failed to get telemetry data for state '%s': %v", powerState, telErr)
 					}
 
+					if s.librescoot {
+						if err := s.setTelemetryFlushInhibitor(false); err != nil {
+							log.Printf("Failed to release final telemetry inhibitor: %v", err)
+						}
+					}
 					log.Printf("Disconnecting MQTT client gracefully for state '%s'", powerState)
 					s.clearCommandSubscriptionReadiness(s.ctx)
 					mqttClient := s.activeMQTTClient()
